@@ -1,0 +1,304 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+enum OrganizationStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  MANAGER
+  OPERATOR
+  COMPLIANCE
+  VIEWER
+}
+
+enum CampaignPhase {
+  PRE_CAMPAIGN
+  INTRA_PARTY
+  OFFICIAL_CAMPAIGN
+  RUNOFF
+  CLOSED
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum ContactStatus {
+  ACTIVE
+  INVALID
+  DUPLICATE
+  BLOCKED
+  DELETED
+}
+
+enum ChannelType {
+  WHATSAPP
+  EMAIL
+  SMS
+  TELEGRAM
+  INSTAGRAM
+}
+
+enum ConsentStatus {
+  UNKNOWN
+  GRANTED
+  REVOKED
+  OPT_OUT
+}
+
+enum ChannelProvider {
+  WHATSAPP_EVOLUTION
+  WHATSAPP_CLOUD_API
+  INSTAGRAM
+  EMAIL
+  SMS
+  TELEGRAM
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum AiMode {
+  SUGGEST_ONLY
+  AUTO_LOW_RISK
+  DISABLED
+}
+
+model User {
+  id           String           @id @default(cuid())
+  name         String
+  email        String           @unique
+  passwordHash String
+  status       UserStatus       @default(ACTIVE)
+  memberships  Membership[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+}
+
+model Organization {
+  id          String             @id @default(cuid())
+  name        String
+  slug        String             @unique
+  status      OrganizationStatus @default(ACTIVE)
+  memberships Membership[]
+  campaigns   Campaign[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+}
+
+model Membership {
+  id             String         @id @default(cuid())
+  userId         String
+  organizationId String
+  role           MembershipRole
+  user           User           @relation(fields: [userId], references: [id])
+  organization   Organization   @relation(fields: [organizationId], references: [id])
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  @@unique([userId, organizationId])
+}
+
+model Campaign {
+  id             String             @id @default(cuid())
+  organizationId String
+  name           String
+  electionYear   Int
+  office         String
+  territory      String?
+  phase          CampaignPhase      @default(PRE_CAMPAIGN)
+  status         CampaignStatus     @default(DRAFT)
+  organization   Organization       @relation(fields: [organizationId], references: [id])
+  candidate      Candidate?
+  contacts       Contact[]
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+}
+
+model Candidate {
+  id               String   @id @default(cuid())
+  organizationId   String
+  campaignId       String   @unique
+  name             String
+  party            String?
+  office           String?
+  bio              String?
+  toneOfVoice      String?
+  mainProposals    Json?
+  restrictedTopics Json?
+  campaign         Campaign @relation(fields: [campaignId], references: [id])
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+model Contact {
+  id             String          @id @default(cuid())
+  organizationId String
+  campaignId     String
+  name           String?
+  phoneNumber    String?
+  email          String?
+  city           String?
+  neighborhood   String?
+  metadata       Json?
+  status         ContactStatus   @default(ACTIVE)
+  campaign       Campaign        @relation(fields: [campaignId], references: [id])
+  channels       ContactChannel[]
+  consents       Consent[]
+  optOuts        OptOut[]
+  tags           ContactTag[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([organizationId, campaignId])
+  @@index([phoneNumber])
+  @@index([email])
+}
+
+model ContactChannel {
+  id              String      @id @default(cuid())
+  organizationId  String
+  campaignId      String
+  contactId       String
+  channel         ChannelType
+  value           String
+  normalizedValue String
+  isPrimary       Boolean     @default(false)
+  status          String      @default("ACTIVE")
+  contact         Contact     @relation(fields: [contactId], references: [id])
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([organizationId, campaignId, channel])
+}
+
+model Consent {
+  id             String        @id @default(cuid())
+  organizationId String
+  campaignId     String
+  contactId      String
+  channel        ChannelType
+  status         ConsentStatus @default(UNKNOWN)
+  source         String?
+  consentText    String?
+  collectedAt    DateTime?
+  revokedAt      DateTime?
+  contact        Contact       @relation(fields: [contactId], references: [id])
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+}
+
+model OptOut {
+  id             String      @id @default(cuid())
+  organizationId String
+  campaignId     String
+  contactId      String
+  channel        ChannelType?
+  reason         String?
+  source         String?
+  contact        Contact     @relation(fields: [contactId], references: [id])
+  createdAt      DateTime    @default(now())
+}
+
+model Tag {
+  id             String       @id @default(cuid())
+  organizationId String
+  campaignId     String
+  name           String
+  color          String?
+  description    String?
+  contacts       ContactTag[]
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@unique([campaignId, name])
+}
+
+model ContactTag {
+  contactId String
+  tagId     String
+  contact   Contact @relation(fields: [contactId], references: [id])
+  tag       Tag     @relation(fields: [tagId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@id([contactId, tagId])
+}
+
+model ChannelAccount {
+  id                String          @id @default(cuid())
+  organizationId    String
+  campaignId        String
+  provider          ChannelProvider
+  name              String
+  status            String          @default("PENDING")
+  externalAccountId String?
+  config            Json?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+}
+
+model ConversationThread {
+  id                 String    @id @default(cuid())
+  organizationId     String
+  campaignId         String
+  contactId          String
+  channelAccountId   String?
+  channel            ChannelType
+  status             String    @default("OPEN")
+  assignedToUserId   String?
+  lastMessageAt      DateTime?
+  summary            String?
+  messages           Message[]
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+}
+
+model Message {
+  id                String            @id @default(cuid())
+  organizationId    String
+  campaignId        String
+  contactId         String?
+  conversationId    String?
+  channelAccountId  String?
+  provider          ChannelProvider
+  direction         MessageDirection
+  externalMessageId String?
+  body              String?
+  status            String            @default("PENDING")
+  rawPayload        Json?
+  conversation      ConversationThread? @relation(fields: [conversationId], references: [id])
+  createdAt         DateTime          @default(now())
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String
+  campaignId     String?
+  actorUserId    String?
+  action         String
+  entityType     String
+  entityId       String?
+  metadata       Json?
+  actor          User?    @relation(fields: [actorUserId], references: [id])
+  createdAt      DateTime @default(now())
+}
