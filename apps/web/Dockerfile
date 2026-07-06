@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package*.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY packages/shared/package.json packages/shared/package.json
+COPY packages/config/package.json packages/config/package.json
 RUN npm install
 
 FROM deps AS build
