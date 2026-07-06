@@ -101,8 +101,8 @@ Configure cada variavel no app correspondente no painel do EasyPanel. Referencia
 |----------|---------------------|------------|
 | `PORT` | `3000` | Porta do Next.js dentro do container |
 | `WEB_PUBLIC_URL` | `https://campanha-360-ia-web.kxryyk.easypanel.host` | URL canonica do frontend |
-| `API_PUBLIC_URL` | `https://campanha-360-ia-api.kxryyk.easypanel.host` | Base da API para chamadas do browser (Fase 01+) |
-| `NEXT_PUBLIC_API_URL` | `https://campanha-360-ia-api.kxryyk.easypanel.host` | Mesmo valor de `API_PUBLIC_URL` para o build do Next.js |
+| `API_PUBLIC_URL` | `https://campanha-360-ia-api.kxryyk.easypanel.host` | **Obrigatoria em runtime** — proxy `/api` da Web encaminha para a API |
+| `NEXT_PUBLIC_API_URL` | opcional | Legado; preferir `API_PUBLIC_URL` em runtime |
 | `NODE_ENV` | `production` | Padrao do Dockerfile |
 
 ### Worker

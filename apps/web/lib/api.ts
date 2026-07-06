@@ -1,4 +1,14 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+function getApiUrl() {
+  if (typeof window !== 'undefined') {
+    return '/api';
+  }
+
+  return (
+    process.env.API_PUBLIC_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    'http://localhost:3001'
+  );
+}
 
 export type AuthUser = {
   id: string;
@@ -51,20 +61,28 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  const response = await fetch(`${API_URL}${path}`, {
+  const response = await fetch(`${getApiUrl()}${path}`, {
     ...options,
     headers,
   });
 
-  const data = await response.json().catch(() => ({}));
+  const raw = await response.text();
+  let data: unknown = null;
+
+  try {
+    data = raw ? JSON.parse(raw) : null;
+  } catch {
+    data = null;
+  }
 
   if (!response.ok) {
+    const payload = data as { message?: string | string[] } | null;
     const message =
-      typeof data.message === 'string'
-        ? data.message
-        : Array.isArray(data.message)
-          ? data.message.join(', ')
-          : 'Erro na requisicao';
+      typeof payload?.message === 'string'
+        ? payload.message
+        : Array.isArray(payload?.message)
+          ? payload.message.join(', ')
+          : raw || 'Erro na requisicao';
     throw new ApiError(message, response.status);
   }
 
