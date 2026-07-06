@@ -5,7 +5,6 @@ import {
   IsOptional,
   IsString,
   MinLength,
-  ValidateIf,
 } from 'class-validator';
 import { ContactStatus } from '@prisma/client';
 import { IsValidPhone } from '../validators/is-valid-phone.validator';
@@ -16,12 +15,12 @@ export class CreateContactDto {
   @MinLength(2)
   name?: string;
 
-  @ValidateIf((dto: CreateContactDto) => !dto.email)
+  @IsOptional()
   @IsString()
   @IsValidPhone()
   phoneNumber?: string;
 
-  @ValidateIf((dto: CreateContactDto) => !dto.phoneNumber)
+  @IsOptional()
   @IsEmail()
   email?: string;
 

@@ -433,7 +433,7 @@ export class ContactsService {
         channel: ChannelType.WHATSAPP,
         value: phoneNumber,
         normalizedValue: normalizePhone(phoneNumber),
-        isPrimary: !email,
+        isPrimary: true,
       });
     } else {
       await tx.contactChannel.deleteMany({
