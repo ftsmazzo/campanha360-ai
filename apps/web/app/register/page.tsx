@@ -3,10 +3,11 @@
 import Link from 'next/link';
 import { FormEvent, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ApiError, loginUser, setStoredToken } from '../../lib/api';
+import { ApiError, registerUser, setStoredToken } from '../../lib/api';
 
-export default function LoginPage() {
+export default function RegisterPage() {
   const router = useRouter();
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -18,11 +19,11 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const result = await loginUser({ email, password });
+      const result = await registerUser({ name, email, password });
       setStoredToken(result.accessToken);
       router.push('/dashboard');
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Nao foi possivel entrar');
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel criar a conta');
     } finally {
       setLoading(false);
     }
@@ -32,8 +33,18 @@ export default function LoginPage() {
     <main className="flex min-h-screen items-center justify-center bg-[#f7f7f5] px-6">
       <section className="w-full max-w-sm">
         <p className="text-sm font-semibold uppercase tracking-normal text-[#47624f]">Campanha360 AI</p>
-        <h1 className="mt-2 text-2xl font-semibold text-[#151515]">Entrar</h1>
+        <h1 className="mt-2 text-2xl font-semibold text-[#151515]">Criar conta</h1>
         <form className="mt-6 space-y-4" onSubmit={handleSubmit}>
+          <label className="block">
+            <span className="text-sm font-medium text-[#34342f]">Nome</span>
+            <input
+              className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              minLength={2}
+              required
+            />
+          </label>
           <label className="block">
             <span className="text-sm font-medium text-[#34342f]">E-mail</span>
             <input
@@ -61,13 +72,13 @@ export default function LoginPage() {
             type="submit"
             disabled={loading}
           >
-            {loading ? 'Entrando...' : 'Acessar'}
+            {loading ? 'Criando...' : 'Criar conta'}
           </button>
         </form>
         <p className="mt-4 text-sm text-[#65655f]">
-          Ainda nao tem conta?{' '}
-          <Link className="font-medium text-[#24382b] underline" href="/register">
-            Criar conta
+          Ja tem conta?{' '}
+          <Link className="font-medium text-[#24382b] underline" href="/login">
+            Entrar
           </Link>
         </p>
       </section>

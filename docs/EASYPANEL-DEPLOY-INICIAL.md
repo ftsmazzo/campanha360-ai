@@ -2,7 +2,7 @@
 
 Documentacao do ambiente real ja implantado para o projeto **Campanha360 AI** no EasyPanel (host `kxryyk.easypanel.host`).
 
-Este documento descreve o estado atual pos-bootstrap (Fase 00). Autenticacao e modulos de dominio ainda nao foram implementados.
+Este documento descreve o ambiente implantado no EasyPanel. A partir da Fase 01, a API expoe autenticacao JWT e gestao inicial de organizacoes.
 
 > **Segredos:** senhas de Postgres, Redis e `JWT_SECRET` ficam **apenas** nas variaveis de ambiente do EasyPanel. Este arquivo e o repositorio Git nao devem conter credenciais reais. Use os placeholders abaixo e copie os valores do painel ao configurar cada app.
 
@@ -102,6 +102,7 @@ Configure cada variavel no app correspondente no painel do EasyPanel. Referencia
 | `PORT` | `3000` | Porta do Next.js dentro do container |
 | `WEB_PUBLIC_URL` | `https://campanha-360-ia-web.kxryyk.easypanel.host` | URL canonica do frontend |
 | `API_PUBLIC_URL` | `https://campanha-360-ia-api.kxryyk.easypanel.host` | Base da API para chamadas do browser (Fase 01+) |
+| `NEXT_PUBLIC_API_URL` | `https://campanha-360-ia-api.kxryyk.easypanel.host` | Mesmo valor de `API_PUBLIC_URL` para o build do Next.js |
 | `NODE_ENV` | `production` | Padrao do Dockerfile |
 
 ### Worker

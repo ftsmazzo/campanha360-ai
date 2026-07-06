@@ -7,6 +7,9 @@ COPY packages/config/package.json packages/config/package.json
 RUN npm install
 
 FROM deps AS build
+ARG API_PUBLIC_URL=http://localhost:3001
+ENV API_PUBLIC_URL=$API_PUBLIC_URL
+ENV NEXT_PUBLIC_API_URL=$API_PUBLIC_URL
 COPY . .
 RUN npm run build -w @campanha360/web
 
