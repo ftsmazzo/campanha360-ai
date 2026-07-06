@@ -4,6 +4,8 @@ Documentacao do ambiente real ja implantado para o projeto **Campanha360 AI** no
 
 Este documento descreve o estado atual pos-bootstrap (Fase 00). Autenticacao e modulos de dominio ainda nao foram implementados.
 
+> **Segredos:** senhas de Postgres, Redis e `JWT_SECRET` ficam **apenas** nas variaveis de ambiente do EasyPanel. Este arquivo e o repositorio Git nao devem conter credenciais reais. Use os placeholders abaixo e copie os valores do painel ao configurar cada app.
+
 ## Visao geral
 
 | Servico | Tipo | Host interno (rede EasyPanel) | Porta interna | URL publica |
@@ -21,11 +23,14 @@ Este documento descreve o estado atual pos-bootstrap (Fase 00). Autenticacao e m
 
 Banco principal do projeto. Usado pela API (Prisma) e pelo Worker (BullMQ + acesso futuro ao banco).
 
+Formato da connection string (preencher `<POSTGRES_PASSWORD>` com o valor exibido no EasyPanel):
+
 ```
-postgresql://campanha360:v5i3ub8rt6pffzps8u7q@campanha-360-ia_postgres:5432/campanha360_ai?sslmode=disable
+postgresql://campanha360:<POSTGRES_PASSWORD>@campanha-360-ia_postgres:5432/campanha360_ai?sslmode=disable
 ```
 
 - **Usuario:** `campanha360`
+- **Host interno:** `campanha-360-ia_postgres`
 - **Banco:** `campanha360_ai`
 - **SSL:** desabilitado na rede interna do EasyPanel (`sslmode=disable`)
 
@@ -33,11 +38,14 @@ postgresql://campanha360:v5i3ub8rt6pffzps8u7q@campanha-360-ia_postgres:5432/camp
 
 Cache e filas (BullMQ). Usado pela API e pelo Worker.
 
+Formato da connection string (preencher `<REDIS_PASSWORD>` com o valor exibido no EasyPanel):
+
 ```
-redis://default:dkecpice48usppahfbwl@campanha-360-ia_redis:6379
+redis://default:<REDIS_PASSWORD>@campanha-360-ia_redis:6379
 ```
 
 - **Usuario:** `default`
+- **Host interno:** `campanha-360-ia_redis`
 
 ### API (NestJS)
 
@@ -72,23 +80,25 @@ Instancia compartilhada de WhatsApp ja existente na infra. Sera consumida a part
 
 ## Variaveis de ambiente por servico
 
+Configure cada variavel no app correspondente no painel do EasyPanel. Referencia completa de placeholders: `.env.example`.
+
 ### API
 
-| Variavel | Valor no ambiente implantado | Observacao |
-|----------|-------------------------------|------------|
-| `DATABASE_URL` | `postgresql://campanha360:v5i3ub8rt6pffzps8u7q@campanha-360-ia_postgres:5432/campanha360_ai?sslmode=disable` | Host interno do Postgres |
-| `REDIS_URL` | `redis://default:dkecpice48usppahfbwl@campanha-360-ia_redis:6379` | Host interno do Redis |
+| Variavel | Valor / placeholder | Observacao |
+|----------|---------------------|------------|
+| `DATABASE_URL` | `postgresql://campanha360:<POSTGRES_PASSWORD>@campanha-360-ia_postgres:5432/campanha360_ai?sslmode=disable` | Senha no painel do servico Postgres |
+| `REDIS_URL` | `redis://default:<REDIS_PASSWORD>@campanha-360-ia_redis:6379` | Senha no painel do servico Redis |
 | `PORT` | `3001` | Porta escutada pelo NestJS dentro do container |
 | `WEB_PUBLIC_URL` | `https://campanha-360-ia-web.kxryyk.easypanel.host` | Usada no CORS da API |
 | `API_PUBLIC_URL` | `https://campanha-360-ia-api.kxryyk.easypanel.host` | Referencia publica da API (fases futuras) |
-| `JWT_SECRET` | definir valor forte no painel | Obrigatorio antes da Fase 01 (Auth) |
+| `JWT_SECRET` | `<JWT_SECRET>` | Valor forte gerado no painel; obrigatorio antes da Fase 01 |
 | `EVOLUTION_API_URL` | `https://infra-core-whatsapp-core.kxryyk.easypanel.host` | Reservado para fases de canal WhatsApp |
 | `NODE_ENV` | `production` | Padrao do Dockerfile |
 
 ### Web
 
-| Variavel | Valor no ambiente implantado | Observacao |
-|----------|-------------------------------|------------|
+| Variavel | Valor / placeholder | Observacao |
+|----------|---------------------|------------|
 | `PORT` | `3000` | Porta do Next.js dentro do container |
 | `WEB_PUBLIC_URL` | `https://campanha-360-ia-web.kxryyk.easypanel.host` | URL canonica do frontend |
 | `API_PUBLIC_URL` | `https://campanha-360-ia-api.kxryyk.easypanel.host` | Base da API para chamadas do browser (Fase 01+) |
@@ -96,15 +106,15 @@ Instancia compartilhada de WhatsApp ja existente na infra. Sera consumida a part
 
 ### Worker
 
-| Variavel | Valor no ambiente implantado | Observacao |
-|----------|-------------------------------|------------|
-| `DATABASE_URL` | `postgresql://campanha360:v5i3ub8rt6pffzps8u7q@campanha-360-ia_postgres:5432/campanha360_ai?sslmode=disable` | Mesmo banco da API |
-| `REDIS_URL` | `redis://default:dkecpice48usppahfbwl@campanha-360-ia_redis:6379` | Filas BullMQ |
+| Variavel | Valor / placeholder | Observacao |
+|----------|---------------------|------------|
+| `DATABASE_URL` | `postgresql://campanha360:<POSTGRES_PASSWORD>@campanha-360-ia_postgres:5432/campanha360_ai?sslmode=disable` | Mesmo banco da API |
+| `REDIS_URL` | `redis://default:<REDIS_PASSWORD>@campanha-360-ia_redis:6379` | Filas BullMQ |
 | `NODE_ENV` | `production` | Padrao do Dockerfile |
 
 ### Postgres e Redis
 
-Configurados pelo proprio EasyPanel ao provisionar os servicos. As connection strings acima ja refletem usuario, senha e host internos gerados pelo painel.
+Provisionados pelo EasyPanel. Usuario, host interno e nome do banco estao documentados acima; as senhas sao exibidas somente no painel de cada servico ao criar ou inspecionar o container.
 
 ## Portas internas (mapa rapido)
 
@@ -165,10 +175,10 @@ As paginas `/login` e `/dashboard` sao estaticas nesta fase; login ainda nao fun
 
 ## Proximos passos antes da Fase 01
 
-1. **Garantir `JWT_SECRET` forte** no app API (valor unico, nao usar o placeholder do `.env.example`).
+1. **Garantir `JWT_SECRET` forte** no app API (valor unico gerado no painel; nao usar placeholders do repositorio).
 2. **Rodar migrations Prisma em producao** no processo de deploy da API (`prisma migrate deploy`), conforme `infra/easypanel/README.md`.
 3. **Confirmar health da API** e carregamento da Web apos cada deploy.
-4. **Manter Postgres e Redis apenas na rede interna**; nao expor credenciais fora do EasyPanel.
+4. **Manter Postgres e Redis apenas na rede interna**; nao expor credenciais fora do EasyPanel nem versiona-las no Git.
 5. **Ignorar a URL publica do worker** para integracoes; apenas monitorar logs ate haver jobs reais.
 6. **Iniciar Fase 01 (Auth e tenancy)** com as variaveis acima ja configuradas:
    - `POST /auth/register`, `POST /auth/login`, `GET /auth/me`;
