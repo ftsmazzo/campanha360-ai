@@ -172,18 +172,32 @@ https://campanha-360-ia-web.kxryyk.easypanel.host
    - link **Entrar** abre `/login`;
    - link **Ver painel** abre `/dashboard` com cards dos modulos planejados.
 
-As paginas `/login` e `/dashboard` sao estaticas nesta fase; login ainda nao funciona (Fase 01).
+As paginas `/login` e `/dashboard` exigem autenticacao JWT (Fase 01).
 
-## Proximos passos antes da Fase 01
+## Recuperar migration falha (P3009)
 
-1. **Garantir `JWT_SECRET` forte** no app API (valor unico gerado no painel; nao usar placeholders do repositorio).
-2. **Rodar migrations Prisma em producao** no processo de deploy da API (`prisma migrate deploy`), conforme `infra/easypanel/README.md`.
-3. **Confirmar health da API** e carregamento da Web apos cada deploy.
-4. **Manter Postgres e Redis apenas na rede interna**; nao expor credenciais fora do EasyPanel nem versiona-las no Git.
-5. **Ignorar a URL publica do worker** para integracoes; apenas monitorar logs ate haver jobs reais.
-6. **Iniciar Fase 01 (Auth e tenancy)** com as variaveis acima ja configuradas:
-   - `POST /auth/register`, `POST /auth/login`, `GET /auth/me`;
-   - organizacoes e memberships;
-   - tela de login funcional apontando para `API_PUBLIC_URL`.
+Se a API ficar em loop reiniciando com `Error: P3009` e `20260706120000_init migration ... failed`:
 
-Nao implementar autenticacao antes de concluir estes passos de validacao do ambiente implantado.
+1. **Pare o loop** — a migration init falhou na primeira tentativa e ficou registrada como `failed` em `_prisma_migrations`.
+2. **No Postgres do EasyPanel**, abra o console SQL do servico `campanha-360-ia_postgres` e execute:
+
+```sql
+DELETE FROM "_prisma_migrations"
+WHERE migration_name = '20260706120000_init'
+  AND finished_at IS NULL;
+```
+
+Script de referencia: `scripts/reset-failed-init-migration.sql`
+
+3. **Redeploy da API** com a versao mais recente do repositorio (a migration foi corrigida — removido BOM UTF-8 invalido no SQL).
+4. Confirme no log: `Applying migration 20260706120000_init` seguido de `[api] Starting NestJS...`.
+5. Valide `GET https://campanha-360-ia-api.kxryyk.easypanel.host/health`.
+
+## Proximos passos operacionais
+
+1. **Garantir `JWT_SECRET` forte** no app API.
+2. **Confirmar migrations aplicadas** apos cada deploy da API.
+3. **Confirmar health da API** e login na Web apos cada deploy.
+4. **Configurar `NEXT_PUBLIC_API_URL`** no build da Web.
+5. **Manter Postgres e Redis apenas na rede interna**.
+6. **Proxima fase de produto:** `docs/fases/02-CAMPANHAS-CANDIDATOS.md`.

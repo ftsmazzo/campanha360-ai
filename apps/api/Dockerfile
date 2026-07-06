@@ -19,4 +19,6 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/api/package.json ./apps/api/package.json
-CMD ["sh", "-c", "npx prisma migrate deploy && node apps/api/dist/main.js"]
+COPY --from=build /app/scripts/api-entrypoint.sh ./scripts/api-entrypoint.sh
+RUN chmod +x ./scripts/api-entrypoint.sh
+CMD ["./scripts/api-entrypoint.sh"]
