@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
+import { CampaignsModule } from '../campaigns/campaigns.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { HealthController } from './health.controller';
@@ -9,8 +11,10 @@ import { HealthController } from './health.controller';
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     PrismaModule,
+    AuditModule,
     AuthModule,
     OrganizationsModule,
+    CampaignsModule,
   ],
   controllers: [HealthController],
 })

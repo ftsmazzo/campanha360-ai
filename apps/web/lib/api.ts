@@ -134,3 +134,95 @@ export function createOrganization(token: string, payload: { name: string; slug?
     token,
   );
 }
+
+export type CampaignItem = {
+  id: string;
+  organizationId: string;
+  name: string;
+  electionYear: number;
+  office: string;
+  territory: string | null;
+  phase: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  candidate: {
+    id: string;
+    name: string;
+    party: string | null;
+    office: string | null;
+  } | null;
+};
+
+export type CandidateItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  name: string;
+  party: string | null;
+  office: string | null;
+  bio: string | null;
+  toneOfVoice: string | null;
+  mainProposals: string[] | null;
+  restrictedTopics: string[] | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function fetchCampaigns(token: string, organizationId: string) {
+  return request<CampaignItem[]>(`/campaigns?organizationId=${encodeURIComponent(organizationId)}`, {}, token);
+}
+
+export function fetchCampaign(token: string, campaignId: string) {
+  return request<CampaignItem>(`/campaigns/${campaignId}`, {}, token);
+}
+
+export function createCampaign(
+  token: string,
+  payload: {
+    organizationId: string;
+    name: string;
+    electionYear: number;
+    office: string;
+    territory?: string;
+    phase?: string;
+    status?: string;
+  },
+) {
+  return request<CampaignItem>('/campaigns', { method: 'POST', body: JSON.stringify(payload) }, token);
+}
+
+export function updateCampaign(
+  token: string,
+  campaignId: string,
+  payload: {
+    name?: string;
+    electionYear?: number;
+    office?: string;
+    territory?: string;
+    phase?: string;
+    status?: string;
+  },
+) {
+  return request<CampaignItem>(`/campaigns/${campaignId}`, { method: 'PUT', body: JSON.stringify(payload) }, token);
+}
+
+export function fetchCandidate(token: string, campaignId: string) {
+  return request<{ candidate: CandidateItem | null }>(`/campaigns/${campaignId}/candidate`, {}, token);
+}
+
+export function upsertCandidate(
+  token: string,
+  campaignId: string,
+  payload: {
+    name: string;
+    party?: string;
+    office?: string;
+    bio?: string;
+    toneOfVoice?: string;
+    mainProposals?: string[];
+    restrictedTopics?: string[];
+  },
+) {
+  return request<CandidateItem>(`/campaigns/${campaignId}/candidate`, { method: 'PUT', body: JSON.stringify(payload) }, token);
+}
