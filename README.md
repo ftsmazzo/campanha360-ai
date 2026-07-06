@@ -36,6 +36,12 @@ docs/        # contexto e fases para Cursor
 3. Execute apenas uma fase por vez em `docs/fases/`.
 4. Nao rediscuta stack ou arquitetura.
 
+## Como subir no GitHub
+
+Leia `docs/COMO-SUBIR-NO-GITHUB.md`.
+
+Depois de subir o repositorio, abra no Cursor e use `docs/PRIMEIRO-PROMPT-CURSOR.md`.
+
 ## Desenvolvimento local
 
 ```bash
@@ -50,4 +56,3 @@ npm run dev
 ```bash
 docker compose up --build
 ```
-
