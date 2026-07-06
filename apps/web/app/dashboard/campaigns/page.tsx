@@ -21,7 +21,7 @@ import {
   getStoredToken,
 } from '../../../lib/api';
 import { CAMPAIGN_PHASES, CAMPAIGN_STATUSES, getPhaseLabel, getStatusLabel } from '../../../lib/campaigns';
-import { getActiveOrganizationId, setActiveOrganizationId } from '../../../lib/organization';
+import { setActiveOrganizationId } from '../../../lib/organization';
 
 export default function CampaignsPage() {
   const router = useRouter();
@@ -57,7 +57,7 @@ export default function CampaignsPage() {
         setUser(me);
         setOrganizations(orgs);
 
-        const activeId = getActiveOrganizationId() ?? resolveActiveOrganizationId(orgs);
+        const activeId = resolveActiveOrganizationId(orgs);
         setActiveOrganizationIdState(activeId);
         if (activeId) {
           setActiveOrganizationId(activeId);
