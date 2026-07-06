@@ -192,6 +192,12 @@ export default function EditCampaignPage() {
             >
               Editar candidato
             </Link>
+            <Link
+              className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
+              href={`/dashboard/campaigns/${campaignId}/contacts`}
+            >
+              Contatos
+            </Link>
           </div>
         </form>
       </div>

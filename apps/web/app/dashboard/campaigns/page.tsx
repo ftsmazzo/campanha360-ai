@@ -250,6 +250,12 @@ export default function CampaignsPage() {
                       <div className="flex gap-2">
                         <Link
                           className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#24382b]"
+                          href={`/dashboard/campaigns/${campaign.id}/contacts`}
+                        >
+                          Contatos
+                        </Link>
+                        <Link
+                          className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#24382b]"
                           href={`/dashboard/campaigns/${campaign.id}`}
                         >
                           Editar campanha

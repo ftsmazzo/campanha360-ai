@@ -222,3 +222,133 @@ export function upsertCandidate(
 ) {
   return request<CandidateItem>(`/campaigns/${campaignId}/candidate`, { method: 'PUT', body: JSON.stringify(payload) }, token);
 }
+
+export type ContactChannelItem = {
+  id: string;
+  channel: string;
+  value: string;
+  normalizedValue: string;
+  isPrimary: boolean;
+  status: string;
+};
+
+export type ConsentItem = {
+  id: string;
+  channel: string;
+  status: string;
+  source: string | null;
+  consentText: string | null;
+  collectedAt: string | null;
+  revokedAt: string | null;
+  updatedAt: string;
+};
+
+export type OptOutItem = {
+  id: string;
+  channel: string | null;
+  reason: string | null;
+  source: string | null;
+  createdAt: string;
+};
+
+export type ContactItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  name: string | null;
+  phoneNumber: string | null;
+  email: string | null;
+  city: string | null;
+  neighborhood: string | null;
+  metadata: Record<string, unknown> | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  channels: ContactChannelItem[];
+  consents: ConsentItem[];
+  optOuts: OptOutItem[];
+};
+
+export function fetchContacts(token: string, campaignId: string) {
+  return request<ContactItem[]>(`/campaigns/${campaignId}/contacts`, {}, token);
+}
+
+export function fetchContact(token: string, campaignId: string, contactId: string) {
+  return request<ContactItem>(`/campaigns/${campaignId}/contacts/${contactId}`, {}, token);
+}
+
+export function createContact(
+  token: string,
+  campaignId: string,
+  payload: {
+    name?: string;
+    phoneNumber?: string;
+    email?: string;
+    city?: string;
+    neighborhood?: string;
+    status?: string;
+    metadata?: Record<string, unknown>;
+  },
+) {
+  return request<ContactItem>(
+    `/campaigns/${campaignId}/contacts`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateContact(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  payload: {
+    name?: string;
+    phoneNumber?: string;
+    email?: string;
+    city?: string;
+    neighborhood?: string;
+    status?: string;
+    metadata?: Record<string, unknown>;
+  },
+) {
+  return request<ContactItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function upsertContactConsent(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  payload: {
+    channel: string;
+    status: string;
+    source?: string;
+    consentText?: string;
+  },
+) {
+  return request<ContactItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/consents`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function createContactOptOut(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  payload: {
+    channel?: string;
+    reason?: string;
+    source?: string;
+  },
+) {
+  return request<ContactItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/opt-out`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}

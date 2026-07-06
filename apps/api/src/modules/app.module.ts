@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
+import { ContactsModule } from '../contacts/contacts.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { HealthController } from './health.controller';
@@ -15,6 +16,7 @@ import { HealthController } from './health.controller';
     AuthModule,
     OrganizationsModule,
     CampaignsModule,
+    ContactsModule,
   ],
   controllers: [HealthController],
 })
