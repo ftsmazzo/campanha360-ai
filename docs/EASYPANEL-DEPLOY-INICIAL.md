@@ -174,24 +174,21 @@ https://campanha-360-ia-web.kxryyk.easypanel.host
 
 As paginas `/login` e `/dashboard` exigem autenticacao JWT (Fase 01).
 
-## Recuperar migration falha (P3009)
+## Migration falha (P3009) — recuperacao automatica
 
-Se a API ficar em loop reiniciando com `Error: P3009` e `20260706120000_init migration ... failed`:
+Se a API reiniciar em loop com `Error: P3009` na migration `20260706120000_init`, **basta redeployar a API** no EasyPanel.
 
-1. **Pare o loop** — a migration init falhou na primeira tentativa e ficou registrada como `failed` em `_prisma_migrations`.
-2. **No Postgres do EasyPanel**, abra o console SQL do servico `campanha-360-ia_postgres` e execute:
+O entrypoint (`scripts/api-entrypoint.sh`) detecta o P3009, executa `prisma migrate resolve --rolled-back` e reaplica `prisma migrate deploy` sem intervencao manual.
 
-```sql
-DELETE FROM "_prisma_migrations"
-WHERE migration_name = '20260706120000_init'
-  AND finished_at IS NULL;
+No log, deve aparecer:
+
+```text
+[api] Migration 20260706120000_init marcada como failed. Recuperacao automatica no deploy...
+[api] Reaplicando migrations...
+[api] Starting NestJS...
 ```
 
-Script de referencia: `scripts/reset-failed-init-migration.sql`
-
-3. **Redeploy da API** com a versao mais recente do repositorio (a migration foi corrigida — removido BOM UTF-8 invalido no SQL).
-4. Confirme no log: `Applying migration 20260706120000_init` seguido de `[api] Starting NestJS...`.
-5. Valide `GET https://campanha-360-ia-api.kxryyk.easypanel.host/health`.
+Depois valide `GET https://campanha-360-ia-api.kxryyk.easypanel.host/health`.
 
 ## Proximos passos operacionais
 

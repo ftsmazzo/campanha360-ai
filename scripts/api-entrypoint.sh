@@ -1,14 +1,20 @@
 #!/bin/sh
 set -e
 
+INIT_MIGRATION="20260706120000_init"
+MIGRATE_ERR="/tmp/prisma-migrate.err"
+
 echo "[api] Running Prisma migrations..."
-if ! npx prisma migrate deploy; then
-  echo ""
-  echo "[api] ERROR: prisma migrate deploy failed."
-  echo "[api] If the log shows P3009, clear the failed migration record in Postgres:"
-  echo "       DELETE FROM \"_prisma_migrations\" WHERE migration_name = '20260706120000_init';"
-  echo "[api] Then redeploy the API. See docs/EASYPANEL-DEPLOY-INICIAL.md#recuperar-migration-falha-p3009"
-  exit 1
+if ! npx prisma migrate deploy 2> "$MIGRATE_ERR"; then
+  if grep -q "P3009" "$MIGRATE_ERR" && grep -q "$INIT_MIGRATION" "$MIGRATE_ERR"; then
+    echo "[api] Migration $INIT_MIGRATION marcada como failed. Recuperacao automatica no deploy..."
+    npx prisma migrate resolve --rolled-back "$INIT_MIGRATION"
+    echo "[api] Reaplicando migrations..."
+    npx prisma migrate deploy
+  else
+    cat "$MIGRATE_ERR" >&2
+    exit 1
+  fi
 fi
 
 echo "[api] Starting NestJS..."
