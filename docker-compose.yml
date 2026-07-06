@@ -26,6 +26,9 @@ services:
       dockerfile: apps/api/Dockerfile
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://campanha360:campanha360@postgres:5432/campanha360_ai
+      REDIS_URL: redis://redis:6379
     ports:
       - "3001:3001"
     depends_on:
@@ -40,6 +43,9 @@ services:
       dockerfile: apps/worker/Dockerfile
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://campanha360:campanha360@postgres:5432/campanha360_ai
+      REDIS_URL: redis://redis:6379
     depends_on:
       postgres:
         condition: service_healthy
