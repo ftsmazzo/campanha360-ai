@@ -4,18 +4,23 @@ import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ContactSection, CrmPlaceholder } from '../../../../../../components/contact-section';
+import { TagBadge } from '../../../../../../components/tag-badge';
 import { DashboardShell } from '../../../../../../components/dashboard-shell';
 import {
   ApiError,
   AuthUser,
   CampaignItem,
   ContactItem,
+  TagItem,
+  applyContactTag,
   clearStoredToken,
   createContactOptOut,
   fetchCampaign,
   fetchContact,
   fetchMe,
+  fetchTags,
   getStoredToken,
+  removeContactTag,
   updateContact,
   upsertContactConsent,
 } from '../../../../../../lib/api';
@@ -29,6 +34,8 @@ import {
   getContactStatusLabel,
   hasOptOut,
 } from '../../../../../../lib/contacts';
+import { canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
+import { getContactTags } from '../../../../../../lib/tags';
 
 function metadataToText(value: Record<string, unknown> | null) {
   if (!value) return '';
@@ -93,10 +100,13 @@ export default function ContactDetailPage() {
   const [consentSource, setConsentSource] = useState('manual');
   const [consentText, setConsentText] = useState('');
   const [optOutReason, setOptOutReason] = useState('');
+  const [campaignTags, setCampaignTags] = useState<TagItem[]>([]);
+  const [selectedTagId, setSelectedTagId] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingConsent, setSavingConsent] = useState(false);
   const [savingOptOut, setSavingOptOut] = useState(false);
+  const [savingTag, setSavingTag] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -127,13 +137,15 @@ export default function ContactDetailPage() {
       }
 
       try {
-        const [me, campaignItem, contactItem] = await Promise.all([
+        const [me, campaignItem, contactItem, tagItems] = await Promise.all([
           fetchMe(token),
           fetchCampaign(token, campaignId),
           fetchContact(token, campaignId, contactId),
+          fetchTags(token, campaignId),
         ]);
         setUser(me);
         setCampaign(campaignItem);
+        setCampaignTags(tagItems);
         fillContact(contactItem);
       } catch {
         clearStoredToken();
@@ -229,6 +241,45 @@ export default function ContactDetailPage() {
     }
   }
 
+  async function handleApplyTag() {
+    const token = getStoredToken();
+    if (!token || !selectedTagId) return;
+
+    setSavingTag(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const updated = await applyContactTag(token, campaignId, contactId, selectedTagId);
+      fillContact(updated);
+      setSelectedTagId('');
+      setSuccess('Tag aplicada com sucesso.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel aplicar a tag');
+    } finally {
+      setSavingTag(false);
+    }
+  }
+
+  async function handleRemoveTag(tagId: string) {
+    const token = getStoredToken();
+    if (!token) return;
+
+    setSavingTag(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const updated = await removeContactTag(token, campaignId, contactId, tagId);
+      fillContact(updated);
+      setSuccess('Tag removida com sucesso.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel remover a tag');
+    } finally {
+      setSavingTag(false);
+    }
+  }
+
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#f7f7f5]">
@@ -241,6 +292,12 @@ export default function ContactDetailPage() {
 
   const displayName = contact.name?.trim() || 'Contato sem nome';
   const contactHasOptOut = hasOptOut(contact);
+  const contactTags = getContactTags(contact);
+  const appliedTagIds = new Set(contactTags.map((tag) => tag.id));
+  const availableTags = campaignTags.filter((tag) => !appliedTagIds.has(tag.id));
+  const canWrite = campaign
+    ? canWriteRole(getOrganizationRole(user?.memberships, campaign.organizationId))
+    : false;
 
   return (
     <DashboardShell userName={user?.name}>
@@ -454,10 +511,31 @@ export default function ContactDetailPage() {
               )}
             </ContactSection>
 
-            <CrmPlaceholder
+            <ContactSection
               title="Tags"
-              description="Classificacao e segmentacao do contato."
-            />
+              description="Classificacao e segmentacao do contato nesta campanha."
+            >
+              {contactTags.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {contactTags.map((tag) => (
+                    <TagBadge
+                      key={tag.id}
+                      tag={tag}
+                      removable={canWrite}
+                      onRemove={canWrite ? () => handleRemoveTag(tag.id) : undefined}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className="text-sm text-[#65655f]">Nenhuma tag aplicada a este contato.</p>
+              )}
+              <Link
+                className="mt-4 inline-block text-sm font-medium text-[#24382b] underline"
+                href={`/dashboard/campaigns/${campaignId}/tags`}
+              >
+                Gerenciar tags da campanha
+              </Link>
+            </ContactSection>
             <CrmPlaceholder
               title="Notas internas"
               description="Anotacoes da equipe sobre o relacionamento."
@@ -612,6 +690,50 @@ export default function ContactDetailPage() {
                 {savingConsent ? 'Salvando...' : 'Salvar consentimento'}
               </button>
             </form>
+
+            {canWrite ? (
+              <section className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4">
+                <div>
+                  <h3 className="font-medium text-[#24382b]">Aplicar tag</h3>
+                  <p className="mt-1 text-sm text-[#65655f]">
+                    Selecione uma tag da campanha para classificar este contato.
+                  </p>
+                </div>
+                {availableTags.length > 0 ? (
+                  <>
+                    <label className="block">
+                      <span className="text-sm font-medium text-[#34342f]">Tag</span>
+                      <select
+                        className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                        value={selectedTagId}
+                        onChange={(event) => setSelectedTagId(event.target.value)}
+                      >
+                        <option value="">Selecione uma tag</option>
+                        {availableTags.map((tag) => (
+                          <option key={tag.id} value={tag.id}>
+                            {tag.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <button
+                      className="w-full rounded-md border border-[#24382b] px-4 py-2 text-sm font-semibold text-[#24382b] disabled:opacity-60"
+                      type="button"
+                      disabled={savingTag || !selectedTagId}
+                      onClick={handleApplyTag}
+                    >
+                      {savingTag ? 'Aplicando...' : 'Aplicar tag'}
+                    </button>
+                  </>
+                ) : (
+                  <p className="text-sm text-[#65655f]">
+                    {campaignTags.length === 0
+                      ? 'Nenhuma tag cadastrada nesta campanha.'
+                      : 'Todas as tags da campanha ja estao aplicadas a este contato.'}
+                  </p>
+                )}
+              </section>
+            ) : null}
 
             <section className="rounded-md border border-[#deddd4] bg-white p-4">
               <h3 className="font-medium text-[#24382b]">Registrar opt-out</h3>

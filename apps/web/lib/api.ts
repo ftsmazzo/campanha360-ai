@@ -251,6 +251,22 @@ export type OptOutItem = {
   createdAt: string;
 };
 
+export type TagItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  name: string;
+  color: string | null;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ContactTagItem = {
+  createdAt: string;
+  tag: Pick<TagItem, 'id' | 'name' | 'color' | 'description'>;
+};
+
 export type ContactItem = {
   id: string;
   organizationId: string;
@@ -267,6 +283,7 @@ export type ContactItem = {
   channels: ContactChannelItem[];
   consents: ConsentItem[];
   optOuts: OptOutItem[];
+  tags: ContactTagItem[];
 };
 
 export function fetchContacts(token: string, campaignId: string) {
@@ -349,6 +366,69 @@ export function createContactOptOut(
   return request<ContactItem>(
     `/campaigns/${campaignId}/contacts/${contactId}/opt-out`,
     { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function fetchTags(token: string, campaignId: string) {
+  return request<TagItem[]>(`/campaigns/${campaignId}/tags`, {}, token);
+}
+
+export function createTag(
+  token: string,
+  campaignId: string,
+  payload: { name: string; color?: string; description?: string },
+) {
+  return request<TagItem>(
+    `/campaigns/${campaignId}/tags`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateTag(
+  token: string,
+  campaignId: string,
+  tagId: string,
+  payload: { name?: string; color?: string; description?: string },
+) {
+  return request<TagItem>(
+    `/campaigns/${campaignId}/tags/${tagId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function deleteTag(token: string, campaignId: string, tagId: string) {
+  return request<{ success: boolean }>(
+    `/campaigns/${campaignId}/tags/${tagId}`,
+    { method: 'DELETE' },
+    token,
+  );
+}
+
+export function applyContactTag(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  tagId: string,
+) {
+  return request<ContactItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/tags/${tagId}`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function removeContactTag(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  tagId: string,
+) {
+  return request<ContactItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/tags/${tagId}`,
+    { method: 'DELETE' },
     token,
   );
 }

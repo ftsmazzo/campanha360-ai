@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Post,
@@ -71,5 +72,25 @@ export class ContactsController {
     @Body() dto: CreateOptOutDto,
   ) {
     return this.contactsService.createOptOut(user.id, campaignId, contactId, dto);
+  }
+
+  @Post(':contactId/tags/:tagId')
+  applyTag(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('contactId') contactId: string,
+    @Param('tagId') tagId: string,
+  ) {
+    return this.contactsService.applyTag(user.id, campaignId, contactId, tagId);
+  }
+
+  @Delete(':contactId/tags/:tagId')
+  removeTag(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('contactId') contactId: string,
+    @Param('tagId') tagId: string,
+  ) {
+    return this.contactsService.removeTag(user.id, campaignId, contactId, tagId);
   }
 }

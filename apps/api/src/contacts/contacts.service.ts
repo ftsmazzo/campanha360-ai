@@ -65,6 +65,20 @@ const contactSelect = {
     },
     orderBy: { createdAt: 'desc' as const },
   },
+  tags: {
+    select: {
+      createdAt: true,
+      tag: {
+        select: {
+          id: true,
+          name: true,
+          color: true,
+          description: true,
+        },
+      },
+    },
+    orderBy: { createdAt: 'asc' as const },
+  },
 } satisfies Prisma.ContactSelect;
 
 @Injectable()
@@ -349,6 +363,110 @@ export class ContactsService {
         source,
       },
     });
+
+    return this.getById(userId, campaignId, contactId);
+  }
+
+  async applyTag(
+    userId: string,
+    campaignId: string,
+    contactId: string,
+    tagId: string,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    await this.getContactOrThrow(contactId, campaign.organizationId, campaignId);
+
+    const tag = await this.prisma.tag.findFirst({
+      where: {
+        id: tagId,
+        organizationId: campaign.organizationId,
+        campaignId,
+      },
+      select: { id: true, name: true },
+    });
+
+    if (!tag) {
+      throw new NotFoundException('Tag nao encontrada');
+    }
+
+    const existing = await this.prisma.contactTag.findUnique({
+      where: {
+        contactId_tagId: { contactId, tagId },
+      },
+    });
+
+    if (!existing) {
+      await this.prisma.contactTag.create({
+        data: { contactId, tagId },
+      });
+
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'CONTACT_TAG_APPLIED',
+        entityType: 'ContactTag',
+        entityId: contactId,
+        metadata: {
+          contactId,
+          tagId,
+          tagName: tag.name,
+        },
+      });
+    }
+
+    return this.getById(userId, campaignId, contactId);
+  }
+
+  async removeTag(
+    userId: string,
+    campaignId: string,
+    contactId: string,
+    tagId: string,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    await this.getContactOrThrow(contactId, campaign.organizationId, campaignId);
+
+    const tag = await this.prisma.tag.findFirst({
+      where: {
+        id: tagId,
+        organizationId: campaign.organizationId,
+        campaignId,
+      },
+      select: { id: true, name: true },
+    });
+
+    if (!tag) {
+      throw new NotFoundException('Tag nao encontrada');
+    }
+
+    const existing = await this.prisma.contactTag.findUnique({
+      where: {
+        contactId_tagId: { contactId, tagId },
+      },
+    });
+
+    if (existing) {
+      await this.prisma.contactTag.delete({
+        where: {
+          contactId_tagId: { contactId, tagId },
+        },
+      });
+
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'CONTACT_TAG_REMOVED',
+        entityType: 'ContactTag',
+        entityId: contactId,
+        metadata: {
+          contactId,
+          tagId,
+          tagName: tag.name,
+        },
+      });
+    }
 
     return this.getById(userId, campaignId, contactId);
   }

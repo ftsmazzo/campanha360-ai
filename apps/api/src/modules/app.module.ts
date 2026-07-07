@@ -6,6 +6,7 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
 import { ContactsModule } from '../contacts/contacts.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { PrismaModule } from '../prisma/prisma.module';
+import { TagsModule } from '../tags/tags.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -17,6 +18,7 @@ import { HealthController } from './health.controller';
     OrganizationsModule,
     CampaignsModule,
     ContactsModule,
+    TagsModule,
   ],
   controllers: [HealthController],
 })

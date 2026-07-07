@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { TagBadge } from '../../../../../components/tag-badge';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
   ApiError,
@@ -16,6 +17,7 @@ import {
   getStoredToken,
 } from '../../../../../lib/api';
 import { getChannelLabel, getConsentStatusLabel, getContactStatusLabel, hasOptOut } from '../../../../../lib/contacts';
+import { getContactTags } from '../../../../../lib/tags';
 
 export default function CampaignContactsPage() {
   const router = useRouter();
@@ -79,12 +81,20 @@ export default function CampaignContactsPage() {
             <h2 className="text-2xl font-semibold text-[#151515]">Contatos da campanha</h2>
             {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
           </div>
-          <Link
-            className="inline-flex rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white"
-            href={`/dashboard/campaigns/${campaignId}/contacts/new`}
-          >
-            Novo contato
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              className="inline-flex rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white"
+              href={`/dashboard/campaigns/${campaignId}/contacts/new`}
+            >
+              Novo contato
+            </Link>
+            <Link
+              className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
+              href={`/dashboard/campaigns/${campaignId}/tags`}
+            >
+              Tags
+            </Link>
+          </div>
         </div>
 
         {error ? <p className="mt-4 text-sm text-red-700">{error}</p> : null}
@@ -111,6 +121,13 @@ export default function CampaignContactsPage() {
                       {getContactStatusLabel(contact.status)}
                       {hasOptOut(contact) ? ' · Opt-out' : ''}
                     </p>
+                    {getContactTags(contact).length > 0 ? (
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {getContactTags(contact).map((tag) => (
+                          <TagBadge key={tag.id} tag={tag} />
+                        ))}
+                      </div>
+                    ) : null}
                     {contact.consents.length > 0 ? (
                       <div className="mt-2 flex flex-wrap gap-2">
                         {contact.consents.map((consent) => (

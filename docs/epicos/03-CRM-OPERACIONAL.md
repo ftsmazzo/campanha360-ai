@@ -195,6 +195,25 @@ Permitir classificar contatos com tags por campanha.
 
 Usuário consegue criar uma tag e aplicá-la/removê-la de um contato da campanha.
 
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- API `tags` com CRUD por campanha (`GET/POST/PUT/DELETE /campaigns/:campaignId/tags`);
+- aplicação e remoção de tag em contato (`POST/DELETE .../contacts/:contactId/tags/:tagId`);
+- tags incluídas na resposta de contatos (lista e detalhe);
+- audit log: `TAG_CREATED`, `TAG_UPDATED`, `TAG_DELETED`, `CONTACT_TAG_APPLIED`, `CONTACT_TAG_REMOVED`;
+- UI de gestão em `/dashboard/campaigns/[id]/tags`;
+- exibição e gestão de tags na visão 360 do contato;
+- badges de tags na lista de contatos;
+- permissões de escrita: OWNER, ADMIN e MANAGER.
+
+### Migration
+
+Nenhuma migration nova — tabelas `Tag` e `ContactTag` já existiam na migration inicial.
+
 ## 8. Subetapa 03.3 — Notas internas
 
 ### Objetivo
@@ -480,10 +499,10 @@ A campanha deve conseguir:
 
 ## 19. Próximo passo após este documento
 
-A subetapa **03.1 — Visão 360 do contato** está concluída.
+A subetapa **03.2 — Tags manuais** está concluída.
 
 O próximo prompt ao Cursor deve executar apenas:
 
-**03.2 — Tags manuais.**
+**03.3 — Notas internas.**
 
-O Cursor não deve criar notas, tarefas, Evolution, Inbox ou IA nesse passo.
+O Cursor não deve criar tarefas, Evolution, Inbox ou IA nesse passo.
