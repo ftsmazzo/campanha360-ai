@@ -145,6 +145,23 @@ A subetapa estará aceita quando:
 - não houver mudança estrutural desnecessária;
 - typecheck e build passarem.
 
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- `apps/web/app/dashboard/campaigns/[id]/contacts/[contactId]/page.tsx` — visão 360 com seções de leitura e painel de ações;
+- `apps/web/components/contact-section.tsx` — componentes de seção e placeholders CRM;
+- breadcrumb e navegação para campanha e lista de contatos;
+- alerta e destaque visual para opt-out ativo;
+- placeholders para tags, notas, tarefas e timeline (sem funcionalidade);
+- edição, consentimento e opt-out preservados.
+
+### Commit
+
+`0f9b7f3` — Implementa visão 360 do contato (subetapa 03.1).
+
 ## 7. Subetapa 03.2 — Tags manuais
 
 ### Objetivo
@@ -463,8 +480,10 @@ A campanha deve conseguir:
 
 ## 19. Próximo passo após este documento
 
-Depois de salvar este documento no repo, o próximo prompt ao Cursor deve executar apenas:
+A subetapa **03.1 — Visão 360 do contato** está concluída.
 
-03.1 — Visão 360 do contato.
+O próximo prompt ao Cursor deve executar apenas:
 
-O Cursor não deve criar tags, notas, tarefas, Evolution, Inbox ou IA nesse primeiro passo.
+**03.2 — Tags manuais.**
+
+O Cursor não deve criar notas, tarefas, Evolution, Inbox ou IA nesse passo.
