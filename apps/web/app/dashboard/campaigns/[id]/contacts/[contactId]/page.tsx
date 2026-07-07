@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { ContactSection, CrmPlaceholder } from '../../../../../../components/contact-section';
 import { DashboardShell } from '../../../../../../components/dashboard-shell';
 import {
   ApiError,
@@ -18,12 +19,14 @@ import {
   updateContact,
   upsertContactConsent,
 } from '../../../../../../lib/api';
+import { getPhaseLabel, getStatusLabel } from '../../../../../../lib/campaigns';
 import {
   CONSENT_STATUSES,
   CONTACT_CHANNELS,
   CONTACT_STATUSES,
   getChannelLabel,
   getConsentStatusLabel,
+  getContactStatusLabel,
   hasOptOut,
 } from '../../../../../../lib/contacts';
 
@@ -37,7 +40,39 @@ function parseMetadata(value: string) {
   return JSON.parse(value) as Record<string, unknown>;
 }
 
-export default function EditContactPage() {
+function formatDate(value: string) {
+  return new Date(value).toLocaleString('pt-BR');
+}
+
+function ContactBreadcrumb({
+  campaignId,
+  campaignName,
+  contactName,
+}: {
+  campaignId: string;
+  campaignName?: string;
+  contactName: string;
+}) {
+  return (
+    <nav aria-label="Navegacao" className="flex flex-wrap items-center gap-2 text-sm text-[#65655f]">
+      <Link className="underline hover:text-[#24382b]" href="/dashboard/campaigns">
+        Campanhas
+      </Link>
+      <span aria-hidden="true">/</span>
+      <Link className="underline hover:text-[#24382b]" href={`/dashboard/campaigns/${campaignId}`}>
+        {campaignName ?? 'Campanha'}
+      </Link>
+      <span aria-hidden="true">/</span>
+      <Link className="underline hover:text-[#24382b]" href={`/dashboard/campaigns/${campaignId}/contacts`}>
+        Contatos
+      </Link>
+      <span aria-hidden="true">/</span>
+      <span className="font-medium text-[#151515]">{contactName}</span>
+    </nav>
+  );
+}
+
+export default function ContactDetailPage() {
   const router = useRouter();
   const params = useParams<{ id: string; contactId: string }>();
   const campaignId = params.id;
@@ -204,135 +239,404 @@ export default function EditContactPage() {
 
   if (!contact) return null;
 
+  const displayName = contact.name?.trim() || 'Contato sem nome';
+  const contactHasOptOut = hasOptOut(contact);
+
   return (
     <DashboardShell userName={user?.name}>
-      <div className="max-w-3xl space-y-6">
-        <Link className="text-sm text-[#24382b] underline" href={`/dashboard/campaigns/${campaignId}/contacts`}>
-          Voltar para contatos
-        </Link>
-        <div>
-          <h2 className="text-2xl font-semibold text-[#151515]">Editar contato</h2>
-          {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
-          {hasOptOut(contact) ? (
-            <p className="mt-2 text-sm font-medium text-red-700">Este contato possui opt-out registrado.</p>
-          ) : null}
+      <div className="space-y-6">
+        <ContactBreadcrumb
+          campaignId={campaignId}
+          campaignName={campaign?.name}
+          contactName={displayName}
+        />
+
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <h2 className="text-2xl font-semibold text-[#151515]">Visao 360 do contato</h2>
+            <p className="mt-1 text-sm text-[#65655f]">
+              Central de informacoes e acoes do eleitor nesta campanha.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link
+              className="rounded-md border border-[#24382b] px-3 py-2 text-sm font-medium text-[#24382b] hover:bg-[#eef2ea]"
+              href={`/dashboard/campaigns/${campaignId}/contacts`}
+            >
+              Voltar para contatos
+            </Link>
+            {campaign ? (
+              <Link
+                className="rounded-md border border-[#d7d6cd] px-3 py-2 text-sm font-medium text-[#65655f] hover:bg-[#f7f7f5]"
+                href={`/dashboard/campaigns/${campaignId}`}
+              >
+                Ir para campanha
+              </Link>
+            ) : null}
+          </div>
         </div>
 
-        <form className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleSubmit}>
-          <h3 className="font-medium text-[#24382b]">Dados do eleitor</h3>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Nome</span>
-            <input className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" value={name} onChange={(e) => setName(e.target.value)} />
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Telefone</span>
-            <input className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" value={phoneNumber} onChange={(e) => setPhoneNumber(e.target.value)} />
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">E-mail</span>
-            <input className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Cidade</span>
-            <input className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" value={city} onChange={(e) => setCity(e.target.value)} />
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Bairro</span>
-            <input className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" value={neighborhood} onChange={(e) => setNeighborhood(e.target.value)} />
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Status</span>
-            <select className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" value={status} onChange={(e) => setStatus(e.target.value)}>
-              {CONTACT_STATUSES.map((item) => (
-                <option key={item.value} value={item.value}>{item.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Metadata (JSON)</span>
-            <textarea className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2 font-mono text-sm" rows={4} value={metadata} onChange={(e) => setMetadata(e.target.value)} />
-          </label>
-
-          {contact.channels.length > 0 ? (
-            <div>
-              <p className="text-sm font-medium text-[#34342f]">Canais sincronizados</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {contact.channels.map((channel) => (
-                  <span key={channel.id} className="rounded-full bg-[#eef2ea] px-2 py-1 text-xs text-[#47624f]">
-                    {getChannelLabel(channel.channel)}: {channel.value}
-                  </span>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          <button className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60" type="submit" disabled={saving}>
-            {saving ? 'Salvando...' : 'Salvar contato'}
-          </button>
-        </form>
-
-        <form className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleConsentSubmit}>
-          <h3 className="font-medium text-[#24382b]">Consentimento por canal</h3>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Canal</span>
-            <select className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" value={consentChannel} onChange={(e) => setConsentChannel(e.target.value)}>
-              {CONTACT_CHANNELS.map((item) => (
-                <option key={item.value} value={item.value}>{item.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Status</span>
-            <select className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" value={consentStatus} onChange={(e) => setConsentStatus(e.target.value)}>
-              {CONSENT_STATUSES.map((item) => (
-                <option key={item.value} value={item.value}>{item.label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Origem</span>
-            <input className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" value={consentSource} onChange={(e) => setConsentSource(e.target.value)} />
-          </label>
-          <label className="block">
-            <span className="text-sm font-medium text-[#34342f]">Texto do consentimento</span>
-            <textarea className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" rows={3} value={consentText} onChange={(e) => setConsentText(e.target.value)} />
-          </label>
-          {contact.consents.length > 0 ? (
-            <div className="space-y-2">
-              {contact.consents.map((consent) => (
-                <p key={consent.id} className="text-sm text-[#65655f]">
-                  {getChannelLabel(consent.channel)}: {getConsentStatusLabel(consent.status)}
-                  {consent.source ? ` · origem ${consent.source}` : ''}
-                </p>
-              ))}
-            </div>
-          ) : null}
-          <button className="rounded-md border border-[#24382b] px-4 py-2 text-sm font-semibold text-[#24382b] disabled:opacity-60" type="submit" disabled={savingConsent}>
-            {savingConsent ? 'Salvando...' : 'Salvar consentimento'}
-          </button>
-        </form>
-
-        <section className="rounded-md border border-[#deddd4] bg-white p-4">
-          <h3 className="font-medium text-[#24382b]">Opt-out</h3>
-          <p className="mt-2 text-sm text-[#65655f]">
-            Registra opt-out no canal selecionado e bloqueia o contato para envios futuros.
-          </p>
-          <label className="mt-4 block">
-            <span className="text-sm font-medium text-[#34342f]">Motivo</span>
-            <input className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2" value={optOutReason} onChange={(e) => setOptOutReason(e.target.value)} />
-          </label>
-          <button
-            className="mt-4 rounded-md bg-red-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-            type="button"
-            disabled={savingOptOut || hasOptOut(contact)}
-            onClick={handleOptOut}
+        {contactHasOptOut ? (
+          <div
+            className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-red-900"
+            role="alert"
           >
-            {savingOptOut ? 'Registrando...' : 'Registrar opt-out'}
-          </button>
-        </section>
+            <p className="font-semibold">Contato com opt-out ativo</p>
+            <p className="mt-1 text-sm">
+              Este contato nao deve receber novos envios nos canais com opt-out registrado.
+            </p>
+          </div>
+        ) : null}
 
         {error ? <p className="text-sm text-red-700">{error}</p> : null}
         {success ? <p className="text-sm text-[#47624f]">{success}</p> : null}
+
+        <div className="grid gap-6 lg:grid-cols-3">
+          <div className="space-y-6 lg:col-span-2">
+            <ContactSection title="Dados basicos">
+              <dl className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Nome</dt>
+                  <dd className="mt-1 text-sm text-[#151515]">{contact.name?.trim() || '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Status</dt>
+                  <dd className="mt-1">
+                    <span className="inline-flex rounded-full bg-[#eef2ea] px-2 py-1 text-xs font-medium text-[#47624f]">
+                      {getContactStatusLabel(contact.status)}
+                    </span>
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Telefone</dt>
+                  <dd className="mt-1 text-sm text-[#151515]">{contact.phoneNumber?.trim() || '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">E-mail</dt>
+                  <dd className="mt-1 text-sm text-[#151515]">{contact.email?.trim() || '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Cidade</dt>
+                  <dd className="mt-1 text-sm text-[#151515]">{contact.city?.trim() || '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Bairro</dt>
+                  <dd className="mt-1 text-sm text-[#151515]">{contact.neighborhood?.trim() || '—'}</dd>
+                </div>
+              </dl>
+              {contact.metadata ? (
+                <div className="mt-4">
+                  <p className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Metadata</p>
+                  <pre className="mt-1 overflow-x-auto rounded-md bg-[#f7f7f5] p-3 font-mono text-xs text-[#34342f]">
+                    {metadataToText(contact.metadata)}
+                  </pre>
+                </div>
+              ) : null}
+            </ContactSection>
+
+            {campaign ? (
+              <ContactSection
+                title="Campanha relacionada"
+                description="Contexto da campanha em que este contato esta cadastrado."
+              >
+                <dl className="grid gap-4 sm:grid-cols-2">
+                  <div>
+                    <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Nome</dt>
+                    <dd className="mt-1 text-sm font-medium text-[#151515]">{campaign.name}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Fase</dt>
+                    <dd className="mt-1 text-sm text-[#151515]">{getPhaseLabel(campaign.phase)}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Status</dt>
+                    <dd className="mt-1 text-sm text-[#151515]">{getStatusLabel(campaign.status)}</dd>
+                  </div>
+                </dl>
+                <Link
+                  className="mt-4 inline-block text-sm font-medium text-[#24382b] underline"
+                  href={`/dashboard/campaigns/${campaignId}`}
+                >
+                  Abrir campanha
+                </Link>
+              </ContactSection>
+            ) : null}
+
+            <ContactSection
+              title="Canais do contato"
+              description="Canais sincronizados a partir dos dados cadastrais."
+            >
+              {contact.channels.length > 0 ? (
+                <ul className="space-y-2">
+                  {contact.channels.map((channel) => (
+                    <li
+                      key={channel.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-[#eef2ea] bg-[#f7f7f5] px-3 py-2"
+                    >
+                      <div>
+                        <p className="text-sm font-medium text-[#24382b]">{getChannelLabel(channel.channel)}</p>
+                        <p className="text-sm text-[#65655f]">{channel.value}</p>
+                      </div>
+                      {channel.isPrimary ? (
+                        <span className="rounded-full bg-[#eef2ea] px-2 py-1 text-xs font-medium text-[#47624f]">
+                          Principal
+                        </span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-[#65655f]">Nenhum canal sincronizado ainda.</p>
+              )}
+            </ContactSection>
+
+            <ContactSection
+              title="Consentimentos"
+              description="Historico de consentimento por canal."
+            >
+              {contact.consents.length > 0 ? (
+                <ul className="space-y-2">
+                  {contact.consents.map((consent) => (
+                    <li
+                      key={consent.id}
+                      className="rounded-md border border-[#eef2ea] bg-[#f7f7f5] px-3 py-2 text-sm text-[#34342f]"
+                    >
+                      <p className="font-medium text-[#24382b]">
+                        {getChannelLabel(consent.channel)} · {getConsentStatusLabel(consent.status)}
+                      </p>
+                      <p className="mt-1 text-[#65655f]">
+                        {consent.source ? `Origem: ${consent.source}` : 'Origem nao informada'}
+                        {consent.collectedAt ? ` · ${formatDate(consent.collectedAt)}` : ''}
+                      </p>
+                      {consent.consentText ? (
+                        <p className="mt-1 text-[#65655f]">{consent.consentText}</p>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-[#65655f]">Nenhum consentimento registrado.</p>
+              )}
+            </ContactSection>
+
+            <ContactSection
+              title="Opt-out"
+              description="Registros de exclusao de comunicacao por canal."
+              className={contactHasOptOut ? 'border-red-300 bg-red-50' : ''}
+            >
+              {contact.optOuts.length > 0 ? (
+                <ul className="space-y-2">
+                  {contact.optOuts.map((optOut) => (
+                    <li
+                      key={optOut.id}
+                      className="rounded-md border border-red-200 bg-white px-3 py-2 text-sm text-red-900"
+                    >
+                      <p className="font-medium">
+                        {optOut.channel ? getChannelLabel(optOut.channel) : 'Geral'} · opt-out registrado
+                      </p>
+                      <p className="mt-1 text-red-800">
+                        {optOut.reason ? `Motivo: ${optOut.reason}` : 'Motivo nao informado'}
+                        {optOut.createdAt ? ` · ${formatDate(optOut.createdAt)}` : ''}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              ) : contact.consents.some((consent) => consent.status === 'OPT_OUT') ? (
+                <p className="text-sm font-medium text-red-800">
+                  Consentimento marcado como opt-out em pelo menos um canal.
+                </p>
+              ) : contact.status === 'BLOCKED' ? (
+                <p className="text-sm font-medium text-red-800">
+                  Contato bloqueado — tratado como opt-out operacional.
+                </p>
+              ) : (
+                <p className="text-sm text-[#65655f]">Nenhum opt-out registrado.</p>
+              )}
+            </ContactSection>
+
+            <CrmPlaceholder
+              title="Tags"
+              description="Classificacao e segmentacao do contato."
+            />
+            <CrmPlaceholder
+              title="Notas internas"
+              description="Anotacoes da equipe sobre o relacionamento."
+            />
+            <CrmPlaceholder
+              title="Tarefas e follow-ups"
+              description="Pendencias e proximos passos com o eleitor."
+            />
+            <CrmPlaceholder
+              title="Timeline"
+              description="Historico unificado de interacoes e eventos."
+            />
+          </div>
+
+          <div className="space-y-6">
+            <form className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleSubmit}>
+              <div>
+                <h3 className="font-medium text-[#24382b]">Editar contato</h3>
+                <p className="mt-1 text-sm text-[#65655f]">Atualize os dados cadastrais do eleitor.</p>
+              </div>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Nome</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Telefone</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  value={phoneNumber}
+                  onChange={(e) => setPhoneNumber(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">E-mail</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Cidade</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  value={city}
+                  onChange={(e) => setCity(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Bairro</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  value={neighborhood}
+                  onChange={(e) => setNeighborhood(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Status</span>
+                <select
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  value={status}
+                  onChange={(e) => setStatus(e.target.value)}
+                >
+                  {CONTACT_STATUSES.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Metadata (JSON)</span>
+                <textarea
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2 font-mono text-sm"
+                  rows={4}
+                  value={metadata}
+                  onChange={(e) => setMetadata(e.target.value)}
+                />
+              </label>
+              <button
+                className="w-full rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                type="submit"
+                disabled={saving}
+              >
+                {saving ? 'Salvando...' : 'Salvar contato'}
+              </button>
+            </form>
+
+            <form
+              className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4"
+              onSubmit={handleConsentSubmit}
+            >
+              <div>
+                <h3 className="font-medium text-[#24382b]">Registrar consentimento</h3>
+                <p className="mt-1 text-sm text-[#65655f]">Atualize o consentimento por canal.</p>
+              </div>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Canal</span>
+                <select
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  value={consentChannel}
+                  onChange={(e) => setConsentChannel(e.target.value)}
+                >
+                  {CONTACT_CHANNELS.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Status</span>
+                <select
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  value={consentStatus}
+                  onChange={(e) => setConsentStatus(e.target.value)}
+                >
+                  {CONSENT_STATUSES.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Origem</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  value={consentSource}
+                  onChange={(e) => setConsentSource(e.target.value)}
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-[#34342f]">Texto do consentimento</span>
+                <textarea
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  rows={3}
+                  value={consentText}
+                  onChange={(e) => setConsentText(e.target.value)}
+                />
+              </label>
+              <button
+                className="w-full rounded-md border border-[#24382b] px-4 py-2 text-sm font-semibold text-[#24382b] disabled:opacity-60"
+                type="submit"
+                disabled={savingConsent}
+              >
+                {savingConsent ? 'Salvando...' : 'Salvar consentimento'}
+              </button>
+            </form>
+
+            <section className="rounded-md border border-[#deddd4] bg-white p-4">
+              <h3 className="font-medium text-[#24382b]">Registrar opt-out</h3>
+              <p className="mt-1 text-sm text-[#65655f]">
+                Registra opt-out no canal selecionado e bloqueia o contato para envios futuros.
+              </p>
+              <label className="mt-4 block">
+                <span className="text-sm font-medium text-[#34342f]">Motivo</span>
+                <input
+                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                  value={optOutReason}
+                  onChange={(e) => setOptOutReason(e.target.value)}
+                />
+              </label>
+              <button
+                className="mt-4 w-full rounded-md bg-red-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                type="button"
+                disabled={savingOptOut || contactHasOptOut}
+                onClick={handleOptOut}
+              >
+                {savingOptOut ? 'Registrando...' : 'Registrar opt-out'}
+              </button>
+            </section>
+          </div>
+        </div>
       </div>
     </DashboardShell>
   );
