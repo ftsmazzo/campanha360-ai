@@ -198,6 +198,33 @@ export class CampaignsService {
     return candidate;
   }
 
+  async listMembers(userId: string, campaignId: string) {
+    const campaign = await this.getCampaignOrThrow(campaignId);
+    await this.organizationAccess.requireMembership(userId, campaign.organizationId);
+
+    const memberships = await this.prisma.membership.findMany({
+      where: { organizationId: campaign.organizationId },
+      select: {
+        role: true,
+        user: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return memberships.map((membership) => ({
+      id: membership.user.id,
+      name: membership.user.name,
+      email: membership.user.email,
+      role: membership.role,
+    }));
+  }
+
   private async getCampaignOrThrow(campaignId: string) {
     const campaign = await this.prisma.campaign.findUnique({
       where: { id: campaignId },

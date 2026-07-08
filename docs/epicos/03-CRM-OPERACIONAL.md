@@ -308,6 +308,25 @@ Permitir criar tarefas operacionais vinculadas a contatos.
 
 Usuário consegue criar uma tarefa, vê-la no contato e marcá-la como concluída.
 
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- modelo `ContactTask` com status `OPEN`, `IN_PROGRESS`, `DONE`, `CANCELED`;
+- migration `20260708140000_contact_tasks`;
+- API `GET/POST/PUT /campaigns/:campaignId/contacts/:contactId/tasks`;
+- `GET /campaigns/:campaignId/members` para seleção de responsável;
+- listagem na visão 360 com título, status, responsável, data prevista e conclusão;
+- criação, edição, conclusão e cancelamento no painel lateral;
+- audit log: `CONTACT_TASK_CREATED`, `CONTACT_TASK_UPDATED`, `CONTACT_TASK_COMPLETED`, `CONTACT_TASK_CANCELED`;
+- VIEWER visualiza; OWNER/ADMIN/MANAGER operam tarefas.
+
+### Migration
+
+`20260708140000_contact_tasks` — cria enum `ContactTaskStatus` e tabela `ContactTask`. No deploy, aplicada automaticamente via `prisma migrate deploy`.
+
 ## 10. Subetapa 03.5 — Responsável e status operacional
 
 ### Objetivo
@@ -517,10 +536,10 @@ A campanha deve conseguir:
 
 ## 19. Próximo passo após este documento
 
-A subetapa **03.3 — Notas internas** está concluída.
+A subetapa **03.4 — Tarefas e follow-ups** está concluída.
 
 O próximo prompt ao Cursor deve executar apenas:
 
-**03.4 — Tarefas e follow-ups.**
+**03.5 — Responsável e status operacional.**
 
-O Cursor não deve implementar responsável/status operacional, filtros, Evolution, Inbox ou IA nesse passo.
+O Cursor não deve implementar filtros, timeline real, Evolution, Inbox ou IA nesse passo.

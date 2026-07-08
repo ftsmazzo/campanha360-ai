@@ -4,6 +4,7 @@ import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
 import { ContactNotesModule } from '../contact-notes/contact-notes.module';
+import { ContactTasksModule } from '../contact-tasks/contact-tasks.module';
 import { ContactsModule } from '../contacts/contacts.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { PrismaModule } from '../prisma/prisma.module';
@@ -21,6 +22,7 @@ import { HealthController } from './health.controller';
     ContactsModule,
     TagsModule,
     ContactNotesModule,
+    ContactTasksModule,
   ],
   controllers: [HealthController],
 })

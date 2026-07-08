@@ -49,6 +49,11 @@ export class CampaignsController {
     return this.campaignsService.getCandidate(user.id, id);
   }
 
+  @Get(':id/members')
+  listMembers(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.campaignsService.listMembers(user.id, id);
+  }
+
   @Put(':id/candidate')
   upsertCandidate(
     @CurrentUser() user: AuthUser,

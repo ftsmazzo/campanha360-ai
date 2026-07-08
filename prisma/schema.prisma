@@ -63,6 +63,13 @@ enum ConsentStatus {
   OPT_OUT
 }
 
+enum ContactTaskStatus {
+  OPEN
+  IN_PROGRESS
+  DONE
+  CANCELED
+}
+
 enum ChannelProvider {
   WHATSAPP_EVOLUTION
   WHATSAPP_CLOUD_API
@@ -92,6 +99,8 @@ model User {
   memberships  Membership[]
   auditLogs    AuditLog[]
   contactNotes ContactNote[]
+  createdContactTasks ContactTask[] @relation("ContactTaskCreatedBy")
+  assignedContactTasks ContactTask[] @relation("ContactTaskAssignedTo")
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 }
@@ -169,6 +178,7 @@ model Contact {
   optOuts        OptOut[]
   tags           ContactTag[]
   notes          ContactNote[]
+  tasks          ContactTask[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
@@ -259,6 +269,28 @@ model ContactNote {
   updatedAt      DateTime @updatedAt
 
   @@index([organizationId, campaignId, contactId])
+}
+
+model ContactTask {
+  id               String            @id @default(cuid())
+  organizationId   String
+  campaignId       String
+  contactId        String
+  createdByUserId  String
+  assignedToUserId String?
+  title            String
+  description      String?
+  status           ContactTaskStatus @default(OPEN)
+  dueAt            DateTime?
+  completedAt      DateTime?
+  contact          Contact           @relation(fields: [contactId], references: [id])
+  createdBy        User              @relation("ContactTaskCreatedBy", fields: [createdByUserId], references: [id])
+  assignedTo       User?             @relation("ContactTaskAssignedTo", fields: [assignedToUserId], references: [id])
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([organizationId, campaignId, contactId])
+  @@index([organizationId, campaignId, status])
 }
 
 model ChannelAccount {

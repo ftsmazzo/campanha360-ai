@@ -10,22 +10,28 @@ import {
   ApiError,
   AuthUser,
   CampaignItem,
+  CampaignMemberItem,
   ContactItem,
   ContactNoteItem,
+  ContactTaskItem,
   TagItem,
   applyContactTag,
   clearStoredToken,
   createContactNote,
   createContactOptOut,
+  createContactTask,
   fetchCampaign,
+  fetchCampaignMembers,
   fetchContact,
   fetchContactNotes,
+  fetchContactTasks,
   fetchMe,
   fetchTags,
   getStoredToken,
   removeContactTag,
   updateContact,
   updateContactNote,
+  updateContactTask,
   upsertContactConsent,
 } from '../../../../../../lib/api';
 import { getPhaseLabel, getStatusLabel } from '../../../../../../lib/campaigns';
@@ -39,6 +45,7 @@ import {
   hasOptOut,
 } from '../../../../../../lib/contacts';
 import { canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
+import { CONTACT_TASK_STATUSES, getTaskStatusLabel, isTaskOpen } from '../../../../../../lib/tasks';
 import { getContactTags } from '../../../../../../lib/tags';
 
 function metadataToText(value: Record<string, unknown> | null) {
@@ -53,6 +60,11 @@ function parseMetadata(value: string) {
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString('pt-BR');
+}
+
+function toDateInputValue(value: string | null) {
+  if (!value) return '';
+  return value.slice(0, 10);
 }
 
 function ContactBreadcrumb({
@@ -109,12 +121,21 @@ export default function ContactDetailPage() {
   const [notes, setNotes] = useState<ContactNoteItem[]>([]);
   const [noteBody, setNoteBody] = useState('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<ContactTaskItem[]>([]);
+  const [members, setMembers] = useState<CampaignMemberItem[]>([]);
+  const [taskTitle, setTaskTitle] = useState('');
+  const [taskDescription, setTaskDescription] = useState('');
+  const [taskAssigneeId, setTaskAssigneeId] = useState('');
+  const [taskDueAt, setTaskDueAt] = useState('');
+  const [taskStatus, setTaskStatus] = useState('OPEN');
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingConsent, setSavingConsent] = useState(false);
   const [savingOptOut, setSavingOptOut] = useState(false);
   const [savingTag, setSavingTag] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
+  const [savingTask, setSavingTask] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -145,17 +166,22 @@ export default function ContactDetailPage() {
       }
 
       try {
-        const [me, campaignItem, contactItem, tagItems, noteItems] = await Promise.all([
+        const [me, campaignItem, contactItem, tagItems, noteItems, taskItems, memberItems] =
+          await Promise.all([
           fetchMe(token),
           fetchCampaign(token, campaignId),
           fetchContact(token, campaignId, contactId),
           fetchTags(token, campaignId),
           fetchContactNotes(token, campaignId, contactId),
+          fetchContactTasks(token, campaignId, contactId),
+          fetchCampaignMembers(token, campaignId),
         ]);
         setUser(me);
         setCampaign(campaignItem);
         setCampaignTags(tagItems);
         setNotes(noteItems);
+        setTasks(taskItems);
+        setMembers(memberItems);
         fillContact(contactItem);
       } catch {
         clearStoredToken();
@@ -334,6 +360,113 @@ export default function ContactDetailPage() {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel salvar a nota');
     } finally {
       setSavingNote(false);
+    }
+  }
+
+  function resetTaskForm() {
+    setTaskTitle('');
+    setTaskDescription('');
+    setTaskAssigneeId('');
+    setTaskDueAt('');
+    setTaskStatus('OPEN');
+    setEditingTaskId(null);
+  }
+
+  function startEditTask(task: ContactTaskItem) {
+    setEditingTaskId(task.id);
+    setTaskTitle(task.title);
+    setTaskDescription(task.description ?? '');
+    setTaskAssigneeId(task.assignedTo?.id ?? '');
+    setTaskDueAt(toDateInputValue(task.dueAt));
+    setTaskStatus(task.status);
+    setError(null);
+    setSuccess(null);
+  }
+
+  function replaceTask(updated: ContactTaskItem) {
+    setTasks((current) =>
+      current.map((item) => (item.id === updated.id ? updated : item)),
+    );
+  }
+
+  async function handleTaskSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const token = getStoredToken();
+    if (!token || !taskTitle.trim()) return;
+
+    setSavingTask(true);
+    setError(null);
+    setSuccess(null);
+
+    const payload = {
+      title: taskTitle,
+      description: taskDescription || undefined,
+      assignedToUserId: taskAssigneeId || undefined,
+      dueAt: taskDueAt || undefined,
+      status: taskStatus,
+    };
+
+    try {
+      if (editingTaskId) {
+        const updated = await updateContactTask(token, campaignId, contactId, editingTaskId, {
+          ...payload,
+          assignedToUserId: taskAssigneeId || null,
+          dueAt: taskDueAt || null,
+        });
+        replaceTask(updated);
+        setSuccess('Tarefa atualizada com sucesso.');
+      } else {
+        const created = await createContactTask(token, campaignId, contactId, payload);
+        setTasks((current) => [created, ...current]);
+        setSuccess('Tarefa criada com sucesso.');
+      }
+      resetTaskForm();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel salvar a tarefa');
+    } finally {
+      setSavingTask(false);
+    }
+  }
+
+  async function handleCompleteTask(taskId: string) {
+    const token = getStoredToken();
+    if (!token) return;
+
+    setSavingTask(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const updated = await updateContactTask(token, campaignId, contactId, taskId, {
+        status: 'DONE',
+      });
+      replaceTask(updated);
+      setSuccess('Tarefa concluida com sucesso.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel concluir a tarefa');
+    } finally {
+      setSavingTask(false);
+    }
+  }
+
+  async function handleCancelTask(taskId: string) {
+    const token = getStoredToken();
+    if (!token) return;
+
+    setSavingTask(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const updated = await updateContactTask(token, campaignId, contactId, taskId, {
+        status: 'CANCELED',
+      });
+      replaceTask(updated);
+      setSuccess('Tarefa cancelada com sucesso.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel cancelar a tarefa');
+    } finally {
+      setSavingTask(false);
     }
   }
 
@@ -629,10 +762,84 @@ export default function ContactDetailPage() {
                 <p className="text-sm text-[#65655f]">Nenhuma nota interna registrada.</p>
               )}
             </ContactSection>
-            <CrmPlaceholder
+
+            <ContactSection
               title="Tarefas e follow-ups"
-              description="Pendencias e proximos passos com o eleitor."
-            />
+              description="Pendencias operacionais vinculadas a este contato."
+            >
+              {tasks.length > 0 ? (
+                <ul className="space-y-3">
+                  {tasks.map((task) => (
+                    <li
+                      key={task.id}
+                      className="rounded-md border border-[#eef2ea] bg-[#f7f7f5] px-3 py-3 text-sm text-[#34342f]"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="font-medium text-[#24382b]">{task.title}</p>
+                          <p className="mt-1 text-xs text-[#65655f]">
+                            {getTaskStatusLabel(task.status)}
+                            {task.assignedTo ? ` · ${task.assignedTo.name}` : ''}
+                            {task.dueAt ? ` · prevista ${formatDate(task.dueAt)}` : ''}
+                          </p>
+                        </div>
+                        <span className="rounded-full bg-[#eef2ea] px-2 py-1 text-xs font-medium text-[#47624f]">
+                          {getTaskStatusLabel(task.status)}
+                        </span>
+                      </div>
+                      {task.description ? (
+                        <p className="mt-2 whitespace-pre-wrap text-[#65655f]">{task.description}</p>
+                      ) : null}
+                      <p className="mt-2 text-xs text-[#65655f]">
+                        Criada por {task.createdBy.name} em {formatDate(task.createdAt)}
+                        {task.completedAt ? ` · concluida em ${formatDate(task.completedAt)}` : ''}
+                      </p>
+                      {canWrite ? (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {isTaskOpen(task.status) ? (
+                            <>
+                              <button
+                                className="text-xs font-medium text-[#24382b] underline"
+                                type="button"
+                                onClick={() => startEditTask(task)}
+                              >
+                                Editar
+                              </button>
+                              <button
+                                className="text-xs font-medium text-[#47624f] underline"
+                                type="button"
+                                disabled={savingTask}
+                                onClick={() => handleCompleteTask(task.id)}
+                              >
+                                Concluir
+                              </button>
+                              <button
+                                className="text-xs font-medium text-red-800 underline"
+                                type="button"
+                                disabled={savingTask}
+                                onClick={() => handleCancelTask(task.id)}
+                              >
+                                Cancelar
+                              </button>
+                            </>
+                          ) : (
+                            <button
+                              className="text-xs font-medium text-[#24382b] underline"
+                              type="button"
+                              onClick={() => startEditTask(task)}
+                            >
+                              Editar
+                            </button>
+                          )}
+                        </div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-[#65655f]">Nenhuma tarefa registrada.</p>
+              )}
+            </ContactSection>
             <CrmPlaceholder
               title="Timeline"
               description="Historico unificado de interacoes e eventos."
@@ -822,6 +1029,101 @@ export default function ContactDetailPage() {
                   </p>
                 )}
               </section>
+            ) : null}
+
+            {canWrite ? (
+              <form
+                className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4"
+                onSubmit={handleTaskSubmit}
+              >
+                <div>
+                  <h3 className="font-medium text-[#24382b]">
+                    {editingTaskId ? 'Editar tarefa' : 'Nova tarefa'}
+                  </h3>
+                  <p className="mt-1 text-sm text-[#65655f]">
+                    Follow-up operacional interno para este contato.
+                  </p>
+                </div>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Titulo</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={taskTitle}
+                    onChange={(event) => setTaskTitle(event.target.value)}
+                    required
+                    minLength={2}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Descricao</span>
+                  <textarea
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    rows={3}
+                    value={taskDescription}
+                    onChange={(event) => setTaskDescription(event.target.value)}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Responsavel</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={taskAssigneeId}
+                    onChange={(event) => setTaskAssigneeId(event.target.value)}
+                  >
+                    <option value="">Sem responsavel</option>
+                    {members.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Data prevista</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    type="date"
+                    value={taskDueAt}
+                    onChange={(event) => setTaskDueAt(event.target.value)}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Status</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={taskStatus}
+                    onChange={(event) => setTaskStatus(event.target.value)}
+                  >
+                    {CONTACT_TASK_STATUSES.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    type="submit"
+                    disabled={savingTask || !taskTitle.trim()}
+                  >
+                    {savingTask
+                      ? 'Salvando...'
+                      : editingTaskId
+                        ? 'Salvar tarefa'
+                        : 'Criar tarefa'}
+                  </button>
+                  {editingTaskId ? (
+                    <button
+                      className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
+                      type="button"
+                      onClick={resetTaskForm}
+                    >
+                      Cancelar
+                    </button>
+                  ) : null}
+                </div>
+              </form>
             ) : null}
 
             {canWrite ? (

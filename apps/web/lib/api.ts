@@ -484,3 +484,83 @@ export function updateContactNote(
     token,
   );
 }
+
+export type CampaignMemberItem = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+};
+
+export type ContactTaskUser = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+export type ContactTaskItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  contactId: string;
+  title: string;
+  description: string | null;
+  status: string;
+  dueAt: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: ContactTaskUser;
+  assignedTo: ContactTaskUser | null;
+};
+
+export function fetchCampaignMembers(token: string, campaignId: string) {
+  return request<CampaignMemberItem[]>(`/campaigns/${campaignId}/members`, {}, token);
+}
+
+export function fetchContactTasks(token: string, campaignId: string, contactId: string) {
+  return request<ContactTaskItem[]>(
+    `/campaigns/${campaignId}/contacts/${contactId}/tasks`,
+    {},
+    token,
+  );
+}
+
+export function createContactTask(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  payload: {
+    title: string;
+    description?: string;
+    assignedToUserId?: string;
+    dueAt?: string;
+    status?: string;
+  },
+) {
+  return request<ContactTaskItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/tasks`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateContactTask(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  taskId: string,
+  payload: {
+    title?: string;
+    description?: string;
+    assignedToUserId?: string | null;
+    dueAt?: string | null;
+    status?: string;
+  },
+) {
+  return request<ContactTaskItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/tasks/${taskId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}
