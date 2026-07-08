@@ -11,17 +11,21 @@ import {
   AuthUser,
   CampaignItem,
   ContactItem,
+  ContactNoteItem,
   TagItem,
   applyContactTag,
   clearStoredToken,
+  createContactNote,
   createContactOptOut,
   fetchCampaign,
   fetchContact,
+  fetchContactNotes,
   fetchMe,
   fetchTags,
   getStoredToken,
   removeContactTag,
   updateContact,
+  updateContactNote,
   upsertContactConsent,
 } from '../../../../../../lib/api';
 import { getPhaseLabel, getStatusLabel } from '../../../../../../lib/campaigns';
@@ -102,11 +106,15 @@ export default function ContactDetailPage() {
   const [optOutReason, setOptOutReason] = useState('');
   const [campaignTags, setCampaignTags] = useState<TagItem[]>([]);
   const [selectedTagId, setSelectedTagId] = useState('');
+  const [notes, setNotes] = useState<ContactNoteItem[]>([]);
+  const [noteBody, setNoteBody] = useState('');
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingConsent, setSavingConsent] = useState(false);
   const [savingOptOut, setSavingOptOut] = useState(false);
   const [savingTag, setSavingTag] = useState(false);
+  const [savingNote, setSavingNote] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -137,15 +145,17 @@ export default function ContactDetailPage() {
       }
 
       try {
-        const [me, campaignItem, contactItem, tagItems] = await Promise.all([
+        const [me, campaignItem, contactItem, tagItems, noteItems] = await Promise.all([
           fetchMe(token),
           fetchCampaign(token, campaignId),
           fetchContact(token, campaignId, contactId),
           fetchTags(token, campaignId),
+          fetchContactNotes(token, campaignId, contactId),
         ]);
         setUser(me);
         setCampaign(campaignItem);
         setCampaignTags(tagItems);
+        setNotes(noteItems);
         fillContact(contactItem);
       } catch {
         clearStoredToken();
@@ -277,6 +287,53 @@ export default function ContactDetailPage() {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel remover a tag');
     } finally {
       setSavingTag(false);
+    }
+  }
+
+  function resetNoteForm() {
+    setNoteBody('');
+    setEditingNoteId(null);
+  }
+
+  function startEditNote(note: ContactNoteItem) {
+    setEditingNoteId(note.id);
+    setNoteBody(note.body);
+    setError(null);
+    setSuccess(null);
+  }
+
+  async function handleNoteSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const token = getStoredToken();
+    if (!token || !noteBody.trim()) return;
+
+    setSavingNote(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      if (editingNoteId) {
+        const updated = await updateContactNote(token, campaignId, contactId, editingNoteId, {
+          body: noteBody,
+        });
+        setNotes((current) =>
+          current
+            .map((item) => (item.id === updated.id ? updated : item))
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+        );
+        setSuccess('Nota atualizada com sucesso.');
+      } else {
+        const created = await createContactNote(token, campaignId, contactId, {
+          body: noteBody,
+        });
+        setNotes((current) => [created, ...current]);
+        setSuccess('Nota registrada com sucesso.');
+      }
+      resetNoteForm();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel salvar a nota');
+    } finally {
+      setSavingNote(false);
     }
   }
 
@@ -536,10 +593,42 @@ export default function ContactDetailPage() {
                 Gerenciar tags da campanha
               </Link>
             </ContactSection>
-            <CrmPlaceholder
+
+            <ContactSection
               title="Notas internas"
-              description="Anotacoes da equipe sobre o relacionamento."
-            />
+              description="Observacoes internas da equipe. Nao sao enviadas ao contato."
+            >
+              {notes.length > 0 ? (
+                <ul className="space-y-3">
+                  {notes.map((note) => (
+                    <li
+                      key={note.id}
+                      className="rounded-md border border-[#eef2ea] bg-[#f7f7f5] px-3 py-3 text-sm text-[#34342f]"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="font-medium text-[#24382b]">{note.author.name}</p>
+                        <p className="text-xs text-[#65655f]">
+                          {formatDate(note.createdAt)}
+                          {note.updatedAt !== note.createdAt ? ' · editada' : ''}
+                        </p>
+                      </div>
+                      <p className="mt-2 whitespace-pre-wrap">{note.body}</p>
+                      {canWrite ? (
+                        <button
+                          className="mt-3 text-xs font-medium text-[#24382b] underline"
+                          type="button"
+                          onClick={() => startEditNote(note)}
+                        >
+                          Editar nota
+                        </button>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-[#65655f]">Nenhuma nota interna registrada.</p>
+              )}
+            </ContactSection>
             <CrmPlaceholder
               title="Tarefas e follow-ups"
               description="Pendencias e proximos passos com o eleitor."
@@ -733,6 +822,55 @@ export default function ContactDetailPage() {
                   </p>
                 )}
               </section>
+            ) : null}
+
+            {canWrite ? (
+              <form
+                className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4"
+                onSubmit={handleNoteSubmit}
+              >
+                <div>
+                  <h3 className="font-medium text-[#24382b]">
+                    {editingNoteId ? 'Editar nota interna' : 'Nova nota interna'}
+                  </h3>
+                  <p className="mt-1 text-sm text-[#65655f]">
+                    Registro visivel apenas para a equipe da campanha.
+                  </p>
+                </div>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Observacao</span>
+                  <textarea
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    rows={5}
+                    value={noteBody}
+                    onChange={(event) => setNoteBody(event.target.value)}
+                    required
+                    minLength={1}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    type="submit"
+                    disabled={savingNote || !noteBody.trim()}
+                  >
+                    {savingNote
+                      ? 'Salvando...'
+                      : editingNoteId
+                        ? 'Salvar nota'
+                        : 'Registrar nota'}
+                  </button>
+                  {editingNoteId ? (
+                    <button
+                      className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
+                      type="button"
+                      onClick={resetNoteForm}
+                    >
+                      Cancelar
+                    </button>
+                  ) : null}
+                </div>
+              </form>
             ) : null}
 
             <section className="rounded-md border border-[#deddd4] bg-white p-4">

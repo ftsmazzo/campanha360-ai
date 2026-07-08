@@ -432,3 +432,55 @@ export function removeContactTag(
     token,
   );
 }
+
+export type ContactNoteAuthor = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+export type ContactNoteItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  contactId: string;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  author: ContactNoteAuthor;
+};
+
+export function fetchContactNotes(token: string, campaignId: string, contactId: string) {
+  return request<ContactNoteItem[]>(
+    `/campaigns/${campaignId}/contacts/${contactId}/notes`,
+    {},
+    token,
+  );
+}
+
+export function createContactNote(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  payload: { body: string },
+) {
+  return request<ContactNoteItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/notes`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateContactNote(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  noteId: string,
+  payload: { body: string },
+) {
+  return request<ContactNoteItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/notes/${noteId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}

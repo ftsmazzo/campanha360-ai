@@ -247,6 +247,24 @@ Permitir que a equipe registre observações internas sobre um contato.
 
 Usuário autorizado consegue registrar e visualizar notas internas no contato.
 
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- modelo `ContactNote` com `organizationId`, `campaignId`, `contactId` e `authorUserId`;
+- migration `20260708120000_contact_notes`;
+- API `GET/POST/PUT /campaigns/:campaignId/contacts/:contactId/notes`;
+- listagem na visão 360 com autor e data;
+- criação e edição simples no painel lateral;
+- audit log: `CONTACT_NOTE_CREATED`, `CONTACT_NOTE_UPDATED`;
+- VIEWER visualiza; OWNER/ADMIN/MANAGER criam e editam.
+
+### Migration
+
+`20260708120000_contact_notes` — cria tabela `ContactNote`. No deploy, a API aplica via `prisma migrate deploy` no entrypoint.
+
 ## 9. Subetapa 03.4 — Tarefas e follow-ups
 
 ### Objetivo
@@ -499,10 +517,10 @@ A campanha deve conseguir:
 
 ## 19. Próximo passo após este documento
 
-A subetapa **03.2 — Tags manuais** está concluída.
+A subetapa **03.3 — Notas internas** está concluída.
 
 O próximo prompt ao Cursor deve executar apenas:
 
-**03.3 — Notas internas.**
+**03.4 — Tarefas e follow-ups.**
 
-O Cursor não deve criar tarefas, Evolution, Inbox ou IA nesse passo.
+O Cursor não deve implementar responsável/status operacional, filtros, Evolution, Inbox ou IA nesse passo.

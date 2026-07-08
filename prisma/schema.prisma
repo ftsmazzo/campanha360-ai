@@ -91,6 +91,7 @@ model User {
   status       UserStatus       @default(ACTIVE)
   memberships  Membership[]
   auditLogs    AuditLog[]
+  contactNotes ContactNote[]
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 }
@@ -167,6 +168,7 @@ model Contact {
   consents       Consent[]
   optOuts        OptOut[]
   tags           ContactTag[]
+  notes          ContactNote[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
@@ -242,6 +244,21 @@ model ContactTag {
   createdAt DateTime @default(now())
 
   @@id([contactId, tagId])
+}
+
+model ContactNote {
+  id             String   @id @default(cuid())
+  organizationId String
+  campaignId     String
+  contactId      String
+  authorUserId   String
+  body           String
+  contact        Contact  @relation(fields: [contactId], references: [id])
+  author         User     @relation(fields: [authorUserId], references: [id])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([organizationId, campaignId, contactId])
 }
 
 model ChannelAccount {
