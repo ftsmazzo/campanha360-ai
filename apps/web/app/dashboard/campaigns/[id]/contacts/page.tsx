@@ -17,6 +17,7 @@ import {
   getStoredToken,
 } from '../../../../../lib/api';
 import { getChannelLabel, getConsentStatusLabel, getContactStatusLabel, hasOptOut } from '../../../../../lib/contacts';
+import { getOperationalStatusLabel } from '../../../../../lib/operational';
 import { getContactTags } from '../../../../../lib/tags';
 
 export default function CampaignContactsPage() {
@@ -121,6 +122,16 @@ export default function CampaignContactsPage() {
                       {getContactStatusLabel(contact.status)}
                       {hasOptOut(contact) ? ' · Opt-out' : ''}
                     </p>
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span className="rounded-full bg-[#eef2ea] px-2 py-1 text-xs font-medium text-[#47624f]">
+                        {getOperationalStatusLabel(contact.operationalStatus ?? 'NEW')}
+                      </span>
+                      {contact.assignedTo ? (
+                        <span className="text-xs text-[#65655f]">
+                          Responsavel: {contact.assignedTo.name}
+                        </span>
+                      ) : null}
+                    </div>
                     {getContactTags(contact).length > 0 ? (
                       <div className="mt-2 flex flex-wrap gap-2">
                         {getContactTags(contact).map((tag) => (

@@ -16,6 +16,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { CreateOptOutDto } from './dto/create-opt-out.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
+import { UpdateContactOperationsDto } from './dto/update-contact-operations.dto';
 import { UpsertConsentDto } from './dto/upsert-consent.dto';
 
 const contactSelect = {
@@ -29,8 +30,17 @@ const contactSelect = {
   neighborhood: true,
   metadata: true,
   status: true,
+  operationalStatus: true,
+  assignedToUserId: true,
   createdAt: true,
   updatedAt: true,
+  assignedTo: {
+    select: {
+      id: true,
+      name: true,
+      email: true,
+    },
+  },
   channels: {
     select: {
       id: true,
@@ -209,6 +219,74 @@ export class ContactsService {
       entityId: contact.id,
       metadata: { changes: JSON.parse(JSON.stringify(dto)) },
     });
+
+    return contact;
+  }
+
+  async updateOperations(
+    userId: string,
+    campaignId: string,
+    contactId: string,
+    dto: UpdateContactOperationsDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getContactOrThrow(
+      contactId,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    if (dto.assignedToUserId) {
+      await this.validateOperationalAssignee(dto.assignedToUserId, campaign.organizationId);
+    }
+
+    const nextAssignee =
+      dto.assignedToUserId === undefined ? existing.assignedToUserId : dto.assignedToUserId;
+    const nextOperationalStatus =
+      dto.operationalStatus === undefined ? existing.operationalStatus : dto.operationalStatus;
+
+    const contact = await this.prisma.contact.update({
+      where: { id: contactId },
+      data: {
+        assignedToUserId:
+          dto.assignedToUserId === undefined ? undefined : dto.assignedToUserId,
+        operationalStatus: dto.operationalStatus,
+      },
+      select: contactSelect,
+    });
+
+    if (dto.assignedToUserId !== undefined && nextAssignee !== existing.assignedToUserId) {
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'CONTACT_ASSIGNEE_UPDATED',
+        entityType: 'Contact',
+        entityId: contact.id,
+        metadata: {
+          previousAssignedToUserId: existing.assignedToUserId,
+          assignedToUserId: nextAssignee,
+        },
+      });
+    }
+
+    if (
+      dto.operationalStatus !== undefined &&
+      nextOperationalStatus !== existing.operationalStatus
+    ) {
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'CONTACT_OPERATIONAL_STATUS_UPDATED',
+        entityType: 'Contact',
+        entityId: contact.id,
+        metadata: {
+          previousOperationalStatus: existing.operationalStatus,
+          operationalStatus: nextOperationalStatus,
+        },
+      });
+    }
 
     return contact;
   }
@@ -532,6 +610,19 @@ export class ContactsService {
   private ensureContactIdentifier(phoneNumber?: string, email?: string) {
     if (!phoneNumber?.trim() && !email?.trim()) {
       throw new BadRequestException('Informe telefone ou e-mail');
+    }
+  }
+
+  private async validateOperationalAssignee(userId: string, organizationId: string) {
+    const membership = await this.prisma.membership.findUnique({
+      where: {
+        userId_organizationId: { userId, organizationId },
+      },
+      select: { id: true },
+    });
+
+    if (!membership) {
+      throw new BadRequestException('Responsavel deve ser membro da organizacao');
     }
   }
 

@@ -31,6 +31,7 @@ import {
   removeContactTag,
   updateContact,
   updateContactNote,
+  updateContactOperations,
   updateContactTask,
   upsertContactConsent,
 } from '../../../../../../lib/api';
@@ -45,6 +46,10 @@ import {
   hasOptOut,
 } from '../../../../../../lib/contacts';
 import { canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
+import {
+  CONTACT_OPERATIONAL_STATUSES,
+  getOperationalStatusLabel,
+} from '../../../../../../lib/operational';
 import { CONTACT_TASK_STATUSES, getTaskStatusLabel, isTaskOpen } from '../../../../../../lib/tasks';
 import { getContactTags } from '../../../../../../lib/tags';
 
@@ -129,6 +134,8 @@ export default function ContactDetailPage() {
   const [taskDueAt, setTaskDueAt] = useState('');
   const [taskStatus, setTaskStatus] = useState('OPEN');
   const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [operationalAssigneeId, setOperationalAssigneeId] = useState('');
+  const [operationalStatus, setOperationalStatus] = useState('NEW');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [savingConsent, setSavingConsent] = useState(false);
@@ -136,6 +143,7 @@ export default function ContactDetailPage() {
   const [savingTag, setSavingTag] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
   const [savingTask, setSavingTask] = useState(false);
+  const [savingOperations, setSavingOperations] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -147,6 +155,8 @@ export default function ContactDetailPage() {
     setCity(item.city ?? '');
     setNeighborhood(item.neighborhood ?? '');
     setStatus(item.status);
+    setOperationalAssigneeId(item.assignedTo?.id ?? '');
+    setOperationalStatus(item.operationalStatus ?? 'NEW');
     setMetadata(metadataToText(item.metadata));
     const latestConsent = item.consents[0];
     if (latestConsent) {
@@ -470,6 +480,31 @@ export default function ContactDetailPage() {
     }
   }
 
+  async function handleOperationsSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const token = getStoredToken();
+    if (!token) return;
+
+    setSavingOperations(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const updated = await updateContactOperations(token, campaignId, contactId, {
+        assignedToUserId: operationalAssigneeId || null,
+        operationalStatus,
+      });
+      fillContact(updated);
+      setSuccess('Operacao do contato atualizada com sucesso.');
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : 'Nao foi possivel atualizar a operacao do contato',
+      );
+    } finally {
+      setSavingOperations(false);
+    }
+  }
+
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#f7f7f5]">
@@ -547,7 +582,7 @@ export default function ContactDetailPage() {
                   <dd className="mt-1 text-sm text-[#151515]">{contact.name?.trim() || '—'}</dd>
                 </div>
                 <div>
-                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Status</dt>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Status tecnico</dt>
                   <dd className="mt-1">
                     <span className="inline-flex rounded-full bg-[#eef2ea] px-2 py-1 text-xs font-medium text-[#47624f]">
                       {getContactStatusLabel(contact.status)}
@@ -579,6 +614,32 @@ export default function ContactDetailPage() {
                   </pre>
                 </div>
               ) : null}
+            </ContactSection>
+
+            <ContactSection
+              title="Operacao do contato"
+              description="Responsavel e status operacional do relacionamento."
+            >
+              <dl className="grid gap-4 sm:grid-cols-2">
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">
+                    Status operacional
+                  </dt>
+                  <dd className="mt-1">
+                    <span className="inline-flex rounded-full bg-[#eef2ea] px-2 py-1 text-xs font-medium text-[#47624f]">
+                      {getOperationalStatusLabel(contact.operationalStatus)}
+                    </span>
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">
+                    Responsavel
+                  </dt>
+                  <dd className="mt-1 text-sm text-[#151515]">
+                    {contact.assignedTo?.name ?? 'Sem responsavel'}
+                  </dd>
+                </div>
+              </dl>
             </ContactSection>
 
             {campaign ? (
@@ -847,6 +908,56 @@ export default function ContactDetailPage() {
           </div>
 
           <div className="space-y-6">
+            {canWrite ? (
+              <form
+                className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4"
+                onSubmit={handleOperationsSubmit}
+              >
+                <div>
+                  <h3 className="font-medium text-[#24382b]">Operacao do contato</h3>
+                  <p className="mt-1 text-sm text-[#65655f]">
+                    Defina responsavel e status operacional do relacionamento.
+                  </p>
+                </div>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Responsavel</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={operationalAssigneeId}
+                    onChange={(event) => setOperationalAssigneeId(event.target.value)}
+                  >
+                    <option value="">Sem responsavel</option>
+                    {members.map((member) => (
+                      <option key={member.id} value={member.id}>
+                        {member.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Status operacional</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={operationalStatus}
+                    onChange={(event) => setOperationalStatus(event.target.value)}
+                  >
+                    {CONTACT_OPERATIONAL_STATUSES.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <button
+                  className="w-full rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  type="submit"
+                  disabled={savingOperations}
+                >
+                  {savingOperations ? 'Salvando...' : 'Salvar operacao'}
+                </button>
+              </form>
+            ) : null}
+
             <form className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleSubmit}>
               <div>
                 <h3 className="font-medium text-[#24382b]">Editar contato</h3>

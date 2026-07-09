@@ -367,6 +367,33 @@ Permitir acompanhar quem está cuidando do contato e qual o estado operacional d
 
 Usuário consegue atribuir responsável e definir status operacional sem quebrar o status técnico do contato.
 
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- campos `assignedToUserId` e `operationalStatus` no modelo `Contact`;
+- enum `ContactOperationalStatus`: NEW, IN_PROGRESS, SUPPORTER, UNDECIDED, OPPOSED, INVALID, ARCHIVED;
+- migration `20260709120000_contact_operational_fields`;
+- API `PUT /campaigns/:campaignId/contacts/:contactId/operations`;
+- audit log: `CONTACT_ASSIGNEE_UPDATED`, `CONTACT_OPERATIONAL_STATUS_UPDATED`;
+- exibição e edição na visão 360;
+- badge de status operacional e responsável na lista de contatos;
+- VIEWER apenas leitura; OWNER/ADMIN/MANAGER editam.
+
+### Migration
+
+`20260709120000_contact_operational_fields` — adiciona enum, colunas e FK em `Contact`. Aplicada no deploy via `prisma migrate deploy`.
+
+### Fora de escopo (mantido)
+
+- automações de mudança de status;
+- funil Kanban;
+- filtros por status operacional;
+- segmentação avançada;
+- scoring por IA.
+
 ## 11. Subetapa 03.6 — Busca e filtros básicos
 
 ### Objetivo
@@ -536,10 +563,10 @@ A campanha deve conseguir:
 
 ## 19. Próximo passo após este documento
 
-A subetapa **03.4 — Tarefas e follow-ups** está concluída.
+A subetapa **03.5 — Responsável e status operacional** está concluída.
 
 O próximo prompt ao Cursor deve executar apenas:
 
-**03.5 — Responsável e status operacional.**
+**03.6 — Busca e filtros básicos.**
 
-O Cursor não deve implementar filtros, timeline real, Evolution, Inbox ou IA nesse passo.
+Automações, funil avançado, segmentação, timeline real, Evolution, Inbox e IA continuam fora do escopo.

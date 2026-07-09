@@ -70,6 +70,16 @@ enum ContactTaskStatus {
   CANCELED
 }
 
+enum ContactOperationalStatus {
+  NEW
+  IN_PROGRESS
+  SUPPORTER
+  UNDECIDED
+  OPPOSED
+  INVALID
+  ARCHIVED
+}
+
 enum ChannelProvider {
   WHATSAPP_EVOLUTION
   WHATSAPP_CLOUD_API
@@ -101,6 +111,7 @@ model User {
   contactNotes ContactNote[]
   createdContactTasks ContactTask[] @relation("ContactTaskCreatedBy")
   assignedContactTasks ContactTask[] @relation("ContactTaskAssignedTo")
+  assignedContacts Contact[] @relation("ContactOperationalAssignee")
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 }
@@ -171,8 +182,11 @@ model Contact {
   city           String?
   neighborhood   String?
   metadata       Json?
-  status         ContactStatus   @default(ACTIVE)
-  campaign       Campaign        @relation(fields: [campaignId], references: [id])
+  status         ContactStatus              @default(ACTIVE)
+  operationalStatus ContactOperationalStatus @default(NEW)
+  assignedToUserId String?
+  assignedTo     User?                      @relation("ContactOperationalAssignee", fields: [assignedToUserId], references: [id])
+  campaign       Campaign                   @relation(fields: [campaignId], references: [id])
   channels       ContactChannel[]
   consents       Consent[]
   optOuts        OptOut[]

@@ -267,6 +267,12 @@ export type ContactTagItem = {
   tag: Pick<TagItem, 'id' | 'name' | 'color' | 'description'>;
 };
 
+export type ContactUserSummary = {
+  id: string;
+  name: string;
+  email: string;
+};
+
 export type ContactItem = {
   id: string;
   organizationId: string;
@@ -278,6 +284,9 @@ export type ContactItem = {
   neighborhood: string | null;
   metadata: Record<string, unknown> | null;
   status: string;
+  operationalStatus: string;
+  assignedToUserId: string | null;
+  assignedTo: ContactUserSummary | null;
   createdAt: string;
   updatedAt: string;
   channels: ContactChannelItem[];
@@ -330,6 +339,22 @@ export function updateContact(
 ) {
   return request<ContactItem>(
     `/campaigns/${campaignId}/contacts/${contactId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateContactOperations(
+  token: string,
+  campaignId: string,
+  contactId: string,
+  payload: {
+    assignedToUserId?: string | null;
+    operationalStatus?: string;
+  },
+) {
+  return request<ContactItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/operations`,
     { method: 'PUT', body: JSON.stringify(payload) },
     token,
   );
@@ -492,11 +517,7 @@ export type CampaignMemberItem = {
   role: string;
 };
 
-export type ContactTaskUser = {
-  id: string;
-  name: string;
-  email: string;
-};
+export type ContactTaskUser = ContactUserSummary;
 
 export type ContactTaskItem = {
   id: string;
@@ -511,7 +532,7 @@ export type ContactTaskItem = {
   createdAt: string;
   updatedAt: string;
   createdBy: ContactTaskUser;
-  assignedTo: ContactTaskUser | null;
+  assignedTo: ContactUserSummary | null;
 };
 
 export function fetchCampaignMembers(token: string, campaignId: string) {
