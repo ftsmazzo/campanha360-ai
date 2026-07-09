@@ -427,6 +427,27 @@ Melhorar a operação da lista de contatos.
 
 Usuário consegue encontrar contatos sem percorrer a lista inteira manualmente.
 
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- `GET /campaigns/:campaignId/contacts` com query params: `q`, `status`, `operationalStatus`, `assignedToUserId`, `tagId`, `hasOptOut`;
+- busca textual em nome, telefone, e-mail, cidade e bairro;
+- filtros por status técnico, status operacional, responsável, tag e opt-out;
+- validação de organização/campanha e tag/responsável;
+- formulário de busca/filtros na lista de contatos com ação de limpar;
+- carregamento de tags e membros para os selects.
+
+### Fora de escopo (mantido)
+
+- paginação avançada;
+- exportação CSV;
+- segmentos salvos;
+- busca full-text avançada;
+- analytics.
+
 ## 12. Subetapa 03.7 — Timeline do contato
 
 ### Objetivo
@@ -563,10 +584,10 @@ A campanha deve conseguir:
 
 ## 19. Próximo passo após este documento
 
-A subetapa **03.5 — Responsável e status operacional** está concluída.
+A subetapa **03.6 — Busca e filtros básicos** está concluída.
 
 O próximo prompt ao Cursor deve executar apenas:
 
-**03.6 — Busca e filtros básicos.**
+**03.7 — Timeline do contato.**
 
-Automações, funil avançado, segmentação, timeline real, Evolution, Inbox e IA continuam fora do escopo.
+Paginação avançada, exportação, segmentos salvos e busca full-text continuam fora do escopo.

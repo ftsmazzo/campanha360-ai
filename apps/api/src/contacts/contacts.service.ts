@@ -15,6 +15,7 @@ import { OrganizationAccessService } from '../common/organization-access.service
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { CreateOptOutDto } from './dto/create-opt-out.dto';
+import { ListContactsQueryDto } from './dto/list-contacts-query.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
 import { UpdateContactOperationsDto } from './dto/update-contact-operations.dto';
 import { UpsertConsentDto } from './dto/upsert-consent.dto';
@@ -99,17 +100,103 @@ export class ContactsService {
     private readonly audit: AuditService,
   ) {}
 
-  async list(userId: string, campaignId: string) {
+  async list(userId: string, campaignId: string, query: ListContactsQueryDto = {}) {
     const campaign = await this.getCampaignContext(userId, campaignId);
 
+    if (query.tagId) {
+      await this.validateCampaignTag(query.tagId, campaign.organizationId, campaignId);
+    }
+
+    if (query.assignedToUserId) {
+      await this.validateOperationalAssignee(query.assignedToUserId, campaign.organizationId);
+    }
+
+    const where = this.buildListWhere(campaign.organizationId, campaignId, query);
+
     return this.prisma.contact.findMany({
-      where: {
-        organizationId: campaign.organizationId,
-        campaignId,
-      },
+      where,
       select: contactSelect,
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  private buildListWhere(
+    organizationId: string,
+    campaignId: string,
+    query: ListContactsQueryDto,
+  ): Prisma.ContactWhereInput {
+    const and: Prisma.ContactWhereInput[] = [
+      { organizationId },
+      { campaignId },
+    ];
+
+    const search = query.q?.trim();
+    if (search) {
+      and.push({
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          { phoneNumber: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+          { city: { contains: search, mode: 'insensitive' } },
+          { neighborhood: { contains: search, mode: 'insensitive' } },
+        ],
+      });
+    }
+
+    if (query.status) {
+      and.push({ status: query.status });
+    }
+
+    if (query.operationalStatus) {
+      and.push({ operationalStatus: query.operationalStatus });
+    }
+
+    if (query.assignedToUserId) {
+      and.push({ assignedToUserId: query.assignedToUserId });
+    }
+
+    if (query.tagId) {
+      and.push({
+        tags: {
+          some: { tagId: query.tagId },
+        },
+      });
+    }
+
+    if (query.hasOptOut === true) {
+      and.push({
+        OR: [
+          { status: ContactStatus.BLOCKED },
+          { optOuts: { some: {} } },
+          { consents: { some: { status: ConsentStatus.OPT_OUT } } },
+        ],
+      });
+    } else if (query.hasOptOut === false) {
+      and.push({
+        AND: [
+          { status: { not: ContactStatus.BLOCKED } },
+          { optOuts: { none: {} } },
+          { consents: { none: { status: ConsentStatus.OPT_OUT } } },
+        ],
+      });
+    }
+
+    return { AND: and };
+  }
+
+  private async validateCampaignTag(
+    tagId: string,
+    organizationId: string,
+    campaignId: string,
+  ) {
+    const tag = await this.prisma.tag.findFirst({
+      where: { id: tagId, organizationId, campaignId },
+      select: { id: true },
+    });
+
+    if (!tag) {
+      throw new BadRequestException('Tag invalida para esta campanha');
+    }
   }
 
   async create(userId: string, campaignId: string, dto: CreateContactDto) {

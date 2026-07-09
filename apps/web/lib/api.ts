@@ -295,8 +295,34 @@ export type ContactItem = {
   tags: ContactTagItem[];
 };
 
-export function fetchContacts(token: string, campaignId: string) {
-  return request<ContactItem[]>(`/campaigns/${campaignId}/contacts`, {}, token);
+export type ContactListFilters = {
+  q?: string;
+  status?: string;
+  operationalStatus?: string;
+  assignedToUserId?: string;
+  tagId?: string;
+  hasOptOut?: boolean;
+};
+
+export function fetchContacts(
+  token: string,
+  campaignId: string,
+  filters: ContactListFilters = {},
+) {
+  const params = new URLSearchParams();
+
+  if (filters.q?.trim()) params.set('q', filters.q.trim());
+  if (filters.status) params.set('status', filters.status);
+  if (filters.operationalStatus) params.set('operationalStatus', filters.operationalStatus);
+  if (filters.assignedToUserId) params.set('assignedToUserId', filters.assignedToUserId);
+  if (filters.tagId) params.set('tagId', filters.tagId);
+  if (filters.hasOptOut === true) params.set('hasOptOut', 'true');
+  if (filters.hasOptOut === false) params.set('hasOptOut', 'false');
+
+  const query = params.toString();
+  const path = `/campaigns/${campaignId}/contacts${query ? `?${query}` : ''}`;
+
+  return request<ContactItem[]>(path, {}, token);
 }
 
 export function fetchContact(token: string, campaignId: string, contactId: string) {

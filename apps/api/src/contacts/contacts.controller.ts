@@ -6,6 +6,7 @@ import {
   Param,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AuthUser, CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -13,6 +14,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ContactsService } from './contacts.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { CreateOptOutDto } from './dto/create-opt-out.dto';
+import { ListContactsQueryDto } from './dto/list-contacts-query.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
 import { UpdateContactOperationsDto } from './dto/update-contact-operations.dto';
 import { UpsertConsentDto } from './dto/upsert-consent.dto';
@@ -23,8 +25,12 @@ export class ContactsController {
   constructor(private readonly contactsService: ContactsService) {}
 
   @Get()
-  list(@CurrentUser() user: AuthUser, @Param('campaignId') campaignId: string) {
-    return this.contactsService.list(user.id, campaignId);
+  list(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Query() query: ListContactsQueryDto,
+  ) {
+    return this.contactsService.list(user.id, campaignId, query);
   }
 
   @Post()
