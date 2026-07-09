@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AuditModule } from '../audit/audit.module';
 import { AuthModule } from '../auth/auth.module';
+import { ChannelAccountsModule } from '../channel-accounts/channel-accounts.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
 import { ContactNotesModule } from '../contact-notes/contact-notes.module';
 import { ContactTasksModule } from '../contact-tasks/contact-tasks.module';
@@ -20,6 +21,7 @@ import { HealthController } from './health.controller';
     AuthModule,
     OrganizationsModule,
     CampaignsModule,
+    ChannelAccountsModule,
     ContactsModule,
     TagsModule,
     ContactNotesModule,

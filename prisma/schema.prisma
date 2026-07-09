@@ -89,6 +89,14 @@ enum ChannelProvider {
   TELEGRAM
 }
 
+enum ChannelAccountStatus {
+  DISCONNECTED
+  CONNECTING
+  CONNECTED
+  ERROR
+  ARCHIVED
+}
+
 enum MessageDirection {
   INBOUND
   OUTBOUND
@@ -308,16 +316,18 @@ model ContactTask {
 }
 
 model ChannelAccount {
-  id                String          @id @default(cuid())
+  id                String               @id @default(cuid())
   organizationId    String
   campaignId        String
   provider          ChannelProvider
   name              String
-  status            String          @default("PENDING")
+  status            ChannelAccountStatus @default(DISCONNECTED)
   externalAccountId String?
   config            Json?
-  createdAt         DateTime        @default(now())
-  updatedAt         DateTime        @updatedAt
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  @@index([organizationId, campaignId])
 }
 
 model ConversationThread {

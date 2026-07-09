@@ -639,3 +639,73 @@ export function fetchContactTimeline(
     token,
   );
 }
+
+export type ChannelAccountItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  provider: string;
+  name: string;
+  status: string;
+  externalAccountId: string | null;
+  config: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function fetchChannelAccounts(token: string, campaignId: string) {
+  return request<ChannelAccountItem[]>(
+    `/campaigns/${campaignId}/channel-accounts`,
+    {},
+    token,
+  );
+}
+
+export function fetchChannelAccount(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+) {
+  return request<ChannelAccountItem>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}`,
+    {},
+    token,
+  );
+}
+
+export function createChannelAccount(
+  token: string,
+  campaignId: string,
+  payload: {
+    name: string;
+    provider?: string;
+    status?: string;
+    externalAccountId?: string;
+    config?: Record<string, unknown>;
+  },
+) {
+  return request<ChannelAccountItem>(
+    `/campaigns/${campaignId}/channel-accounts`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateChannelAccount(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+  payload: {
+    name?: string;
+    provider?: string;
+    status?: string;
+    externalAccountId?: string | null;
+    config?: Record<string, unknown> | null;
+  },
+) {
+  return request<ChannelAccountItem>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}

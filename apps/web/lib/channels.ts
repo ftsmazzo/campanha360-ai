@@ -1,0 +1,34 @@
+export const CHANNEL_PROVIDERS = [
+  { value: 'WHATSAPP_EVOLUTION', label: 'WhatsApp (Evolution)', available: true },
+  { value: 'WHATSAPP_CLOUD_API', label: 'WhatsApp Cloud API', available: false },
+  { value: 'EMAIL', label: 'E-mail', available: false },
+  { value: 'SMS', label: 'SMS', available: false },
+  { value: 'TELEGRAM', label: 'Telegram', available: false },
+  { value: 'INSTAGRAM', label: 'Instagram', available: false },
+] as const;
+
+export const CHANNEL_ACCOUNT_STATUSES = [
+  { value: 'DISCONNECTED', label: 'Desconectado' },
+  { value: 'CONNECTING', label: 'Conectando' },
+  { value: 'CONNECTED', label: 'Conectado' },
+  { value: 'ERROR', label: 'Erro' },
+  { value: 'ARCHIVED', label: 'Arquivado' },
+] as const;
+
+export function getChannelProviderLabel(provider: string) {
+  return CHANNEL_PROVIDERS.find((item) => item.value === provider)?.label ?? provider;
+}
+
+export function getChannelAccountStatusLabel(status: string) {
+  return CHANNEL_ACCOUNT_STATUSES.find((item) => item.value === status)?.label ?? status;
+}
+
+export function configToText(value: Record<string, unknown> | null) {
+  if (!value) return '';
+  return JSON.stringify(value, null, 2);
+}
+
+export function parseConfig(value: string) {
+  if (!value.trim()) return undefined;
+  return JSON.parse(value) as Record<string, unknown>;
+}
