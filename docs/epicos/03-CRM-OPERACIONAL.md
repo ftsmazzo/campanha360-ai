@@ -492,6 +492,42 @@ Criar uma visão cronológica básica das atividades relevantes do contato.
 
 Usuário consegue ver uma linha do tempo básica do contato com os principais eventos já registrados.
 
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- `GET /campaigns/:campaignId/contacts/:contactId/timeline`;
+- validação de organização, campanha e contato;
+- leitura para membros da organização, sem vazamento entre organizações/campanhas;
+- composição da timeline a partir de audit log e entidades existentes (sem migration);
+- seção de timeline na visão 360 do contato, ordenada por data decrescente;
+- labels legíveis, ator quando disponível e data/hora;
+- estado vazio quando não houver eventos além da criação do contato.
+
+### Eventos incluídos nesta versão
+
+- criação do contato;
+- alteração de dados do contato (audit log);
+- consentimento criado/alterado;
+- opt-out registrado;
+- tag aplicada/removida (audit log);
+- nota interna criada/editada;
+- tarefa criada/editada/concluída/cancelada;
+- alteração de responsável operacional;
+- alteração de status operacional.
+
+### Fora de escopo (mantido)
+
+- timeline de mensagens;
+- inbox;
+- IA e sugestões automáticas;
+- eventos de canais (WhatsApp, Evolution, e-mail, etc.);
+- timeline em tempo real;
+- filtros avançados da timeline;
+- criação manual de eventos.
+
 ## 13. Regras de tenancy
 
 Toda entidade nova do CRM deve carregar:
@@ -584,10 +620,8 @@ A campanha deve conseguir:
 
 ## 19. Próximo passo após este documento
 
-A subetapa **03.6 — Busca e filtros básicos** está concluída.
+A subetapa **03.7 — Timeline do contato** está concluída.
 
-O próximo prompt ao Cursor deve executar apenas:
+O **Épico 03 — CRM Operacional** está concluído nesta versão.
 
-**03.7 — Timeline do contato.**
-
-Paginação avançada, exportação, segmentos salvos e busca full-text continuam fora do escopo.
+O próximo trabalho deve partir de um novo épico (ex.: canais, inbox ou automações), fora do escopo deste documento.

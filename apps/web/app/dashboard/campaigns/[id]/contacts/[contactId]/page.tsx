@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { ContactSection, CrmPlaceholder } from '../../../../../../components/contact-section';
+import { ContactSection } from '../../../../../../components/contact-section';
 import { TagBadge } from '../../../../../../components/tag-badge';
 import { DashboardShell } from '../../../../../../components/dashboard-shell';
 import {
@@ -14,6 +14,7 @@ import {
   ContactItem,
   ContactNoteItem,
   ContactTaskItem,
+  ContactTimelineItem,
   TagItem,
   applyContactTag,
   clearStoredToken,
@@ -25,6 +26,7 @@ import {
   fetchContact,
   fetchContactNotes,
   fetchContactTasks,
+  fetchContactTimeline,
   fetchMe,
   fetchTags,
   getStoredToken,
@@ -52,6 +54,7 @@ import {
 } from '../../../../../../lib/operational';
 import { CONTACT_TASK_STATUSES, getTaskStatusLabel, isTaskOpen } from '../../../../../../lib/tasks';
 import { getContactTags } from '../../../../../../lib/tags';
+import { getTimelineTypeLabel, hasMeaningfulTimelineEvents } from '../../../../../../lib/timeline';
 
 function metadataToText(value: Record<string, unknown> | null) {
   if (!value) return '';
@@ -127,6 +130,7 @@ export default function ContactDetailPage() {
   const [noteBody, setNoteBody] = useState('');
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [tasks, setTasks] = useState<ContactTaskItem[]>([]);
+  const [timeline, setTimeline] = useState<ContactTimelineItem[]>([]);
   const [members, setMembers] = useState<CampaignMemberItem[]>([]);
   const [taskTitle, setTaskTitle] = useState('');
   const [taskDescription, setTaskDescription] = useState('');
@@ -167,6 +171,11 @@ export default function ContactDetailPage() {
     }
   }
 
+  async function refreshTimeline(token: string) {
+    const timelineItems = await fetchContactTimeline(token, campaignId, contactId);
+    setTimeline(timelineItems);
+  }
+
   useEffect(() => {
     async function load() {
       const token = getStoredToken();
@@ -176,7 +185,7 @@ export default function ContactDetailPage() {
       }
 
       try {
-        const [me, campaignItem, contactItem, tagItems, noteItems, taskItems, memberItems] =
+        const [me, campaignItem, contactItem, tagItems, noteItems, taskItems, memberItems, timelineItems] =
           await Promise.all([
           fetchMe(token),
           fetchCampaign(token, campaignId),
@@ -185,12 +194,14 @@ export default function ContactDetailPage() {
           fetchContactNotes(token, campaignId, contactId),
           fetchContactTasks(token, campaignId, contactId),
           fetchCampaignMembers(token, campaignId),
+          fetchContactTimeline(token, campaignId, contactId),
         ]);
         setUser(me);
         setCampaign(campaignItem);
         setCampaignTags(tagItems);
         setNotes(noteItems);
         setTasks(taskItems);
+        setTimeline(timelineItems);
         setMembers(memberItems);
         fillContact(contactItem);
       } catch {
@@ -231,6 +242,7 @@ export default function ContactDetailPage() {
         metadata: metadataValue,
       });
       fillContact(updated);
+      await refreshTimeline(token);
       setSuccess('Contato atualizado com sucesso.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel atualizar o contato');
@@ -256,6 +268,7 @@ export default function ContactDetailPage() {
         consentText: consentText || undefined,
       });
       fillContact(updated);
+      await refreshTimeline(token);
       setSuccess('Consentimento salvo com sucesso.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel salvar o consentimento');
@@ -279,6 +292,7 @@ export default function ContactDetailPage() {
         source: 'manual',
       });
       fillContact(updated);
+      await refreshTimeline(token);
       setSuccess('Opt-out registrado com sucesso.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel registrar opt-out');
@@ -298,6 +312,7 @@ export default function ContactDetailPage() {
     try {
       const updated = await applyContactTag(token, campaignId, contactId, selectedTagId);
       fillContact(updated);
+      await refreshTimeline(token);
       setSelectedTagId('');
       setSuccess('Tag aplicada com sucesso.');
     } catch (err) {
@@ -318,6 +333,7 @@ export default function ContactDetailPage() {
     try {
       const updated = await removeContactTag(token, campaignId, contactId, tagId);
       fillContact(updated);
+      await refreshTimeline(token);
       setSuccess('Tag removida com sucesso.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel remover a tag');
@@ -366,6 +382,7 @@ export default function ContactDetailPage() {
         setSuccess('Nota registrada com sucesso.');
       }
       resetNoteForm();
+      await refreshTimeline(token);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel salvar a nota');
     } finally {
@@ -431,6 +448,7 @@ export default function ContactDetailPage() {
         setSuccess('Tarefa criada com sucesso.');
       }
       resetTaskForm();
+      await refreshTimeline(token);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel salvar a tarefa');
     } finally {
@@ -451,6 +469,7 @@ export default function ContactDetailPage() {
         status: 'DONE',
       });
       replaceTask(updated);
+      await refreshTimeline(token);
       setSuccess('Tarefa concluida com sucesso.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel concluir a tarefa');
@@ -472,6 +491,7 @@ export default function ContactDetailPage() {
         status: 'CANCELED',
       });
       replaceTask(updated);
+      await refreshTimeline(token);
       setSuccess('Tarefa cancelada com sucesso.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel cancelar a tarefa');
@@ -495,6 +515,7 @@ export default function ContactDetailPage() {
         operationalStatus,
       });
       fillContact(updated);
+      await refreshTimeline(token);
       setSuccess('Operacao do contato atualizada com sucesso.');
     } catch (err) {
       setError(
@@ -901,10 +922,44 @@ export default function ContactDetailPage() {
                 <p className="text-sm text-[#65655f]">Nenhuma tarefa registrada.</p>
               )}
             </ContactSection>
-            <CrmPlaceholder
+            <ContactSection
               title="Timeline"
-              description="Historico unificado de interacoes e eventos."
-            />
+              description="Historico operacional do contato nesta campanha."
+            >
+              {hasMeaningfulTimelineEvents(timeline) ? (
+                <ul className="space-y-3">
+                  {timeline.map((event) => (
+                    <li
+                      key={event.id}
+                      className="rounded-md border border-[#eef2ea] bg-[#f7f7f5] px-3 py-3 text-sm text-[#34342f]"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div>
+                          <p className="font-medium text-[#24382b]">{event.title}</p>
+                          <p className="mt-1 text-xs text-[#65655f]">
+                            {getTimelineTypeLabel(event.type)}
+                            {event.actor ? ` · ${event.actor.name}` : ''}
+                          </p>
+                        </div>
+                        <time
+                          className="text-xs text-[#65655f]"
+                          dateTime={event.occurredAt}
+                        >
+                          {formatDate(event.occurredAt)}
+                        </time>
+                      </div>
+                      {event.description ? (
+                        <p className="mt-2 whitespace-pre-wrap text-[#65655f]">{event.description}</p>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-[#65655f]">
+                  Nenhuma atividade operacional registrada alem da criacao do contato.
+                </p>
+              )}
+            </ContactSection>
           </div>
 
           <div className="space-y-6">

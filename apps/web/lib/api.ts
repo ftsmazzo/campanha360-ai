@@ -611,3 +611,31 @@ export function updateContactTask(
     token,
   );
 }
+
+export type ContactTimelineActor = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+export type ContactTimelineItem = {
+  id: string;
+  type: string;
+  title: string;
+  description?: string;
+  actor?: ContactTimelineActor;
+  occurredAt: string;
+  metadata?: Record<string, unknown>;
+};
+
+export function fetchContactTimeline(
+  token: string,
+  campaignId: string,
+  contactId: string,
+) {
+  return request<ContactTimelineItem[]>(
+    `/campaigns/${campaignId}/contacts/${contactId}/timeline`,
+    {},
+    token,
+  );
+}
