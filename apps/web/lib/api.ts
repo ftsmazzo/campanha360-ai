@@ -648,7 +648,7 @@ export type ChannelAccountItem = {
   name: string;
   status: string;
   externalAccountId: string | null;
-  config: Record<string, unknown> | null;
+  config?: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
 };

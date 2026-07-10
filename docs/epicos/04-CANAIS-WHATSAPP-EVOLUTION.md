@@ -79,6 +79,7 @@ Permitir que a equipe cadastre e gerencie contas de canal vinculadas à campanha
 - escrita apenas para `OWNER`, `ADMIN` ou `MANAGER`;
 - não vazar contas entre campanhas ou organizações;
 - `config` pode conter segredos — não expor em audit log completo;
+- `config` não retorna na listagem; no GET individual e em create/update, retorna apenas para OWNER/ADMIN/MANAGER;
 - não chamar Evolution API nesta subetapa.
 
 ### Fora de escopo

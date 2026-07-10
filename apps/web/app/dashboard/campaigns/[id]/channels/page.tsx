@@ -12,6 +12,7 @@ import {
   clearStoredToken,
   createChannelAccount,
   fetchCampaign,
+  fetchChannelAccount,
   fetchChannelAccounts,
   fetchMe,
   getStoredToken,
@@ -63,15 +64,29 @@ export default function CampaignChannelsPage() {
     setEditingAccountId(null);
   }
 
-  function startEdit(account: ChannelAccountItem) {
+  async function startEdit(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+
     setEditingAccountId(account.id);
     setName(account.name);
     setProvider(account.provider);
     setStatus(account.status);
     setExternalAccountId(account.externalAccountId ?? '');
-    setConfig(configToText(account.config));
+    setConfig('');
     setError(null);
     setSuccess(null);
+
+    try {
+      const full = await fetchChannelAccount(token, campaignId, account.id);
+      setConfig(configToText(full.config ?? null));
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel carregar a config da conta de canal',
+      );
+    }
   }
 
   useEffect(() => {

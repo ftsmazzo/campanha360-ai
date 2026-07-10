@@ -1,12 +1,23 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { ChannelAccountStatus, ChannelProvider, Prisma } from '@prisma/client';
+import {
+  ChannelAccountStatus,
+  ChannelProvider,
+  MembershipRole,
+  Prisma,
+} from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateChannelAccountDto } from './dto/create-channel-account.dto';
 import { UpdateChannelAccountDto } from './dto/update-channel-account.dto';
 
-const channelAccountSelect = {
+const WRITE_ROLES: MembershipRole[] = [
+  MembershipRole.OWNER,
+  MembershipRole.ADMIN,
+  MembershipRole.MANAGER,
+];
+
+const channelAccountPublicSelect = {
   id: true,
   organizationId: true,
   campaignId: true,
@@ -14,9 +25,13 @@ const channelAccountSelect = {
   name: true,
   status: true,
   externalAccountId: true,
-  config: true,
   createdAt: true,
   updatedAt: true,
+} satisfies Prisma.ChannelAccountSelect;
+
+const channelAccountSelectWithConfig = {
+  ...channelAccountPublicSelect,
+  config: true,
 } satisfies Prisma.ChannelAccountSelect;
 
 @Injectable()
@@ -35,17 +50,20 @@ export class ChannelAccountsService {
         organizationId: campaign.organizationId,
         campaignId,
       },
-      select: channelAccountSelect,
+      select: channelAccountPublicSelect,
       orderBy: [{ name: 'asc' }, { createdAt: 'desc' }],
     });
   }
 
   async getById(userId: string, campaignId: string, channelAccountId: string) {
     const campaign = await this.getCampaignContext(userId, campaignId);
+    const includeConfig = WRITE_ROLES.includes(campaign.membership.role);
+
     return this.getChannelAccountOrThrow(
       channelAccountId,
       campaign.organizationId,
       campaignId,
+      includeConfig,
     );
   }
 
@@ -62,7 +80,7 @@ export class ChannelAccountsService {
         externalAccountId: dto.externalAccountId?.trim() || null,
         config: dto.config as Prisma.InputJsonValue | undefined,
       },
-      select: channelAccountSelect,
+      select: channelAccountSelectWithConfig,
     });
 
     await this.audit.log({
@@ -94,6 +112,7 @@ export class ChannelAccountsService {
       channelAccountId,
       campaign.organizationId,
       campaignId,
+      false,
     );
 
     const account = await this.prisma.channelAccount.update({
@@ -113,7 +132,7 @@ export class ChannelAccountsService {
               ? Prisma.JsonNull
               : (dto.config as Prisma.InputJsonValue),
       },
-      select: channelAccountSelect,
+      select: channelAccountSelectWithConfig,
     });
 
     await this.audit.log({
@@ -145,23 +164,22 @@ export class ChannelAccountsService {
       throw new NotFoundException('Campanha nao encontrada');
     }
 
-    if (requireWrite) {
-      await this.organizationAccess.requireWriteAccess(userId, campaign.organizationId);
-    } else {
-      await this.organizationAccess.requireMembership(userId, campaign.organizationId);
-    }
+    const membership = requireWrite
+      ? await this.organizationAccess.requireWriteAccess(userId, campaign.organizationId)
+      : await this.organizationAccess.requireMembership(userId, campaign.organizationId);
 
-    return campaign;
+    return { ...campaign, membership };
   }
 
   private async getChannelAccountOrThrow(
     channelAccountId: string,
     organizationId: string,
     campaignId: string,
+    includeConfig: boolean,
   ) {
     const account = await this.prisma.channelAccount.findFirst({
       where: { id: channelAccountId, organizationId, campaignId },
-      select: channelAccountSelect,
+      select: includeConfig ? channelAccountSelectWithConfig : channelAccountPublicSelect,
     });
 
     if (!account) {
