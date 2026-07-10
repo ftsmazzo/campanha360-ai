@@ -8,6 +8,7 @@ import { ContactNotesModule } from '../contact-notes/contact-notes.module';
 import { ContactTasksModule } from '../contact-tasks/contact-tasks.module';
 import { ContactTimelineModule } from '../contact-timeline/contact-timeline.module';
 import { ContactsModule } from '../contacts/contacts.module';
+import { EvolutionModule } from '../evolution/evolution.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TagsModule } from '../tags/tags.module';
@@ -27,6 +28,7 @@ import { HealthController } from './health.controller';
     ContactNotesModule,
     ContactTasksModule,
     ContactTimelineModule,
+    EvolutionModule,
   ],
   controllers: [HealthController],
 })

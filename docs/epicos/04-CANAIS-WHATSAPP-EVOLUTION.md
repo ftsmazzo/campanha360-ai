@@ -130,19 +130,62 @@ Usuário com permissão consegue criar, listar e editar contas de canal na campa
 
 Encapsular chamadas à Evolution API em serviço interno isolado.
 
-### Entregas previstas
+### Entregas
 
-- `EvolutionAdapter` ou serviço equivalente;
-- leitura de `EVOLUTION_API_URL` e credenciais via env;
-- métodos mínimos testáveis;
-- tratamento padronizado de erro.
+- `EvolutionAdapter` isolado na API NestJS;
+- leitura de `EVOLUTION_API_URL` e `EVOLUTION_API_KEY` (opcional) via env;
+- métodos mínimos: health/check, listar/buscar instâncias, criar/preparar instância, status de conexão e QR Code;
+- endpoints administrativos por conta de canal:
+  - `GET /campaigns/:campaignId/channel-accounts/:channelAccountId/evolution/status`
+  - `POST /campaigns/:campaignId/channel-accounts/:channelAccountId/evolution/prepare`
+  - `GET /campaigns/:campaignId/channel-accounts/:channelAccountId/evolution/qrcode`
+- atualização de `externalAccountId` e `status` da `ChannelAccount` conforme retorno;
+- audit log: `CHANNEL_EVOLUTION_PREPARED`, `CHANNEL_EVOLUTION_STATUS_CHECKED`, `CHANNEL_EVOLUTION_QRCODE_REQUESTED`.
+
+### Regras
+
+- escrita apenas para `OWNER`, `ADMIN` ou `MANAGER`;
+- provider obrigatório `WHATSAPP_EVOLUTION`;
+- nunca gravar API key em banco;
+- nunca expor `EVOLUTION_API_KEY` no retorno;
+- erros da Evolution tratados com mensagens seguras;
+- HTTP da Evolution concentrado apenas no adapter.
 
 ### Fora de escopo
 
 - webhook;
-- UI avançada;
-- envio automático;
-- IA.
+- tela comercial de conectar WhatsApp;
+- QR Code na UI;
+- envio e recebimento de mensagens;
+- inbox;
+- IA;
+- automações.
+
+### Critério de aceite
+
+Administrador consegue preparar/consultar status/QR de uma conta Evolution via endpoints administrativos, sem UI comercial e sem webhook.
+
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- módulo `apps/api/src/evolution/` com adapter, service e controller;
+- envs documentadas em `.env.example`: `EVOLUTION_API_URL`, `EVOLUTION_API_KEY`;
+- mapeamento conservador de estados Evolution → `ChannelAccountStatus`;
+- respostas sem `config` sensível e sem API key.
+
+### Fora de escopo (mantido)
+
+- fluxo comercial completo;
+- QR Code na UI;
+- webhook;
+- inbox;
+- envio;
+- recebimento;
+- IA;
+- automações.
 
 ## 8. Subetapa 04.3 — Webhook Evolution inbound
 
@@ -217,10 +260,10 @@ O sistema consegue receber mensagens reais via Evolution, agrupá-las em convers
 
 ## 14. Próximo passo após este documento
 
-A subetapa **04.1 — Contas de canal por campanha** está concluída.
+A subetapa **04.2 — Adapter Evolution** está concluída.
 
 O próximo prompt ao Cursor deve executar apenas:
 
-**04.2 — Adapter Evolution.**
+**04.3 — Webhook Evolution inbound.**
 
-Webhook, QR Code, inbox, envio, recebimento, IA e automações continuam fora do escopo até suas subetapas.
+Fluxo comercial, QR Code na UI, inbox, envio, recebimento, IA e automações continuam fora do escopo até suas subetapas.
