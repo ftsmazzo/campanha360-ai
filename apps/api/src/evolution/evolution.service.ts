@@ -12,7 +12,10 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { EvolutionAdapter } from './evolution.adapter';
+import {
+  EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE,
+  EvolutionAdapter,
+} from './evolution.adapter';
 import { EvolutionApiException } from './evolution.errors';
 
 const channelAccountSelect = {
@@ -67,7 +70,12 @@ export class EvolutionService {
         );
       }
 
-      const prepared = await this.evolutionAdapter.prepareInstance(instanceName);
+      // Se o ID externo existir mas nao estiver na Evolution, prepareInstance cria a instancia.
+      const existing = await this.evolutionAdapter.findInstance(instanceName);
+      const prepared = existing
+        ? await this.evolutionAdapter.prepareInstance(existing.instanceName)
+        : await this.evolutionAdapter.prepareInstance(instanceName);
+
       const nextStatus =
         this.mapEvolutionStateToStatus(prepared.state) ??
         ChannelAccountStatus.CONNECTING;
@@ -91,6 +99,7 @@ export class EvolutionService {
         metadata: {
           instanceName: prepared.instanceName,
           created: prepared.created,
+          previouslyMissing: !existing,
           status: updated.status,
         },
       });
@@ -119,14 +128,25 @@ export class EvolutionService {
     const instanceName = this.resolveInstanceName(account);
 
     try {
-      const connection = await this.evolutionAdapter.getConnectionState(instanceName);
+      const existing = await this.evolutionAdapter.findInstance(instanceName);
+      if (!existing) {
+        await this.markAccountDisconnected(account.id, account.externalAccountId);
+        throw new EvolutionApiException(
+          EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      const connection = await this.evolutionAdapter.getConnectionState(
+        existing.instanceName,
+      );
       const nextStatus =
         this.mapEvolutionStateToStatus(connection.state) ?? account.status;
 
       const updated = await this.prisma.channelAccount.update({
         where: { id: account.id },
         data: {
-          externalAccountId: instanceName,
+          externalAccountId: existing.instanceName,
           status: nextStatus,
         },
         select: channelAccountPublicSelect,
@@ -140,7 +160,7 @@ export class EvolutionService {
         entityType: 'ChannelAccount',
         entityId: account.id,
         metadata: {
-          instanceName,
+          instanceName: existing.instanceName,
           evolutionState: connection.state,
           status: updated.status,
         },
@@ -149,11 +169,18 @@ export class EvolutionService {
       return {
         channelAccount: updated,
         evolution: {
-          instanceName,
+          instanceName: existing.instanceName,
           state: connection.state,
         },
       };
     } catch (error) {
+      if (this.isInstanceNotFoundError(error)) {
+        await this.markAccountDisconnected(account.id, account.externalAccountId);
+        throw new EvolutionApiException(
+          EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE,
+          HttpStatus.NOT_FOUND,
+        );
+      }
       await this.markAccountError(account.id);
       throw error;
     }
@@ -169,12 +196,21 @@ export class EvolutionService {
     const instanceName = this.resolveInstanceName(account);
 
     try {
-      const qrcode = await this.evolutionAdapter.getQrCode(instanceName);
+      const existing = await this.evolutionAdapter.findInstance(instanceName);
+      if (!existing) {
+        await this.markAccountDisconnected(account.id, account.externalAccountId);
+        throw new EvolutionApiException(
+          EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE,
+          HttpStatus.NOT_FOUND,
+        );
+      }
+
+      const qrcode = await this.evolutionAdapter.getQrCode(existing.instanceName);
 
       const updated = await this.prisma.channelAccount.update({
         where: { id: account.id },
         data: {
-          externalAccountId: instanceName,
+          externalAccountId: existing.instanceName,
           status:
             account.status === ChannelAccountStatus.CONNECTED
               ? ChannelAccountStatus.CONNECTED
@@ -191,7 +227,7 @@ export class EvolutionService {
         entityType: 'ChannelAccount',
         entityId: account.id,
         metadata: {
-          instanceName,
+          instanceName: existing.instanceName,
           hasBase64: Boolean(qrcode.base64),
           hasCode: Boolean(qrcode.code),
           hasPairingCode: Boolean(qrcode.pairingCode),
@@ -201,7 +237,7 @@ export class EvolutionService {
       return {
         channelAccount: updated,
         evolution: {
-          instanceName,
+          instanceName: existing.instanceName,
           qrcode: {
             base64: qrcode.base64 ?? null,
             code: qrcode.code ?? null,
@@ -210,6 +246,13 @@ export class EvolutionService {
         },
       };
     } catch (error) {
+      if (this.isInstanceNotFoundError(error)) {
+        await this.markAccountDisconnected(account.id, account.externalAccountId);
+        throw new EvolutionApiException(
+          EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE,
+          HttpStatus.NOT_FOUND,
+        );
+      }
       await this.markAccountError(account.id);
       throw error;
     }
@@ -315,6 +358,24 @@ export class EvolutionService {
     return null;
   }
 
+  private async markAccountDisconnected(
+    channelAccountId: string,
+    externalAccountId: string | null,
+  ) {
+    try {
+      await this.prisma.channelAccount.update({
+        where: { id: channelAccountId },
+        data: {
+          status: ChannelAccountStatus.DISCONNECTED,
+          // Preserva o ID para permitir "preparar novamente" com o mesmo nome.
+          externalAccountId,
+        },
+      });
+    } catch {
+      // Nao mascara o erro original.
+    }
+  }
+
   private async markAccountError(channelAccountId: string) {
     try {
       await this.prisma.channelAccount.update({
@@ -324,6 +385,29 @@ export class EvolutionService {
     } catch {
       // Nao mascara o erro original da Evolution.
     }
+  }
+
+  private isInstanceNotFoundError(error: unknown) {
+    if (!(error instanceof EvolutionApiException)) {
+      return false;
+    }
+
+    if (error.getStatus() === HttpStatus.NOT_FOUND) {
+      return true;
+    }
+
+    const payload = error.getResponse();
+    const message =
+      typeof payload === 'string'
+        ? payload
+        : typeof payload === 'object' && payload && 'message' in payload
+          ? String((payload as { message?: unknown }).message ?? '')
+          : error.message;
+
+    return (
+      message.includes(EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE) ||
+      /instancia evolution nao encontrada/i.test(message)
+    );
   }
 
   private asRecord(value: Prisma.JsonValue | null): Record<string, unknown> | null {

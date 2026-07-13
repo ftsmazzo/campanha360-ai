@@ -39,6 +39,11 @@ function formatDate(value: string) {
   return new Date(value).toLocaleString('pt-BR');
 }
 
+function isInstanceNotFoundMessage(message: string | null | undefined) {
+  if (!message) return false;
+  return /instancia evolution nao encontrada/i.test(message);
+}
+
 function upsertAccount(list: ChannelAccountItem[], account: ChannelAccountItem) {
   const exists = list.some((item) => item.id === account.id);
   const next = exists
@@ -99,6 +104,16 @@ export default function CampaignChannelsPage() {
 
   function applyAccountUpdate(account: ChannelAccountItem) {
     setAccounts((current) => upsertAccount(current, account));
+  }
+
+  function handleInstanceMissingLocally() {
+    if (!whatsappAccount) return;
+    applyAccountUpdate({
+      ...whatsappAccount,
+      status: 'DISCONNECTED',
+    });
+    clearQrState();
+    setEvolutionState(null);
   }
 
   async function startEdit(account: ChannelAccountItem) {
@@ -244,11 +259,14 @@ export default function CampaignChannelsPage() {
       }
     } catch (err) {
       clearQrState();
-      setError(
+      const message =
         err instanceof ApiError
           ? err.message
-          : 'Nao foi possivel gerar o QR Code na Evolution',
-      );
+          : 'Nao foi possivel gerar o QR Code na Evolution';
+      setError(message);
+      if (isInstanceNotFoundMessage(message)) {
+        handleInstanceMissingLocally();
+      }
     } finally {
       setLoadingQr(false);
     }
@@ -268,11 +286,14 @@ export default function CampaignChannelsPage() {
       setEvolutionState(result.evolution.state);
       setSuccess(`Status atualizado: ${getChannelAccountStatusLabel(result.channelAccount.status)}.`);
     } catch (err) {
-      setError(
+      const message =
         err instanceof ApiError
           ? err.message
-          : 'Nao foi possivel consultar o status na Evolution',
-      );
+          : 'Nao foi possivel consultar o status na Evolution';
+      setError(message);
+      if (isInstanceNotFoundMessage(message)) {
+        handleInstanceMissingLocally();
+      }
     } finally {
       setRefreshingStatus(false);
     }
@@ -332,14 +353,23 @@ export default function CampaignChannelsPage() {
     );
   }
 
+  const instanceNotFound = isInstanceNotFoundMessage(error);
   const showPrepare =
     Boolean(whatsappAccount) &&
-    (whatsappAccount?.status === 'DISCONNECTED' || whatsappAccount?.status === 'ERROR');
+    (whatsappAccount?.status === 'DISCONNECTED' ||
+      whatsappAccount?.status === 'ERROR' ||
+      whatsappAccount?.status === 'CONNECTED' ||
+      instanceNotFound);
   const showQrButton =
     Boolean(whatsappAccount) &&
+    !instanceNotFound &&
     (whatsappAccount?.status === 'CONNECTING' ||
       Boolean(whatsappAccount?.externalAccountId) ||
       whatsappAccount?.status === 'CONNECTED');
+  const prepareLabel =
+    instanceNotFound || whatsappAccount?.status === 'CONNECTED'
+      ? 'Preparar conexao novamente'
+      : 'Preparar conexao';
 
   return (
     <DashboardShell userName={user?.name}>
@@ -414,6 +444,12 @@ export default function CampaignChannelsPage() {
                 ) : null}
               </div>
 
+              {instanceNotFound ? (
+                <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  A instancia nao foi encontrada na Evolution. Prepare a conexao novamente.
+                </p>
+              ) : null}
+
               {canWrite ? (
                 <div className="flex flex-wrap gap-2">
                   {showPrepare ? (
@@ -423,7 +459,7 @@ export default function CampaignChannelsPage() {
                       disabled={preparing}
                       onClick={handlePrepareConnection}
                     >
-                      {preparing ? 'Preparando...' : 'Preparar conexao'}
+                      {preparing ? 'Preparando...' : prepareLabel}
                     </button>
                   ) : null}
                   {showQrButton ? (

@@ -2,6 +2,9 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EvolutionApiException, toSafeEvolutionError } from './evolution.errors';
 
+export const EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE =
+  'Instancia Evolution nao encontrada. Prepare a conexao novamente.';
+
 export type EvolutionHealthResult = {
   ok: boolean;
   message: string;
@@ -57,9 +60,11 @@ export class EvolutionAdapter {
 
   async findInstance(instanceName: string): Promise<EvolutionInstanceSummary | null> {
     const instances = await this.listInstances();
-    const normalized = instanceName.trim().toLowerCase();
+    const target = this.normalizeName(instanceName);
+    if (!target) return null;
+
     return (
-      instances.find((item) => item.instanceName.trim().toLowerCase() === normalized) ?? null
+      instances.find((item) => this.normalizeName(item.instanceName) === target) ?? null
     );
   }
 
@@ -78,41 +83,49 @@ export class EvolutionAdapter {
   }
 
   async getConnectionState(instanceName: string): Promise<EvolutionConnectionState> {
-    const payload = await this.request(
-      'GET',
-      `/instance/connectionState/${encodeURIComponent(instanceName)}`,
-    );
+    try {
+      const payload = await this.request(
+        'GET',
+        `/instance/connectionState/${encodeURIComponent(instanceName)}`,
+      );
 
-    return {
-      instanceName,
-      state: this.extractState(payload) ?? 'unknown',
-    };
+      return {
+        instanceName,
+        state: this.extractState(payload) ?? 'unknown',
+      };
+    } catch (error) {
+      throw this.mapMissingInstanceError(error);
+    }
   }
 
   async getQrCode(instanceName: string): Promise<EvolutionQrCodeResult> {
-    const payload = await this.request(
-      'GET',
-      `/instance/connect/${encodeURIComponent(instanceName)}`,
-    );
+    try {
+      const payload = await this.request(
+        'GET',
+        `/instance/connect/${encodeURIComponent(instanceName)}`,
+      );
 
-    const record = this.asRecord(payload) ?? {};
-    const nested =
-      this.asRecord(record.qrcode) ?? this.asRecord(record.instance) ?? record;
+      const record = this.asRecord(payload) ?? {};
+      const nested =
+        this.asRecord(record.qrcode) ?? this.asRecord(record.instance) ?? record;
 
-    const base64 =
-      this.asString(nested.base64) ??
-      this.asString(nested.qrcode) ??
-      this.asString(record.base64);
-    const code = this.asString(nested.code) ?? this.asString(record.code);
-    const pairingCode =
-      this.asString(nested.pairingCode) ?? this.asString(record.pairingCode);
+      const base64 =
+        this.asString(nested.base64) ??
+        this.asString(nested.qrcode) ??
+        this.asString(record.base64);
+      const code = this.asString(nested.code) ?? this.asString(record.code);
+      const pairingCode =
+        this.asString(nested.pairingCode) ?? this.asString(record.pairingCode);
 
-    return {
-      instanceName,
-      base64: base64 || undefined,
-      code: code || undefined,
-      pairingCode: pairingCode || undefined,
-    };
+      return {
+        instanceName,
+        base64: base64 || undefined,
+        code: code || undefined,
+        pairingCode: pairingCode || undefined,
+      };
+    } catch (error) {
+      throw this.mapMissingInstanceError(error);
+    }
   }
 
   async prepareInstance(instanceName: string): Promise<EvolutionPrepareResult> {
@@ -120,10 +133,13 @@ export class EvolutionAdapter {
     if (existing) {
       let state = existing.status;
       try {
-        const connection = await this.getConnectionState(instanceName);
+        const connection = await this.getConnectionState(existing.instanceName);
         state = connection.state;
-      } catch {
-        // Mantem status da listagem se connectionState falhar.
+      } catch (error) {
+        if (this.isInstanceNotFoundError(error)) {
+          return this.createInstance(instanceName);
+        }
+        // Mantem status da listagem se connectionState falhar por outro motivo.
       }
 
       return {
@@ -198,7 +214,11 @@ export class EvolutionAdapter {
         );
         throw new EvolutionApiException(
           this.messageFromEvolutionBody(data, response.status),
-          response.status >= 500 ? HttpStatus.BAD_GATEWAY : HttpStatus.BAD_REQUEST,
+          response.status === 404
+            ? HttpStatus.NOT_FOUND
+            : response.status >= 500
+              ? HttpStatus.BAD_GATEWAY
+              : HttpStatus.BAD_REQUEST,
         );
       }
 
@@ -229,10 +249,40 @@ export class EvolutionAdapter {
     }
 
     if (status === 404) {
-      return 'Recurso nao encontrado na Evolution API';
+      return EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE;
     }
 
     return 'Evolution API retornou erro';
+  }
+
+  private mapMissingInstanceError(error: unknown): never {
+    if (this.isInstanceNotFoundError(error)) {
+      throw new EvolutionApiException(
+        EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    throw error;
+  }
+
+  private isInstanceNotFoundError(error: unknown) {
+    if (!(error instanceof EvolutionApiException)) {
+      return false;
+    }
+
+    if (error.getStatus() === HttpStatus.NOT_FOUND) {
+      return true;
+    }
+
+    const payload = error.getResponse();
+    const message =
+      typeof payload === 'string'
+        ? payload
+        : typeof payload === 'object' && payload && 'message' in payload
+          ? String((payload as { message?: unknown }).message ?? '')
+          : error.message;
+
+    return /nao encontrad/i.test(message) || /not found/i.test(message);
   }
 
   private containsSensitiveToken(value: string) {
@@ -240,37 +290,82 @@ export class EvolutionAdapter {
   }
 
   private normalizeInstanceList(payload: unknown): EvolutionInstanceSummary[] {
-    const items = Array.isArray(payload)
-      ? payload
-      : Array.isArray(this.asRecord(payload)?.instances)
-        ? (this.asRecord(payload)?.instances as unknown[])
-        : Array.isArray(this.asRecord(payload)?.data)
-          ? (this.asRecord(payload)?.data as unknown[])
-          : [];
+    const items = this.collectInstanceCandidates(payload);
+    const unique = new Map<string, EvolutionInstanceSummary>();
 
-    return items
-      .map((item) => this.normalizeInstance(item))
-      .filter((item): item is EvolutionInstanceSummary => Boolean(item));
+    for (const item of items) {
+      const normalized = this.normalizeInstance(item);
+      if (!normalized) continue;
+      unique.set(this.normalizeName(normalized.instanceName), normalized);
+    }
+
+    return [...unique.values()];
+  }
+
+  private collectInstanceCandidates(payload: unknown): unknown[] {
+    if (Array.isArray(payload)) {
+      return payload;
+    }
+
+    if (typeof payload === 'string') {
+      return [payload];
+    }
+
+    const record = this.asRecord(payload);
+    if (!record) return [];
+
+    const candidates: unknown[] = [];
+
+    for (const key of ['instances', 'data', 'response', 'result', 'items']) {
+      const value = record[key];
+      if (Array.isArray(value)) {
+        candidates.push(...value);
+      } else if (value) {
+        candidates.push(value);
+      }
+    }
+
+    if (this.asString(record.instanceName) || this.asString(record.name) || record.instance) {
+      candidates.push(record);
+    }
+
+    return candidates;
   }
 
   private normalizeInstance(value: unknown): EvolutionInstanceSummary | null {
+    if (typeof value === 'string') {
+      const instanceName = value.trim();
+      return instanceName ? { instanceName } : null;
+    }
+
     const record = this.asRecord(value);
     if (!record) return null;
 
-    const nested = this.asRecord(record.instance) ?? record;
+    const nested =
+      this.asRecord(record.instance) ??
+      this.asRecord(record.Instance) ??
+      this.asRecord(record.data) ??
+      record;
+
     const instanceName =
       this.asString(nested.instanceName) ??
+      this.asString(nested.instanceId) ??
       this.asString(nested.name) ??
+      this.asString(nested.id) ??
       this.asString(record.instanceName) ??
-      this.asString(record.name);
+      this.asString(record.instanceId) ??
+      this.asString(record.name) ??
+      this.asString(record.id);
 
     if (!instanceName) return null;
 
     return {
       instanceName,
       status:
+        this.asString(nested.connectionStatus) ??
         this.asString(nested.status) ??
         this.asString(nested.state) ??
+        this.asString(record.connectionStatus) ??
         this.asString(record.status) ??
         this.asString(record.state) ??
         undefined,
@@ -289,10 +384,16 @@ export class EvolutionAdapter {
     return (
       this.asString(nested.state) ??
       this.asString(nested.status) ??
+      this.asString(nested.connectionStatus) ??
       this.asString(record.state) ??
       this.asString(record.status) ??
+      this.asString(record.connectionStatus) ??
       undefined
     );
+  }
+
+  private normalizeName(value: string) {
+    return value.trim().toLowerCase();
   }
 
   private asRecord(value: unknown): JsonRecord | null {
@@ -303,6 +404,9 @@ export class EvolutionAdapter {
   }
 
   private asString(value: unknown): string | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
     if (typeof value !== 'string') return undefined;
     const trimmed = value.trim();
     return trimmed || undefined;
