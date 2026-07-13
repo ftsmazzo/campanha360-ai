@@ -101,6 +101,9 @@ export class EvolutionService {
           created: prepared.created,
           previouslyMissing: !existing,
           status: updated.status,
+          hasQrcode: Boolean(
+            prepared.qrcode?.base64 || prepared.qrcode?.code || prepared.qrcode?.pairingCode,
+          ),
         },
       });
 
@@ -110,6 +113,13 @@ export class EvolutionService {
           instanceName: prepared.instanceName,
           created: prepared.created,
           state: prepared.state ?? null,
+          qrcode: prepared.qrcode
+            ? {
+                base64: prepared.qrcode.base64 ?? null,
+                code: prepared.qrcode.code ?? null,
+                pairingCode: prepared.qrcode.pairingCode ?? null,
+              }
+            : null,
         },
       };
     } catch (error) {

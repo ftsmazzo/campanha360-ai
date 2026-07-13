@@ -716,6 +716,11 @@ export type EvolutionPrepareResponse = {
     instanceName: string;
     created: boolean;
     state: string | null;
+    qrcode: {
+      base64: string | null;
+      code: string | null;
+      pairingCode: string | null;
+    } | null;
   };
 };
 

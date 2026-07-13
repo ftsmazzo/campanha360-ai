@@ -31,6 +31,11 @@ export type EvolutionPrepareResult = {
   instanceName: string;
   created: boolean;
   state?: string;
+  qrcode?: {
+    base64?: string;
+    code?: string;
+    pairingCode?: string;
+  };
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -75,10 +80,33 @@ export class EvolutionAdapter {
       integration: 'WHATSAPP-BAILEYS',
     });
 
+    const record = this.asRecord(payload) ?? {};
+    const instance = this.asRecord(record.instance);
+    const resolvedName =
+      this.asString(instance?.instanceName) ??
+      this.asString(record.instanceName) ??
+      instanceName;
+
+    const qrFields = this.extractQrCodeFields(payload);
+    const hasQr = Boolean(qrFields.base64 || qrFields.code || qrFields.pairingCode);
+
+    if (!hasQr) {
+      this.logger.warn(
+        `Evolution create sem QR reconhecido para instancia "${resolvedName}". ${this.describePayloadShape(payload)}`,
+      );
+    }
+
     return {
-      instanceName,
+      instanceName: resolvedName,
       created: true,
       state: this.extractState(payload) ?? 'connecting',
+      qrcode: hasQr
+        ? {
+            base64: qrFields.base64,
+            code: qrFields.code,
+            pairingCode: qrFields.pairingCode,
+          }
+        : undefined,
     };
   }
 

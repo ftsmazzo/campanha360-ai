@@ -73,6 +73,7 @@ export default function CampaignChannelsPage() {
   const [preparing, setPreparing] = useState(false);
   const [loadingQr, setLoadingQr] = useState(false);
   const [refreshingStatus, setRefreshingStatus] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [qrBase64, setQrBase64] = useState<string | null>(null);
@@ -217,11 +218,28 @@ export default function CampaignChannelsPage() {
       const result = await prepareChannelEvolution(token, campaignId, whatsappAccount.id);
       applyAccountUpdate(result.channelAccount);
       setEvolutionState(result.evolution.state);
-      setSuccess(
-        result.evolution.created
-          ? 'Instancia Evolution criada. Gere o QR Code para conectar o WhatsApp.'
-          : 'Instancia Evolution pronta. Gere o QR Code para conectar o WhatsApp.',
-      );
+
+      const qr = result.evolution.qrcode;
+      const hasQr = Boolean(qr?.base64 || qr?.code || qr?.pairingCode);
+
+      if (hasQr && qr) {
+        setQrBase64(qr.base64);
+        setQrCode(qr.code);
+        setPairingCode(qr.pairingCode);
+        setSuccess(
+          result.evolution.created
+            ? 'Instancia criada. Escaneie o QR Code no WhatsApp do celular.'
+            : 'QR Code disponivel. Escaneie no WhatsApp do celular.',
+        );
+      } else if (!result.evolution.created) {
+        setSuccess(
+          'A instancia ja existe, mas a Evolution nao retornou QR Code. Se necessario, reinicie a conexao.',
+        );
+      } else {
+        setSuccess(
+          'Instancia Evolution criada, mas a Evolution nao retornou QR Code neste momento. Tente Gerar QR Code.',
+        );
+      }
     } catch (err) {
       setError(
         err instanceof ApiError
@@ -230,6 +248,36 @@ export default function CampaignChannelsPage() {
       );
     } finally {
       setPreparing(false);
+    }
+  }
+
+  async function handleRestartConnection() {
+    const token = getStoredToken();
+    if (!token || !canWrite || !whatsappAccount) return;
+
+    setResetting(true);
+    setError(null);
+    setSuccess(null);
+    clearQrState();
+    setEvolutionState(null);
+
+    try {
+      const updated = await updateChannelAccount(token, campaignId, whatsappAccount.id, {
+        externalAccountId: null,
+        status: 'DISCONNECTED',
+      });
+      applyAccountUpdate(updated);
+      setSuccess(
+        'Conexao reiniciada localmente. Clique em Preparar conexao para criar a instancia novamente.',
+      );
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel reiniciar a conexao local',
+      );
+    } finally {
+      setResetting(false);
     }
   }
 
@@ -479,6 +527,14 @@ export default function CampaignChannelsPage() {
                     onClick={handleRefreshStatus}
                   >
                     {refreshingStatus ? 'Atualizando...' : 'Atualizar status'}
+                  </button>
+                  <button
+                    className="rounded-md border border-amber-700 px-4 py-2 text-sm font-medium text-amber-900 disabled:opacity-60"
+                    type="button"
+                    disabled={resetting}
+                    onClick={handleRestartConnection}
+                  >
+                    {resetting ? 'Reiniciando...' : 'Reiniciar conexao'}
                   </button>
                 </div>
               ) : (
