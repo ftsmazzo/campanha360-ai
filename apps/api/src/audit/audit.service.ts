@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 type AuditInput = {
   organizationId: string;
   campaignId?: string;
-  actorUserId: string;
+  actorUserId?: string | null;
   action: string;
   entityType: string;
   entityId?: string;
@@ -21,7 +21,7 @@ export class AuditService {
       data: {
         organizationId: input.organizationId,
         campaignId: input.campaignId,
-        actorUserId: input.actorUserId,
+        actorUserId: input.actorUserId ?? null,
         action: input.action,
         entityType: input.entityType,
         entityId: input.entityId,

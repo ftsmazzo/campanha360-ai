@@ -259,16 +259,70 @@ A tela foi remodelada para um **painel único de canais**:
 
 ### Objetivo
 
-Receber mensagens reais da Evolution e persistir no domínio.
+Receber mensagens reais da Evolution e persistir no domínio do Campanha360, sem inbox.
 
-### Entregas previstas
+### Entregas
 
-- endpoint de webhook;
-- persistência de payload bruto;
-- normalização de mensagem recebida;
-- criação/associação de contato por telefone;
-- criação de `Message` e `ConversationThread`;
-- respeito a opt-out.
+- endpoint público `POST /webhooks/evolution/:channelAccountId`;
+- validação da conta (`WHATSAPP_EVOLUTION`, não `ARCHIVED`);
+- normalização mínima (externalMessageId, telefone, texto, timestamp);
+- persistência de `Contact`, `ConversationThread` e `Message` inbound;
+- deduplicação por `externalMessageId` quando disponível;
+- respeito a opt-out (ainda grava inbound; marca `optOutActive: true` no `rawPayload`);
+- audit/log seguro sem payload completo sensível.
+
+### URL esperada
+
+```text
+{API_PUBLIC_URL}/webhooks/evolution/{channelAccountId}
+```
+
+Exemplo:
+
+```text
+https://campanha-360-ia-api.kxryyk.easypanel.host/webhooks/evolution/<channelAccountId>
+```
+
+Configure este URL manualmente na Evolution (configuração automática do webhook fica fora do escopo desta subetapa).
+
+### Segurança
+
+- env opcional `EVOLUTION_WEBHOOK_SECRET`;
+- se existir, o header `x-campanha360-webhook-secret` deve coincidir;
+- se **não** existir, o webhook é aceito sem autenticação — risco em produção; documentado em `.env.example`.
+
+### Regras
+
+- não implementar inbox;
+- não implementar envio de mensagens;
+- não implementar resposta automática;
+- não implementar IA nem automações;
+- não configurar automaticamente o webhook na Evolution;
+- preservar conexão/QR já validada e `GET /health`.
+
+### Critério de aceite
+
+A Evolution consegue enviar webhook para a API; mensagens inbound são normalizadas e persistidas no domínio, com dedup e opt-out respeitado (sem auto-resposta).
+
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- módulo `apps/api/src/webhooks/`;
+- índices Prisma em `Message` (externalMessageId) e `ConversationThread` (lookup por conta/contato);
+- audit `CHANNEL_EVOLUTION_WEBHOOK_PROCESSED` / `CHANNEL_EVOLUTION_WEBHOOK_IGNORED`;
+- env `EVOLUTION_WEBHOOK_SECRET` em `.env.example`.
+
+### Fora de escopo (mantido)
+
+- configuração automática do webhook na Evolution;
+- inbox;
+- envio de mensagens;
+- resposta automática;
+- IA;
+- automações.
 
 ## 10. Subetapa 04.5 — Inbox básico
 
@@ -328,10 +382,10 @@ O sistema consegue receber mensagens reais via Evolution, agrupá-las em convers
 
 ## 15. Próximo passo após este documento
 
-A subetapa **04.3 — Fluxo comercial de conexão WhatsApp** está concluída.
+A subetapa **04.4 — Webhook Evolution inbound** está concluída.
 
 O próximo prompt ao Cursor deve executar apenas:
 
-**04.4 — Webhook Evolution inbound.**
+**04.5 — Inbox básico.**
 
-Webhook, inbox, envio, recebimento, IA e automações continuam fora do escopo até suas subetapas.
+Envio, resposta automática, IA, automações e configuração automática do webhook na Evolution continuam fora do escopo até suas subetapas.

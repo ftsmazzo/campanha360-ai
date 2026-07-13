@@ -12,6 +12,7 @@ import { EvolutionModule } from '../evolution/evolution.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TagsModule } from '../tags/tags.module';
+import { EvolutionWebhookModule } from '../webhooks/evolution-webhook.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -29,6 +30,7 @@ import { HealthController } from './health.controller';
     ContactTasksModule,
     ContactTimelineModule,
     EvolutionModule,
+    EvolutionWebhookModule,
   ],
   controllers: [HealthController],
 })
