@@ -162,6 +162,55 @@ export default function CampaignChannelsPage() {
     load();
   }, [campaignId, router]);
 
+  function applyPrepareResult(
+    accountId: string,
+    result: Awaited<ReturnType<typeof prepareChannelEvolution>>,
+  ) {
+    applyAccountUpdate(result.channelAccount);
+
+    const qr = result.evolution.qrcode;
+    const hasQr = Boolean(qr?.base64);
+
+    if (result.channelAccount.status === 'CONNECTED') {
+      patchCardState(accountId, {
+        qrBase64: null,
+        evolutionState: result.evolution.state,
+        message: 'WhatsApp conectado.',
+        error: null,
+      });
+      return;
+    }
+
+    if (hasQr && qr?.base64) {
+      patchCardState(accountId, {
+        qrBase64: qr.base64,
+        evolutionState: result.evolution.state,
+        message: result.evolution.created
+          ? 'Instancia criada. Escaneie o QR Code no WhatsApp do celular.'
+          : 'QR Code disponivel. Escaneie no WhatsApp do celular.',
+        error: null,
+      });
+      return;
+    }
+
+    if (!result.evolution.created) {
+      patchCardState(accountId, {
+        evolutionState: result.evolution.state,
+        message:
+          'A instancia ja existe, mas a Evolution nao retornou QR Code. Se necessario, reinicie a conexao.',
+        error: null,
+      });
+      return;
+    }
+
+    patchCardState(accountId, {
+      evolutionState: result.evolution.state,
+      message:
+        'Instancia criada, mas a Evolution nao retornou QR Code neste momento. Use Gerar QR Code.',
+      error: null,
+    });
+  }
+
   async function handleCreateChannel(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const token = getStoredToken();
@@ -171,8 +220,10 @@ export default function CampaignChannelsPage() {
     setPageError(null);
     setPageSuccess(null);
 
+    let created: ChannelAccountItem | null = null;
+
     try {
-      const created = await createChannelAccount(token, campaignId, {
+      created = await createChannelAccount(token, campaignId, {
         name: createName.trim(),
         provider: 'WHATSAPP_EVOLUTION',
         status: 'DISCONNECTED',
@@ -182,7 +233,33 @@ export default function CampaignChannelsPage() {
       setCreateName('');
       setCreateInstanceName('');
       setShowCreateForm(false);
-      setPageSuccess(`Canal "${created.name}" criado. Use Preparar conexao no card para continuar.`);
+      patchCardState(created.id, {
+        preparing: true,
+        error: null,
+        message: 'Canal criado. Preparando conexao Evolution...',
+        qrBase64: null,
+      });
+
+      try {
+        const prepared = await prepareChannelEvolution(token, campaignId, created.id);
+        applyPrepareResult(created.id, prepared);
+        setPageSuccess(`Canal "${created.name}" criado e preparado.`);
+      } catch (prepareError) {
+        const message =
+          prepareError instanceof ApiError
+            ? prepareError.message
+            : 'Canal criado, mas a conexao Evolution nao foi preparada.';
+        patchCardState(created.id, {
+          error: `${message} Use Preparar conexao no card para tentar novamente.`,
+          message: null,
+          qrBase64: null,
+        });
+        setPageSuccess(
+          `Canal "${created.name}" criado. A preparacao da conexao falhou — tente Preparar conexao no card.`,
+        );
+      } finally {
+        patchCardState(created.id, { preparing: false });
+      }
     } catch (err) {
       setPageError(
         err instanceof ApiError ? err.message : 'Nao foi possivel criar o canal WhatsApp',
@@ -205,38 +282,7 @@ export default function CampaignChannelsPage() {
 
     try {
       const result = await prepareChannelEvolution(token, campaignId, account.id);
-      applyAccountUpdate(result.channelAccount);
-
-      const qr = result.evolution.qrcode;
-      const hasQr = Boolean(qr?.base64);
-
-      if (result.channelAccount.status === 'CONNECTED') {
-        patchCardState(account.id, {
-          qrBase64: null,
-          evolutionState: result.evolution.state,
-          message: 'WhatsApp conectado.',
-        });
-      } else if (hasQr && qr?.base64) {
-        patchCardState(account.id, {
-          qrBase64: qr.base64,
-          evolutionState: result.evolution.state,
-          message: result.evolution.created
-            ? 'Instancia criada. Escaneie o QR Code no WhatsApp do celular.'
-            : 'QR Code disponivel. Escaneie no WhatsApp do celular.',
-        });
-      } else if (!result.evolution.created) {
-        patchCardState(account.id, {
-          evolutionState: result.evolution.state,
-          message:
-            'A instancia ja existe, mas a Evolution nao retornou QR Code. Se necessario, reinicie a conexao.',
-        });
-      } else {
-        patchCardState(account.id, {
-          evolutionState: result.evolution.state,
-          message:
-            'Instancia criada, mas a Evolution nao retornou QR Code neste momento. Tente Gerar QR Code.',
-        });
-      }
+      applyPrepareResult(account.id, result);
     } catch (err) {
       const message =
         err instanceof ApiError
@@ -553,7 +599,7 @@ export default function CampaignChannelsPage() {
               type="submit"
               disabled={creating}
             >
-              {creating ? 'Criando...' : 'Criar canal'}
+              {creating ? 'Criando e conectando...' : 'Criar e conectar'}
             </button>
           </form>
         ) : null}
