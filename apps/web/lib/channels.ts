@@ -23,6 +23,24 @@ export function getChannelAccountStatusLabel(status: string) {
   return CHANNEL_ACCOUNT_STATUSES.find((item) => item.value === status)?.label ?? status;
 }
 
+export function getActiveWhatsappEvolutionAccount<
+  T extends { provider: string; status: string },
+>(accounts: T[]): T | null {
+  return (
+    accounts.find(
+      (account) =>
+        account.provider === 'WHATSAPP_EVOLUTION' && account.status !== 'ARCHIVED',
+    ) ?? null
+  );
+}
+
+export function toQrCodeImageSrc(base64: string) {
+  const trimmed = base64.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('data:')) return trimmed;
+  return `data:image/png;base64,${trimmed}`;
+}
+
 export function configToText(value: Record<string, unknown> | null) {
   if (!value) return '';
   return JSON.stringify(value, null, 2);

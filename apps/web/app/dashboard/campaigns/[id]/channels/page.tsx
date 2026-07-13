@@ -14,22 +14,37 @@ import {
   fetchCampaign,
   fetchChannelAccount,
   fetchChannelAccounts,
+  fetchChannelEvolutionQrCode,
+  fetchChannelEvolutionStatus,
   fetchMe,
   getStoredToken,
+  prepareChannelEvolution,
   updateChannelAccount,
 } from '../../../../../lib/api';
 import {
   CHANNEL_ACCOUNT_STATUSES,
   CHANNEL_PROVIDERS,
   configToText,
+  getActiveWhatsappEvolutionAccount,
   getChannelAccountStatusLabel,
   getChannelProviderLabel,
   parseConfig,
+  toQrCodeImageSrc,
 } from '../../../../../lib/channels';
 import { canWriteRole, getOrganizationRole } from '../../../../../lib/roles';
 
+const DEFAULT_WHATSAPP_ACCOUNT_NAME = 'WhatsApp da campanha';
+
 function formatDate(value: string) {
   return new Date(value).toLocaleString('pt-BR');
+}
+
+function upsertAccount(list: ChannelAccountItem[], account: ChannelAccountItem) {
+  const exists = list.some((item) => item.id === account.id);
+  const next = exists
+    ? list.map((item) => (item.id === account.id ? { ...item, ...account } : item))
+    : [...list, account];
+  return next.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 export default function CampaignChannelsPage() {
@@ -46,14 +61,26 @@ export default function CampaignChannelsPage() {
   const [externalAccountId, setExternalAccountId] = useState('');
   const [config, setConfig] = useState('');
   const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  const [loadingQr, setLoadingQr] = useState(false);
+  const [refreshingStatus, setRefreshingStatus] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [qrBase64, setQrBase64] = useState<string | null>(null);
+  const [qrCode, setQrCode] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [evolutionState, setEvolutionState] = useState<string | null>(null);
 
   const canWrite = campaign
     ? canWriteRole(getOrganizationRole(user?.memberships, campaign.organizationId))
     : false;
+
+  const whatsappAccount = getActiveWhatsappEvolutionAccount(accounts);
+  const qrImageSrc = qrBase64 ? toQrCodeImageSrc(qrBase64) : null;
 
   function resetForm() {
     setName('');
@@ -64,10 +91,21 @@ export default function CampaignChannelsPage() {
     setEditingAccountId(null);
   }
 
+  function clearQrState() {
+    setQrBase64(null);
+    setQrCode(null);
+    setPairingCode(null);
+  }
+
+  function applyAccountUpdate(account: ChannelAccountItem) {
+    setAccounts((current) => upsertAccount(current, account));
+  }
+
   async function startEdit(account: ChannelAccountItem) {
     const token = getStoredToken();
     if (!token || !canWrite) return;
 
+    setShowAdvanced(true);
     setEditingAccountId(account.id);
     setName(account.name);
     setProvider(account.provider);
@@ -123,6 +161,123 @@ export default function CampaignChannelsPage() {
     load();
   }, [campaignId, router]);
 
+  async function handleConnectWhatsapp() {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+
+    setConnecting(true);
+    setError(null);
+    setSuccess(null);
+    clearQrState();
+
+    try {
+      const created = await createChannelAccount(token, campaignId, {
+        name: DEFAULT_WHATSAPP_ACCOUNT_NAME,
+        provider: 'WHATSAPP_EVOLUTION',
+        status: 'DISCONNECTED',
+      });
+      applyAccountUpdate(created);
+      setSuccess('WhatsApp preparado para conexao. Clique em Preparar conexao para continuar.');
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel criar a conta WhatsApp da campanha',
+      );
+    } finally {
+      setConnecting(false);
+    }
+  }
+
+  async function handlePrepareConnection() {
+    const token = getStoredToken();
+    if (!token || !canWrite || !whatsappAccount) return;
+
+    setPreparing(true);
+    setError(null);
+    setSuccess(null);
+    clearQrState();
+
+    try {
+      const result = await prepareChannelEvolution(token, campaignId, whatsappAccount.id);
+      applyAccountUpdate(result.channelAccount);
+      setEvolutionState(result.evolution.state);
+      setSuccess(
+        result.evolution.created
+          ? 'Instancia Evolution criada. Gere o QR Code para conectar o WhatsApp.'
+          : 'Instancia Evolution pronta. Gere o QR Code para conectar o WhatsApp.',
+      );
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel preparar a conexao com a Evolution',
+      );
+    } finally {
+      setPreparing(false);
+    }
+  }
+
+  async function handleGenerateQrCode() {
+    const token = getStoredToken();
+    if (!token || !canWrite || !whatsappAccount) return;
+
+    setLoadingQr(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const result = await fetchChannelEvolutionQrCode(token, campaignId, whatsappAccount.id);
+      applyAccountUpdate(result.channelAccount);
+      setQrBase64(result.evolution.qrcode.base64);
+      setQrCode(result.evolution.qrcode.code);
+      setPairingCode(result.evolution.qrcode.pairingCode);
+
+      if (
+        !result.evolution.qrcode.base64 &&
+        !result.evolution.qrcode.code &&
+        !result.evolution.qrcode.pairingCode
+      ) {
+        setSuccess('Solicitacao enviada, mas a Evolution nao retornou QR Code neste momento.');
+      } else {
+        setSuccess('QR Code gerado. Escaneie no WhatsApp do celular.');
+      }
+    } catch (err) {
+      clearQrState();
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel gerar o QR Code na Evolution',
+      );
+    } finally {
+      setLoadingQr(false);
+    }
+  }
+
+  async function handleRefreshStatus() {
+    const token = getStoredToken();
+    if (!token || !canWrite || !whatsappAccount) return;
+
+    setRefreshingStatus(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const result = await fetchChannelEvolutionStatus(token, campaignId, whatsappAccount.id);
+      applyAccountUpdate(result.channelAccount);
+      setEvolutionState(result.evolution.state);
+      setSuccess(`Status atualizado: ${getChannelAccountStatusLabel(result.channelAccount.status)}.`);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel consultar o status na Evolution',
+      );
+    } finally {
+      setRefreshingStatus(false);
+    }
+  }
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const token = getStoredToken();
@@ -154,15 +309,11 @@ export default function CampaignChannelsPage() {
           externalAccountId: externalAccountId.trim() || null,
           config: configValue ?? null,
         });
-        setAccounts((current) =>
-          current.map((item) => (item.id === updated.id ? updated : item)),
-        );
+        applyAccountUpdate(updated);
         setSuccess('Conta de canal atualizada com sucesso.');
       } else {
         const created = await createChannelAccount(token, campaignId, payload);
-        setAccounts((current) =>
-          [...current, created].sort((left, right) => left.name.localeCompare(right.name)),
-        );
+        applyAccountUpdate(created);
         setSuccess('Conta de canal criada com sucesso.');
       }
       resetForm();
@@ -181,6 +332,15 @@ export default function CampaignChannelsPage() {
     );
   }
 
+  const showPrepare =
+    Boolean(whatsappAccount) &&
+    (whatsappAccount?.status === 'DISCONNECTED' || whatsappAccount?.status === 'ERROR');
+  const showQrButton =
+    Boolean(whatsappAccount) &&
+    (whatsappAccount?.status === 'CONNECTING' ||
+      Boolean(whatsappAccount?.externalAccountId) ||
+      whatsappAccount?.status === 'CONNECTED');
+
   return (
     <DashboardShell userName={user?.name}>
       <div className="max-w-3xl space-y-6">
@@ -192,105 +352,134 @@ export default function CampaignChannelsPage() {
           <h2 className="text-2xl font-semibold text-[#151515]">Canais da campanha</h2>
           {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
           <p className="mt-2 text-sm text-[#65655f]">
-            Cadastre contas de canal para futura integracao com provedores externos.
+            Conecte o WhatsApp da campanha de forma simples, sem configurar detalhes tecnicos.
           </p>
         </div>
 
-        {error ? <p className="text-sm text-red-700">{error}</p> : null}
-        {success ? <p className="text-sm text-[#47624f]">{success}</p> : null}
+        {error ? (
+          <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+            {error}
+          </p>
+        ) : null}
+        {success ? (
+          <p className="rounded-md border border-[#d7e5d8] bg-[#eef2ea] px-3 py-2 text-sm text-[#47624f]">
+            {success}
+          </p>
+        ) : null}
 
-        {canWrite ? (
-          <form className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleSubmit}>
-            <h3 className="font-medium text-[#24382b]">
-              {editingAccountId ? 'Editar conta de canal' : 'Nova conta de canal'}
-            </h3>
-            <label className="block">
-              <span className="text-sm font-medium text-[#34342f]">Nome</span>
-              <input
-                className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                required
-                minLength={2}
-              />
-            </label>
-            <label className="block">
-              <span className="text-sm font-medium text-[#34342f]">Provider</span>
-              <select
-                className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
-                value={provider}
-                onChange={(event) => setProvider(event.target.value)}
-              >
-                {CHANNEL_PROVIDERS.map((item) => (
-                  <option key={item.value} value={item.value} disabled={!item.available}>
-                    {item.label}
-                    {!item.available ? ' (em breve)' : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              <span className="text-sm font-medium text-[#34342f]">Status</span>
-              <select
-                className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
-                value={status}
-                onChange={(event) => setStatus(event.target.value)}
-              >
-                {CHANNEL_ACCOUNT_STATUSES.map((item) => (
-                  <option key={item.value} value={item.value}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              <span className="text-sm font-medium text-[#34342f]">ID externo (opcional)</span>
-              <input
-                className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
-                value={externalAccountId}
-                onChange={(event) => setExternalAccountId(event.target.value)}
-                placeholder="Ex.: nome da instancia Evolution"
-              />
-            </label>
-            <label className="block">
-              <span className="text-sm font-medium text-[#34342f]">Config JSON (opcional)</span>
-              <textarea
-                className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2 font-mono text-sm"
-                rows={5}
-                value={config}
-                onChange={(event) => setConfig(event.target.value)}
-                placeholder={'{\n  "baseUrl": "https://..."\n}'}
-              />
-            </label>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                type="submit"
-                disabled={saving}
-              >
-                {saving
-                  ? 'Salvando...'
-                  : editingAccountId
-                    ? 'Salvar conta'
-                    : 'Criar conta'}
-              </button>
-              {editingAccountId ? (
+        <section className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4">
+          <div>
+            <h3 className="font-medium text-[#24382b]">WhatsApp</h3>
+            <p className="mt-1 text-sm text-[#65655f]">
+              Fluxo principal para conectar o WhatsApp via Evolution.
+            </p>
+          </div>
+
+          {!whatsappAccount ? (
+            <div className="space-y-3">
+              <p className="text-sm text-[#65655f]">
+                Nenhum WhatsApp ativo nesta campanha.
+              </p>
+              {canWrite ? (
                 <button
-                  className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
+                  className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                   type="button"
-                  onClick={resetForm}
+                  disabled={connecting}
+                  onClick={handleConnectWhatsapp}
                 >
-                  Cancelar edicao
+                  {connecting ? 'Criando...' : 'Conectar WhatsApp'}
                 </button>
+              ) : (
+                <p className="text-sm text-[#65655f]">
+                  Seu perfil possui acesso somente leitura.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="rounded-md border border-[#eef2ea] bg-[#f7f7f5] px-3 py-3">
+                <p className="font-medium text-[#24382b]">{whatsappAccount.name}</p>
+                <p className="mt-1 text-sm text-[#65655f]">
+                  Status: {getChannelAccountStatusLabel(whatsappAccount.status)}
+                </p>
+                {evolutionState ? (
+                  <p className="mt-1 text-xs text-[#65655f]">
+                    Estado Evolution: {evolutionState}
+                  </p>
+                ) : null}
+                {whatsappAccount.externalAccountId ? (
+                  <p className="mt-1 text-xs text-[#65655f]">
+                    Instancia: {whatsappAccount.externalAccountId}
+                  </p>
+                ) : null}
+              </div>
+
+              {canWrite ? (
+                <div className="flex flex-wrap gap-2">
+                  {showPrepare ? (
+                    <button
+                      className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                      type="button"
+                      disabled={preparing}
+                      onClick={handlePrepareConnection}
+                    >
+                      {preparing ? 'Preparando...' : 'Preparar conexao'}
+                    </button>
+                  ) : null}
+                  {showQrButton ? (
+                    <button
+                      className="rounded-md border border-[#24382b] px-4 py-2 text-sm font-semibold text-[#24382b] disabled:opacity-60"
+                      type="button"
+                      disabled={loadingQr}
+                      onClick={handleGenerateQrCode}
+                    >
+                      {loadingQr ? 'Gerando QR...' : 'Gerar QR Code'}
+                    </button>
+                  ) : null}
+                  <button
+                    className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b] disabled:opacity-60"
+                    type="button"
+                    disabled={refreshingStatus}
+                    onClick={handleRefreshStatus}
+                  >
+                    {refreshingStatus ? 'Atualizando...' : 'Atualizar status'}
+                  </button>
+                </div>
+              ) : (
+                <p className="text-sm text-[#65655f]">
+                  Visualizacao somente leitura. Acoes de conexao exigem OWNER, ADMIN ou MANAGER.
+                </p>
+              )}
+
+              {qrImageSrc || qrCode || pairingCode ? (
+                <div className="space-y-3 rounded-md border border-[#eef2ea] bg-[#f7f7f5] p-4">
+                  <h4 className="text-sm font-medium text-[#24382b]">Conexao WhatsApp</h4>
+                  {qrImageSrc ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={qrImageSrc}
+                      alt="QR Code WhatsApp"
+                      className="mx-auto h-56 w-56 rounded-md border border-[#deddd4] bg-white p-2"
+                    />
+                  ) : null}
+                  {qrCode ? (
+                    <p className="text-sm text-[#34342f]">
+                      Codigo: <span className="font-mono">{qrCode}</span>
+                    </p>
+                  ) : null}
+                  {pairingCode ? (
+                    <p className="text-sm text-[#34342f]">
+                      Pairing code: <span className="font-mono">{pairingCode}</span>
+                    </p>
+                  ) : null}
+                  <p className="text-xs text-[#65655f]">
+                    Abra o WhatsApp no celular, va em Aparelhos conectados e escaneie o QR Code.
+                  </p>
+                </div>
               ) : null}
             </div>
-          </form>
-        ) : (
-          <p className="rounded-md border border-[#deddd4] bg-white p-4 text-sm text-[#65655f]">
-            Seu perfil possui acesso somente leitura. Contas de canal podem ser visualizadas, mas nao
-            editadas.
-          </p>
-        )}
+          )}
+        </section>
 
         <section className="space-y-3 rounded-md border border-[#deddd4] bg-white p-4">
           <h3 className="font-medium text-[#24382b]">Contas cadastradas</h3>
@@ -324,13 +513,127 @@ export default function CampaignChannelsPage() {
                       type="button"
                       onClick={() => startEdit(account)}
                     >
-                      Editar
+                      Editar avancado
                     </button>
                   ) : null}
                 </li>
               ))}
             </ul>
           )}
+        </section>
+
+        <section className="space-y-4 rounded-md border border-dashed border-[#c9c8c0] bg-[#fafaf8] p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="font-medium text-[#65655f]">Configuracoes avancadas</h3>
+              <p className="mt-1 text-sm text-[#65655f]">
+                Area tecnica para provider, status, ID externo e config JSON. Nao e o fluxo normal de
+                conexao do WhatsApp.
+              </p>
+            </div>
+            <button
+              className="rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm font-medium text-[#24382b]"
+              type="button"
+              onClick={() => setShowAdvanced((current) => !current)}
+            >
+              {showAdvanced ? 'Ocultar' : 'Mostrar'}
+            </button>
+          </div>
+
+          {showAdvanced ? (
+            canWrite ? (
+              <form className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleSubmit}>
+                <h4 className="font-medium text-[#24382b]">
+                  {editingAccountId ? 'Editar conta de canal' : 'Nova conta de canal'}
+                </h4>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Nome</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={name}
+                    onChange={(event) => setName(event.target.value)}
+                    required
+                    minLength={2}
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Provider</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={provider}
+                    onChange={(event) => setProvider(event.target.value)}
+                  >
+                    {CHANNEL_PROVIDERS.map((item) => (
+                      <option key={item.value} value={item.value} disabled={!item.available}>
+                        {item.label}
+                        {!item.available ? ' (em breve)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Status</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={status}
+                    onChange={(event) => setStatus(event.target.value)}
+                  >
+                    {CHANNEL_ACCOUNT_STATUSES.map((item) => (
+                      <option key={item.value} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">ID externo (opcional)</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={externalAccountId}
+                    onChange={(event) => setExternalAccountId(event.target.value)}
+                    placeholder="Ex.: nome da instancia Evolution"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-sm font-medium text-[#34342f]">Config JSON (opcional)</span>
+                  <textarea
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2 font-mono text-sm"
+                    rows={5}
+                    value={config}
+                    onChange={(event) => setConfig(event.target.value)}
+                    placeholder={'{\n  "instanceName": "minha-instancia"\n}'}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    type="submit"
+                    disabled={saving}
+                  >
+                    {saving
+                      ? 'Salvando...'
+                      : editingAccountId
+                        ? 'Salvar conta'
+                        : 'Criar conta'}
+                  </button>
+                  {editingAccountId ? (
+                    <button
+                      className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
+                      type="button"
+                      onClick={resetForm}
+                    >
+                      Cancelar edicao
+                    </button>
+                  ) : null}
+                </div>
+              </form>
+            ) : (
+              <p className="text-sm text-[#65655f]">
+                Seu perfil possui acesso somente leitura. Configuracoes avancadas nao podem ser
+                editadas.
+              </p>
+            )
+          ) : null}
         </section>
       </div>
     </DashboardShell>

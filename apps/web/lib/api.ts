@@ -709,3 +709,68 @@ export function updateChannelAccount(
     token,
   );
 }
+
+export type EvolutionPrepareResponse = {
+  channelAccount: ChannelAccountItem;
+  evolution: {
+    instanceName: string;
+    created: boolean;
+    state: string | null;
+  };
+};
+
+export type EvolutionStatusResponse = {
+  channelAccount: ChannelAccountItem;
+  evolution: {
+    instanceName: string;
+    state: string;
+  };
+};
+
+export type EvolutionQrCodeResponse = {
+  channelAccount: ChannelAccountItem;
+  evolution: {
+    instanceName: string;
+    qrcode: {
+      base64: string | null;
+      code: string | null;
+      pairingCode: string | null;
+    };
+  };
+};
+
+export function prepareChannelEvolution(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+) {
+  return request<EvolutionPrepareResponse>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/prepare`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function fetchChannelEvolutionStatus(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+) {
+  return request<EvolutionStatusResponse>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/status`,
+    {},
+    token,
+  );
+}
+
+export function fetchChannelEvolutionQrCode(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+) {
+  return request<EvolutionQrCodeResponse>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/qrcode`,
+    {},
+    token,
+  );
+}
