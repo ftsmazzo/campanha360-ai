@@ -105,27 +105,123 @@ export class EvolutionAdapter {
         `/instance/connect/${encodeURIComponent(instanceName)}`,
       );
 
-      const record = this.asRecord(payload) ?? {};
-      const nested =
-        this.asRecord(record.qrcode) ?? this.asRecord(record.instance) ?? record;
+      const extracted = this.extractQrCodeFields(payload);
 
-      const base64 =
-        this.asString(nested.base64) ??
-        this.asString(nested.qrcode) ??
-        this.asString(record.base64);
-      const code = this.asString(nested.code) ?? this.asString(record.code);
-      const pairingCode =
-        this.asString(nested.pairingCode) ?? this.asString(record.pairingCode);
+      if (!extracted.base64 && !extracted.code && !extracted.pairingCode) {
+        this.logger.warn(
+          `Evolution QR Code sem campos reconhecidos para instancia "${instanceName}". Chaves de alto nivel: ${this.topLevelKeys(payload).join(', ') || '(nenhuma)'}`,
+        );
+      }
 
       return {
         instanceName,
-        base64: base64 || undefined,
-        code: code || undefined,
-        pairingCode: pairingCode || undefined,
+        base64: extracted.base64,
+        code: extracted.code,
+        pairingCode: extracted.pairingCode,
       };
     } catch (error) {
       throw this.mapMissingInstanceError(error);
     }
+  }
+
+  private extractQrCodeFields(payload: unknown): {
+    base64?: string;
+    code?: string;
+    pairingCode?: string;
+  } {
+    const root = this.asRecord(payload) ?? {};
+    const qrcode =
+      this.asRecord(root.qrcode) ??
+      this.asRecord(root.qrCode) ??
+      null;
+    const instance = this.asRecord(root.instance) ?? this.asRecord(root.Instance) ?? null;
+    const response =
+      this.asRecord(root.response) ?? this.asRecord(root.result) ?? this.asRecord(root.data) ?? null;
+    const responseQrcode =
+      this.asRecord(response?.qrcode) ?? this.asRecord(response?.qrCode) ?? null;
+    const instanceQrcode =
+      this.asRecord(instance?.qrcode) ?? this.asRecord(instance?.qrCode) ?? null;
+
+    const base64 =
+      this.asQrBase64(root.base64) ??
+      this.asQrBase64(root.qrcode) ??
+      this.asQrBase64(root.qrCode) ??
+      this.asQrBase64(qrcode?.base64) ??
+      this.asQrBase64(qrcode?.qrcode) ??
+      this.asQrBase64(qrcode?.qrCode) ??
+      this.asQrBase64(instance?.base64) ??
+      this.asQrBase64(instance?.qrcode) ??
+      this.asQrBase64(instance?.qrCode) ??
+      this.asQrBase64(instanceQrcode?.base64) ??
+      this.asQrBase64(instanceQrcode?.qrcode) ??
+      this.asQrBase64(response?.base64) ??
+      this.asQrBase64(response?.qrcode) ??
+      this.asQrBase64(response?.qrCode) ??
+      this.asQrBase64(responseQrcode?.base64) ??
+      this.asQrBase64(responseQrcode?.qrcode);
+
+    const code =
+      this.asNonImageCode(root.code) ??
+      this.asNonImageCode(qrcode?.code) ??
+      this.asNonImageCode(instance?.code) ??
+      this.asNonImageCode(response?.code) ??
+      this.asNonImageCode(responseQrcode?.code) ??
+      this.asNonImageCode(instanceQrcode?.code);
+
+    const pairingCode =
+      this.asString(root.pairingCode) ??
+      this.asString(qrcode?.pairingCode) ??
+      this.asString(instance?.pairingCode) ??
+      this.asString(response?.pairingCode) ??
+      this.asString(responseQrcode?.pairingCode) ??
+      this.asString(instanceQrcode?.pairingCode);
+
+    return {
+      base64: base64 || undefined,
+      code: code || undefined,
+      pairingCode: pairingCode || undefined,
+    };
+  }
+
+  private asQrBase64(value: unknown): string | undefined {
+    if (typeof value !== 'string') return undefined;
+    const trimmed = value.trim();
+    if (!trimmed) return undefined;
+
+    // QR as data URL or raw base64 — preserve both.
+    if (trimmed.startsWith('data:image')) {
+      return trimmed;
+    }
+
+    // Avoid treating short codes / pairing strings as base64 images.
+    if (trimmed.length < 64 && !/^[A-Za-z0-9+/=\r\n]+$/.test(trimmed)) {
+      return undefined;
+    }
+
+    // If it looks like a short alphanumeric code, leave it for `code`.
+    if (trimmed.length < 64 && /^[A-Za-z0-9-]+$/.test(trimmed)) {
+      return undefined;
+    }
+
+    return trimmed;
+  }
+
+  private asNonImageCode(value: unknown): string | undefined {
+    const text = this.asString(value);
+    if (!text) return undefined;
+    if (text.startsWith('data:image')) return undefined;
+    // Long base64 blobs are QR images, not pairing/text codes.
+    if (text.length >= 64 && /^[A-Za-z0-9+/=\r\n]+$/.test(text)) return undefined;
+    return text;
+  }
+
+  private topLevelKeys(payload: unknown): string[] {
+    if (Array.isArray(payload)) {
+      return ['[array]'];
+    }
+    const record = this.asRecord(payload);
+    if (!record) return [];
+    return Object.keys(record).sort();
   }
 
   async prepareInstance(instanceName: string): Promise<EvolutionPrepareResult> {
