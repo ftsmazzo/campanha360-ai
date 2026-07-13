@@ -77,7 +77,6 @@ export default function CampaignChannelsPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [qrBase64, setQrBase64] = useState<string | null>(null);
-  const [qrCode, setQrCode] = useState<string | null>(null);
   const [pairingCode, setPairingCode] = useState<string | null>(null);
   const [evolutionState, setEvolutionState] = useState<string | null>(null);
 
@@ -99,12 +98,14 @@ export default function CampaignChannelsPage() {
 
   function clearQrState() {
     setQrBase64(null);
-    setQrCode(null);
     setPairingCode(null);
   }
 
   function applyAccountUpdate(account: ChannelAccountItem) {
     setAccounts((current) => upsertAccount(current, account));
+    if (account.provider === 'WHATSAPP_EVOLUTION' && account.status === 'CONNECTED') {
+      clearQrState();
+    }
   }
 
   function handleInstanceMissingLocally() {
@@ -220,11 +221,13 @@ export default function CampaignChannelsPage() {
       setEvolutionState(result.evolution.state);
 
       const qr = result.evolution.qrcode;
-      const hasQr = Boolean(qr?.base64 || qr?.code || qr?.pairingCode);
+      const hasQr = Boolean(qr?.base64 || qr?.pairingCode);
 
-      if (hasQr && qr) {
+      if (result.channelAccount.status === 'CONNECTED') {
+        clearQrState();
+        setSuccess('WhatsApp conectado.');
+      } else if (hasQr && qr) {
         setQrBase64(qr.base64);
-        setQrCode(qr.code);
         setPairingCode(qr.pairingCode);
         setSuccess(
           result.evolution.created
@@ -293,12 +296,13 @@ export default function CampaignChannelsPage() {
       const result = await fetchChannelEvolutionQrCode(token, campaignId, whatsappAccount.id);
       applyAccountUpdate(result.channelAccount);
       setQrBase64(result.evolution.qrcode.base64);
-      setQrCode(result.evolution.qrcode.code);
       setPairingCode(result.evolution.qrcode.pairingCode);
 
-      if (
+      if (result.channelAccount.status === 'CONNECTED') {
+        clearQrState();
+        setSuccess('WhatsApp conectado.');
+      } else if (
         !result.evolution.qrcode.base64 &&
-        !result.evolution.qrcode.code &&
         !result.evolution.qrcode.pairingCode
       ) {
         setSuccess('Solicitacao enviada, mas a Evolution nao retornou QR Code neste momento.');
@@ -332,7 +336,14 @@ export default function CampaignChannelsPage() {
       const result = await fetchChannelEvolutionStatus(token, campaignId, whatsappAccount.id);
       applyAccountUpdate(result.channelAccount);
       setEvolutionState(result.evolution.state);
-      setSuccess(`Status atualizado: ${getChannelAccountStatusLabel(result.channelAccount.status)}.`);
+      if (result.channelAccount.status === 'CONNECTED') {
+        clearQrState();
+        setSuccess('WhatsApp conectado.');
+      } else {
+        setSuccess(
+          `Status atualizado: ${getChannelAccountStatusLabel(result.channelAccount.status)}.`,
+        );
+      }
     } catch (err) {
       const message =
         err instanceof ApiError
@@ -402,22 +413,28 @@ export default function CampaignChannelsPage() {
   }
 
   const instanceNotFound = isInstanceNotFoundMessage(error);
+  const isConnected = whatsappAccount?.status === 'CONNECTED';
+  const canShowQrPanel =
+    Boolean(whatsappAccount) &&
+    ['CONNECTING', 'DISCONNECTED', 'ERROR'].includes(whatsappAccount?.status ?? '');
+  const shortPairingCode =
+    pairingCode && pairingCode.trim().length > 0 && pairingCode.trim().length <= 16
+      ? pairingCode.trim()
+      : null;
   const showPrepare =
     Boolean(whatsappAccount) &&
+    !isConnected &&
     (whatsappAccount?.status === 'DISCONNECTED' ||
       whatsappAccount?.status === 'ERROR' ||
-      whatsappAccount?.status === 'CONNECTED' ||
       instanceNotFound);
   const showQrButton =
     Boolean(whatsappAccount) &&
     !instanceNotFound &&
+    !isConnected &&
     (whatsappAccount?.status === 'CONNECTING' ||
-      Boolean(whatsappAccount?.externalAccountId) ||
-      whatsappAccount?.status === 'CONNECTED');
-  const prepareLabel =
-    instanceNotFound || whatsappAccount?.status === 'CONNECTED'
-      ? 'Preparar conexao novamente'
-      : 'Preparar conexao';
+      whatsappAccount?.status === 'DISCONNECTED' ||
+      whatsappAccount?.status === 'ERROR');
+  const prepareLabel = instanceNotFound ? 'Preparar conexao novamente' : 'Preparar conexao';
 
   return (
     <DashboardShell userName={user?.name}>
@@ -492,6 +509,12 @@ export default function CampaignChannelsPage() {
                 ) : null}
               </div>
 
+              {isConnected ? (
+                <p className="rounded-md border border-[#d7e5d8] bg-[#eef2ea] px-3 py-2 text-sm font-medium text-[#47624f]">
+                  WhatsApp conectado.
+                </p>
+              ) : null}
+
               {instanceNotFound ? (
                 <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
                   A instancia nao foi encontrada na Evolution. Prepare a conexao novamente.
@@ -543,7 +566,7 @@ export default function CampaignChannelsPage() {
                 </p>
               )}
 
-              {qrImageSrc || qrCode || pairingCode ? (
+              {canShowQrPanel && (qrImageSrc || shortPairingCode) ? (
                 <div className="space-y-3 rounded-md border border-[#eef2ea] bg-[#f7f7f5] p-4">
                   <h4 className="text-sm font-medium text-[#24382b]">Conexao WhatsApp</h4>
                   {qrImageSrc ? (
@@ -554,14 +577,9 @@ export default function CampaignChannelsPage() {
                       className="mx-auto h-56 w-56 rounded-md border border-[#deddd4] bg-white p-2"
                     />
                   ) : null}
-                  {qrCode ? (
+                  {shortPairingCode ? (
                     <p className="text-sm text-[#34342f]">
-                      Codigo: <span className="font-mono">{qrCode}</span>
-                    </p>
-                  ) : null}
-                  {pairingCode ? (
-                    <p className="text-sm text-[#34342f]">
-                      Pairing code: <span className="font-mono">{pairingCode}</span>
+                      Pairing code: <span className="font-mono">{shortPairingCode}</span>
                     </p>
                   ) : null}
                   <p className="text-xs text-[#65655f]">
