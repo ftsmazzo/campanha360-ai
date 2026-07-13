@@ -109,7 +109,7 @@ export class EvolutionAdapter {
 
       if (!extracted.base64 && !extracted.code && !extracted.pairingCode) {
         this.logger.warn(
-          `Evolution QR Code sem campos reconhecidos para instancia "${instanceName}". Chaves de alto nivel: ${this.topLevelKeys(payload).join(', ') || '(nenhuma)'}`,
+          `Evolution QR Code sem campos reconhecidos para instancia "${instanceName}". ${this.describePayloadShape(payload)}`,
         );
       }
 
@@ -222,6 +222,35 @@ export class EvolutionAdapter {
     const record = this.asRecord(payload);
     if (!record) return [];
     return Object.keys(record).sort();
+  }
+
+  private describePayloadShape(payload: unknown): string {
+    const root = this.asRecord(payload);
+    const parts = [
+      `Chaves de alto nivel: ${this.topLevelKeys(payload).join(', ') || '(nenhuma)'}`,
+    ];
+
+    if (!root) {
+      return parts.join(' | ');
+    }
+
+    const nestedTargets: Array<{ label: string; value: unknown }> = [
+      { label: 'instance', value: root.instance },
+      { label: 'response', value: root.response },
+      { label: 'data', value: root.data },
+      { label: 'qrcode', value: root.qrcode },
+      { label: 'qrCode', value: root.qrCode },
+    ];
+
+    for (const target of nestedTargets) {
+      const nested = this.asRecord(target.value);
+      if (!nested) continue;
+      parts.push(
+        `Chaves de ${target.label}: ${Object.keys(nested).sort().join(', ') || '(nenhuma)'}`,
+      );
+    }
+
+    return parts.join(' | ');
   }
 
   async prepareInstance(instanceName: string): Promise<EvolutionPrepareResult> {
