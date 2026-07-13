@@ -233,6 +233,18 @@ Usuário com permissão consegue conectar WhatsApp pela UI comercial, ver QR Cod
 - client Web: `prepareChannelEvolution`, `fetchChannelEvolutionStatus`, `fetchChannelEvolutionQrCode`;
 - seção **Configurações avançadas** preservando CRUD técnico da 04.1.
 
+### Ajuste de UX — múltiplos canais WhatsApp
+
+A tela foi remodelada para um **painel único de canais**:
+
+- botão **Novo canal WhatsApp** com formulário simples (nome + instância Evolution opcional);
+- cada conta `WHATSAPP_EVOLUTION` ativa aparece como **card próprio** com ações isoladas;
+- QR Code, loading e mensagens ficam no card correspondente;
+- criar um novo canal não oculta nem substitui canais anteriores;
+- **Arquivar canal** usa `PUT` com status `ARCHIVED` e remove o card do painel;
+- arquivar **não** exclui a instância na Evolution (exclusão real fica fora do escopo);
+- configurações avançadas ficam recolhidas por card.
+
 ### Fora de escopo (mantido)
 
 - webhook;
@@ -240,7 +252,8 @@ Usuário com permissão consegue conectar WhatsApp pela UI comercial, ver QR Cod
 - envio;
 - recebimento;
 - IA;
-- automações.
+- automações;
+- exclusão real da instância na Evolution.
 
 ## 9. Subetapa 04.4 — Webhook Evolution inbound
 

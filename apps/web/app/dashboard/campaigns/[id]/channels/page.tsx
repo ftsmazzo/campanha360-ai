@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
@@ -22,18 +22,47 @@ import {
   updateChannelAccount,
 } from '../../../../../lib/api';
 import {
-  CHANNEL_ACCOUNT_STATUSES,
-  CHANNEL_PROVIDERS,
   configToText,
-  getActiveWhatsappEvolutionAccount,
   getChannelAccountStatusLabel,
-  getChannelProviderLabel,
+  listVisibleWhatsappEvolutionAccounts,
   parseConfig,
   toQrCodeImageSrc,
 } from '../../../../../lib/channels';
 import { canWriteRole, getOrganizationRole } from '../../../../../lib/roles';
 
-const DEFAULT_WHATSAPP_ACCOUNT_NAME = 'WhatsApp da campanha';
+type CardUiState = {
+  preparing: boolean;
+  loadingQr: boolean;
+  refreshing: boolean;
+  resetting: boolean;
+  archiving: boolean;
+  savingAdvanced: boolean;
+  showAdvanced: boolean;
+  qrBase64: string | null;
+  message: string | null;
+  error: string | null;
+  evolutionState: string | null;
+  advancedName: string;
+  advancedExternalId: string;
+  advancedConfig: string;
+};
+
+const emptyCardState = (): CardUiState => ({
+  preparing: false,
+  loadingQr: false,
+  refreshing: false,
+  resetting: false,
+  archiving: false,
+  savingAdvanced: false,
+  showAdvanced: false,
+  qrBase64: null,
+  message: null,
+  error: null,
+  evolutionState: null,
+  advancedName: '',
+  advancedExternalId: '',
+  advancedConfig: '',
+});
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString('pt-BR');
@@ -60,87 +89,42 @@ export default function CampaignChannelsPage() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [campaign, setCampaign] = useState<CampaignItem | null>(null);
   const [accounts, setAccounts] = useState<ChannelAccountItem[]>([]);
-  const [name, setName] = useState('');
-  const [provider, setProvider] = useState('WHATSAPP_EVOLUTION');
-  const [status, setStatus] = useState('DISCONNECTED');
-  const [externalAccountId, setExternalAccountId] = useState('');
-  const [config, setConfig] = useState('');
-  const [editingAccountId, setEditingAccountId] = useState<string | null>(null);
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [cardUi, setCardUi] = useState<Record<string, CardUiState>>({});
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [createName, setCreateName] = useState('');
+  const [createInstanceName, setCreateInstanceName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [pageError, setPageError] = useState<string | null>(null);
+  const [pageSuccess, setPageSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [connecting, setConnecting] = useState(false);
-  const [preparing, setPreparing] = useState(false);
-  const [loadingQr, setLoadingQr] = useState(false);
-  const [refreshingStatus, setRefreshingStatus] = useState(false);
-  const [resetting, setResetting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
-  const [qrBase64, setQrBase64] = useState<string | null>(null);
-  const [pairingCode, setPairingCode] = useState<string | null>(null);
-  const [evolutionState, setEvolutionState] = useState<string | null>(null);
 
   const canWrite = campaign
     ? canWriteRole(getOrganizationRole(user?.memberships, campaign.organizationId))
     : false;
 
-  const whatsappAccount = getActiveWhatsappEvolutionAccount(accounts);
-  const qrImageSrc = qrBase64 ? toQrCodeImageSrc(qrBase64) : null;
+  const visibleAccounts = useMemo(
+    () => listVisibleWhatsappEvolutionAccounts(accounts),
+    [accounts],
+  );
 
-  function resetForm() {
-    setName('');
-    setProvider('WHATSAPP_EVOLUTION');
-    setStatus('DISCONNECTED');
-    setExternalAccountId('');
-    setConfig('');
-    setEditingAccountId(null);
+  function getCardState(accountId: string): CardUiState {
+    return cardUi[accountId] ?? emptyCardState();
   }
 
-  function clearQrState() {
-    setQrBase64(null);
-    setPairingCode(null);
+  function patchCardState(accountId: string, patch: Partial<CardUiState>) {
+    setCardUi((current) => ({
+      ...current,
+      [accountId]: {
+        ...(current[accountId] ?? emptyCardState()),
+        ...patch,
+      },
+    }));
   }
 
   function applyAccountUpdate(account: ChannelAccountItem) {
     setAccounts((current) => upsertAccount(current, account));
     if (account.provider === 'WHATSAPP_EVOLUTION' && account.status === 'CONNECTED') {
-      clearQrState();
-    }
-  }
-
-  function handleInstanceMissingLocally() {
-    if (!whatsappAccount) return;
-    applyAccountUpdate({
-      ...whatsappAccount,
-      status: 'DISCONNECTED',
-    });
-    clearQrState();
-    setEvolutionState(null);
-  }
-
-  async function startEdit(account: ChannelAccountItem) {
-    const token = getStoredToken();
-    if (!token || !canWrite) return;
-
-    setShowAdvanced(true);
-    setEditingAccountId(account.id);
-    setName(account.name);
-    setProvider(account.provider);
-    setStatus(account.status);
-    setExternalAccountId(account.externalAccountId ?? '');
-    setConfig('');
-    setError(null);
-    setSuccess(null);
-
-    try {
-      const full = await fetchChannelAccount(token, campaignId, account.id);
-      setConfig(configToText(full.config ?? null));
-    } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : 'Nao foi possivel carregar a config da conta de canal',
-      );
+      patchCardState(account.id, { qrBase64: null });
     }
   }
 
@@ -167,8 +151,8 @@ export default function CampaignChannelsPage() {
           router.replace('/login');
           return;
         }
-        setError(
-          err instanceof ApiError ? err.message : 'Nao foi possivel carregar contas de canal',
+        setPageError(
+          err instanceof ApiError ? err.message : 'Nao foi possivel carregar canais',
         );
       } finally {
         setLoading(false);
@@ -178,229 +162,309 @@ export default function CampaignChannelsPage() {
     load();
   }, [campaignId, router]);
 
-  async function handleConnectWhatsapp() {
+  async function handleCreateChannel(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
     const token = getStoredToken();
-    if (!token || !canWrite) return;
+    if (!token || !canWrite || !createName.trim()) return;
 
-    setConnecting(true);
-    setError(null);
-    setSuccess(null);
-    clearQrState();
+    setCreating(true);
+    setPageError(null);
+    setPageSuccess(null);
 
     try {
       const created = await createChannelAccount(token, campaignId, {
-        name: DEFAULT_WHATSAPP_ACCOUNT_NAME,
+        name: createName.trim(),
         provider: 'WHATSAPP_EVOLUTION',
         status: 'DISCONNECTED',
+        externalAccountId: createInstanceName.trim() || undefined,
       });
       applyAccountUpdate(created);
-      setSuccess('WhatsApp preparado para conexao. Clique em Preparar conexao para continuar.');
+      setCreateName('');
+      setCreateInstanceName('');
+      setShowCreateForm(false);
+      setPageSuccess(`Canal "${created.name}" criado. Use Preparar conexao no card para continuar.`);
     } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : 'Nao foi possivel criar a conta WhatsApp da campanha',
+      setPageError(
+        err instanceof ApiError ? err.message : 'Nao foi possivel criar o canal WhatsApp',
       );
     } finally {
-      setConnecting(false);
+      setCreating(false);
     }
   }
 
-  async function handlePrepareConnection() {
+  async function handlePrepare(account: ChannelAccountItem) {
     const token = getStoredToken();
-    if (!token || !canWrite || !whatsappAccount) return;
+    if (!token || !canWrite) return;
 
-    setPreparing(true);
-    setError(null);
-    setSuccess(null);
-    clearQrState();
+    patchCardState(account.id, {
+      preparing: true,
+      error: null,
+      message: null,
+      qrBase64: null,
+    });
 
     try {
-      const result = await prepareChannelEvolution(token, campaignId, whatsappAccount.id);
+      const result = await prepareChannelEvolution(token, campaignId, account.id);
       applyAccountUpdate(result.channelAccount);
-      setEvolutionState(result.evolution.state);
 
       const qr = result.evolution.qrcode;
-      const hasQr = Boolean(qr?.base64 || qr?.pairingCode);
+      const hasQr = Boolean(qr?.base64);
 
       if (result.channelAccount.status === 'CONNECTED') {
-        clearQrState();
-        setSuccess('WhatsApp conectado.');
-      } else if (hasQr && qr) {
-        setQrBase64(qr.base64);
-        setPairingCode(qr.pairingCode);
-        setSuccess(
-          result.evolution.created
+        patchCardState(account.id, {
+          qrBase64: null,
+          evolutionState: result.evolution.state,
+          message: 'WhatsApp conectado.',
+        });
+      } else if (hasQr && qr?.base64) {
+        patchCardState(account.id, {
+          qrBase64: qr.base64,
+          evolutionState: result.evolution.state,
+          message: result.evolution.created
             ? 'Instancia criada. Escaneie o QR Code no WhatsApp do celular.'
             : 'QR Code disponivel. Escaneie no WhatsApp do celular.',
-        );
+        });
       } else if (!result.evolution.created) {
-        setSuccess(
-          'A instancia ja existe, mas a Evolution nao retornou QR Code. Se necessario, reinicie a conexao.',
-        );
+        patchCardState(account.id, {
+          evolutionState: result.evolution.state,
+          message:
+            'A instancia ja existe, mas a Evolution nao retornou QR Code. Se necessario, reinicie a conexao.',
+        });
       } else {
-        setSuccess(
-          'Instancia Evolution criada, mas a Evolution nao retornou QR Code neste momento. Tente Gerar QR Code.',
-        );
+        patchCardState(account.id, {
+          evolutionState: result.evolution.state,
+          message:
+            'Instancia criada, mas a Evolution nao retornou QR Code neste momento. Tente Gerar QR Code.',
+        });
       }
     } catch (err) {
-      setError(
+      const message =
         err instanceof ApiError
           ? err.message
-          : 'Nao foi possivel preparar a conexao com a Evolution',
-      );
+          : 'Nao foi possivel preparar a conexao com a Evolution';
+      patchCardState(account.id, { error: message });
+      if (isInstanceNotFoundMessage(message)) {
+        applyAccountUpdate({ ...account, status: 'DISCONNECTED' });
+        patchCardState(account.id, { qrBase64: null });
+      }
     } finally {
-      setPreparing(false);
+      patchCardState(account.id, { preparing: false });
     }
   }
 
-  async function handleRestartConnection() {
+  async function handleGenerateQr(account: ChannelAccountItem) {
     const token = getStoredToken();
-    if (!token || !canWrite || !whatsappAccount) return;
+    if (!token || !canWrite) return;
 
-    setResetting(true);
-    setError(null);
-    setSuccess(null);
-    clearQrState();
-    setEvolutionState(null);
+    patchCardState(account.id, {
+      loadingQr: true,
+      error: null,
+      message: null,
+    });
 
     try {
-      const updated = await updateChannelAccount(token, campaignId, whatsappAccount.id, {
-        externalAccountId: null,
-        status: 'DISCONNECTED',
-      });
-      applyAccountUpdate(updated);
-      setSuccess(
-        'Conexao reiniciada localmente. Clique em Preparar conexao para criar a instancia novamente.',
-      );
-    } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? err.message
-          : 'Nao foi possivel reiniciar a conexao local',
-      );
-    } finally {
-      setResetting(false);
-    }
-  }
-
-  async function handleGenerateQrCode() {
-    const token = getStoredToken();
-    if (!token || !canWrite || !whatsappAccount) return;
-
-    setLoadingQr(true);
-    setError(null);
-    setSuccess(null);
-
-    try {
-      const result = await fetchChannelEvolutionQrCode(token, campaignId, whatsappAccount.id);
+      const result = await fetchChannelEvolutionQrCode(token, campaignId, account.id);
       applyAccountUpdate(result.channelAccount);
-      setQrBase64(result.evolution.qrcode.base64);
-      setPairingCode(result.evolution.qrcode.pairingCode);
 
       if (result.channelAccount.status === 'CONNECTED') {
-        clearQrState();
-        setSuccess('WhatsApp conectado.');
-      } else if (
-        !result.evolution.qrcode.base64 &&
-        !result.evolution.qrcode.pairingCode
-      ) {
-        setSuccess('Solicitacao enviada, mas a Evolution nao retornou QR Code neste momento.');
+        patchCardState(account.id, {
+          qrBase64: null,
+          message: 'WhatsApp conectado.',
+        });
+      } else if (result.evolution.qrcode.base64) {
+        patchCardState(account.id, {
+          qrBase64: result.evolution.qrcode.base64,
+          message: 'QR Code gerado. Escaneie no WhatsApp do celular.',
+        });
       } else {
-        setSuccess('QR Code gerado. Escaneie no WhatsApp do celular.');
+        patchCardState(account.id, {
+          qrBase64: null,
+          message: 'Solicitacao enviada, mas a Evolution nao retornou QR Code neste momento.',
+        });
       }
     } catch (err) {
-      clearQrState();
       const message =
         err instanceof ApiError
           ? err.message
           : 'Nao foi possivel gerar o QR Code na Evolution';
-      setError(message);
+      patchCardState(account.id, { error: message, qrBase64: null });
       if (isInstanceNotFoundMessage(message)) {
-        handleInstanceMissingLocally();
+        applyAccountUpdate({ ...account, status: 'DISCONNECTED' });
       }
     } finally {
-      setLoadingQr(false);
+      patchCardState(account.id, { loadingQr: false });
     }
   }
 
-  async function handleRefreshStatus() {
+  async function handleRefresh(account: ChannelAccountItem) {
     const token = getStoredToken();
-    if (!token || !canWrite || !whatsappAccount) return;
+    if (!token || !canWrite) return;
 
-    setRefreshingStatus(true);
-    setError(null);
-    setSuccess(null);
+    patchCardState(account.id, {
+      refreshing: true,
+      error: null,
+      message: null,
+    });
 
     try {
-      const result = await fetchChannelEvolutionStatus(token, campaignId, whatsappAccount.id);
+      const result = await fetchChannelEvolutionStatus(token, campaignId, account.id);
       applyAccountUpdate(result.channelAccount);
-      setEvolutionState(result.evolution.state);
       if (result.channelAccount.status === 'CONNECTED') {
-        clearQrState();
-        setSuccess('WhatsApp conectado.');
+        patchCardState(account.id, {
+          qrBase64: null,
+          evolutionState: result.evolution.state,
+          message: 'WhatsApp conectado.',
+        });
       } else {
-        setSuccess(
-          `Status atualizado: ${getChannelAccountStatusLabel(result.channelAccount.status)}.`,
-        );
+        patchCardState(account.id, {
+          evolutionState: result.evolution.state,
+          message: `Status atualizado: ${getChannelAccountStatusLabel(result.channelAccount.status)}.`,
+        });
       }
     } catch (err) {
       const message =
         err instanceof ApiError
           ? err.message
           : 'Nao foi possivel consultar o status na Evolution';
-      setError(message);
+      patchCardState(account.id, { error: message });
       if (isInstanceNotFoundMessage(message)) {
-        handleInstanceMissingLocally();
+        applyAccountUpdate({ ...account, status: 'DISCONNECTED' });
+        patchCardState(account.id, { qrBase64: null });
       }
     } finally {
-      setRefreshingStatus(false);
+      patchCardState(account.id, { refreshing: false });
     }
   }
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleRestart(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+
+    patchCardState(account.id, {
+      resetting: true,
+      error: null,
+      message: null,
+      qrBase64: null,
+      evolutionState: null,
+    });
+
+    try {
+      const updated = await updateChannelAccount(token, campaignId, account.id, {
+        externalAccountId: null,
+        status: 'DISCONNECTED',
+      });
+      applyAccountUpdate(updated);
+      patchCardState(account.id, {
+        message:
+          'Conexao reiniciada localmente. Clique em Preparar conexao para criar a instancia novamente.',
+      });
+    } catch (err) {
+      patchCardState(account.id, {
+        error:
+          err instanceof ApiError
+            ? err.message
+            : 'Nao foi possivel reiniciar a conexao local',
+      });
+    } finally {
+      patchCardState(account.id, { resetting: false });
+    }
+  }
+
+  async function handleArchive(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+
+    const confirmed = window.confirm(
+      `Arquivar o canal "${account.name}"?\n\nEle sai do painel, mas a instancia na Evolution nao e excluida.`,
+    );
+    if (!confirmed) return;
+
+    patchCardState(account.id, {
+      archiving: true,
+      error: null,
+      message: null,
+    });
+
+    try {
+      const updated = await updateChannelAccount(token, campaignId, account.id, {
+        status: 'ARCHIVED',
+      });
+      applyAccountUpdate(updated);
+      setPageSuccess(
+        `Canal "${account.name}" arquivado. A instancia na Evolution continua existindo.`,
+      );
+    } catch (err) {
+      patchCardState(account.id, {
+        error: err instanceof ApiError ? err.message : 'Nao foi possivel arquivar o canal',
+      });
+    } finally {
+      patchCardState(account.id, { archiving: false });
+    }
+  }
+
+  async function openAdvanced(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+
+    patchCardState(account.id, {
+      showAdvanced: true,
+      advancedName: account.name,
+      advancedExternalId: account.externalAccountId ?? '',
+      advancedConfig: '',
+      error: null,
+      message: null,
+    });
+
+    try {
+      const full = await fetchChannelAccount(token, campaignId, account.id);
+      patchCardState(account.id, {
+        advancedConfig: configToText(full.config ?? null),
+      });
+    } catch (err) {
+      patchCardState(account.id, {
+        error:
+          err instanceof ApiError
+            ? err.message
+            : 'Nao foi possivel carregar configuracoes avancadas',
+      });
+    }
+  }
+
+  async function handleAdvancedSave(account: ChannelAccountItem, event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const token = getStoredToken();
     if (!token || !canWrite) return;
 
-    setSaving(true);
-    setError(null);
-    setSuccess(null);
+    const state = getCardState(account.id);
+    patchCardState(account.id, { savingAdvanced: true, error: null, message: null });
 
     try {
       let configValue: Record<string, unknown> | undefined;
       try {
-        configValue = parseConfig(config);
+        configValue = parseConfig(state.advancedConfig);
       } catch {
         throw new ApiError('Config deve ser um JSON valido', 400);
       }
 
-      const payload = {
-        name,
-        provider,
-        status,
-        externalAccountId: externalAccountId.trim() || undefined,
-        config: configValue,
-      };
-
-      if (editingAccountId) {
-        const updated = await updateChannelAccount(token, campaignId, editingAccountId, {
-          ...payload,
-          externalAccountId: externalAccountId.trim() || null,
-          config: configValue ?? null,
-        });
-        applyAccountUpdate(updated);
-        setSuccess('Conta de canal atualizada com sucesso.');
-      } else {
-        const created = await createChannelAccount(token, campaignId, payload);
-        applyAccountUpdate(created);
-        setSuccess('Conta de canal criada com sucesso.');
-      }
-      resetForm();
+      const updated = await updateChannelAccount(token, campaignId, account.id, {
+        name: state.advancedName.trim(),
+        externalAccountId: state.advancedExternalId.trim() || null,
+        config: configValue ?? null,
+      });
+      applyAccountUpdate(updated);
+      patchCardState(account.id, {
+        showAdvanced: false,
+        message: 'Configuracoes avancadas salvas.',
+      });
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : 'Nao foi possivel salvar a conta de canal');
+      patchCardState(account.id, {
+        error:
+          err instanceof ApiError
+            ? err.message
+            : 'Nao foi possivel salvar configuracoes avancadas',
+      });
     } finally {
-      setSaving(false);
+      patchCardState(account.id, { savingAdvanced: false });
     }
   }
 
@@ -412,30 +476,6 @@ export default function CampaignChannelsPage() {
     );
   }
 
-  const instanceNotFound = isInstanceNotFoundMessage(error);
-  const isConnected = whatsappAccount?.status === 'CONNECTED';
-  const canShowQrPanel =
-    Boolean(whatsappAccount) &&
-    ['CONNECTING', 'DISCONNECTED', 'ERROR'].includes(whatsappAccount?.status ?? '');
-  const shortPairingCode =
-    pairingCode && pairingCode.trim().length > 0 && pairingCode.trim().length <= 16
-      ? pairingCode.trim()
-      : null;
-  const showPrepare =
-    Boolean(whatsappAccount) &&
-    !isConnected &&
-    (whatsappAccount?.status === 'DISCONNECTED' ||
-      whatsappAccount?.status === 'ERROR' ||
-      instanceNotFound);
-  const showQrButton =
-    Boolean(whatsappAccount) &&
-    !instanceNotFound &&
-    !isConnected &&
-    (whatsappAccount?.status === 'CONNECTING' ||
-      whatsappAccount?.status === 'DISCONNECTED' ||
-      whatsappAccount?.status === 'ERROR');
-  const prepareLabel = instanceNotFound ? 'Preparar conexao novamente' : 'Preparar conexao';
-
   return (
     <DashboardShell userName={user?.name}>
       <div className="max-w-3xl space-y-6">
@@ -443,307 +483,311 @@ export default function CampaignChannelsPage() {
           Voltar para campanha
         </Link>
 
-        <div>
-          <h2 className="text-2xl font-semibold text-[#151515]">Canais da campanha</h2>
-          {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
-          <p className="mt-2 text-sm text-[#65655f]">
-            Conecte o WhatsApp da campanha de forma simples, sem configurar detalhes tecnicos.
-          </p>
-        </div>
-
-        {error ? (
-          <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-            {error}
-          </p>
-        ) : null}
-        {success ? (
-          <p className="rounded-md border border-[#d7e5d8] bg-[#eef2ea] px-3 py-2 text-sm text-[#47624f]">
-            {success}
-          </p>
-        ) : null}
-
-        <section className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h3 className="font-medium text-[#24382b]">WhatsApp</h3>
-            <p className="mt-1 text-sm text-[#65655f]">
-              Fluxo principal para conectar o WhatsApp via Evolution.
+            <h2 className="text-2xl font-semibold text-[#151515]">Canais da campanha</h2>
+            {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
+            <p className="mt-2 text-sm text-[#65655f]">
+              Gerencie multiplos canais WhatsApp. Cada canal tem sua propria instancia e conexao.
             </p>
           </div>
-
-          {!whatsappAccount ? (
-            <div className="space-y-3">
-              <p className="text-sm text-[#65655f]">
-                Nenhum WhatsApp ativo nesta campanha.
-              </p>
-              {canWrite ? (
-                <button
-                  className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                  type="button"
-                  disabled={connecting}
-                  onClick={handleConnectWhatsapp}
-                >
-                  {connecting ? 'Criando...' : 'Conectar WhatsApp'}
-                </button>
-              ) : (
-                <p className="text-sm text-[#65655f]">
-                  Seu perfil possui acesso somente leitura.
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="rounded-md border border-[#eef2ea] bg-[#f7f7f5] px-3 py-3">
-                <p className="font-medium text-[#24382b]">{whatsappAccount.name}</p>
-                <p className="mt-1 text-sm text-[#65655f]">
-                  Status: {getChannelAccountStatusLabel(whatsappAccount.status)}
-                </p>
-                {evolutionState ? (
-                  <p className="mt-1 text-xs text-[#65655f]">
-                    Estado Evolution: {evolutionState}
-                  </p>
-                ) : null}
-                {whatsappAccount.externalAccountId ? (
-                  <p className="mt-1 text-xs text-[#65655f]">
-                    Instancia: {whatsappAccount.externalAccountId}
-                  </p>
-                ) : null}
-              </div>
-
-              {isConnected ? (
-                <p className="rounded-md border border-[#d7e5d8] bg-[#eef2ea] px-3 py-2 text-sm font-medium text-[#47624f]">
-                  WhatsApp conectado.
-                </p>
-              ) : null}
-
-              {instanceNotFound ? (
-                <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                  A instancia nao foi encontrada na Evolution. Prepare a conexao novamente.
-                </p>
-              ) : null}
-
-              {canWrite ? (
-                <div className="flex flex-wrap gap-2">
-                  {showPrepare ? (
-                    <button
-                      className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                      type="button"
-                      disabled={preparing}
-                      onClick={handlePrepareConnection}
-                    >
-                      {preparing ? 'Preparando...' : prepareLabel}
-                    </button>
-                  ) : null}
-                  {showQrButton ? (
-                    <button
-                      className="rounded-md border border-[#24382b] px-4 py-2 text-sm font-semibold text-[#24382b] disabled:opacity-60"
-                      type="button"
-                      disabled={loadingQr}
-                      onClick={handleGenerateQrCode}
-                    >
-                      {loadingQr ? 'Gerando QR...' : 'Gerar QR Code'}
-                    </button>
-                  ) : null}
-                  <button
-                    className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b] disabled:opacity-60"
-                    type="button"
-                    disabled={refreshingStatus}
-                    onClick={handleRefreshStatus}
-                  >
-                    {refreshingStatus ? 'Atualizando...' : 'Atualizar status'}
-                  </button>
-                  <button
-                    className="rounded-md border border-amber-700 px-4 py-2 text-sm font-medium text-amber-900 disabled:opacity-60"
-                    type="button"
-                    disabled={resetting}
-                    onClick={handleRestartConnection}
-                  >
-                    {resetting ? 'Reiniciando...' : 'Reiniciar conexao'}
-                  </button>
-                </div>
-              ) : (
-                <p className="text-sm text-[#65655f]">
-                  Visualizacao somente leitura. Acoes de conexao exigem OWNER, ADMIN ou MANAGER.
-                </p>
-              )}
-
-              {canShowQrPanel && (qrImageSrc || shortPairingCode) ? (
-                <div className="space-y-3 rounded-md border border-[#eef2ea] bg-[#f7f7f5] p-4">
-                  <h4 className="text-sm font-medium text-[#24382b]">Conexao WhatsApp</h4>
-                  {qrImageSrc ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img
-                      src={qrImageSrc}
-                      alt="QR Code WhatsApp"
-                      className="mx-auto h-56 w-56 rounded-md border border-[#deddd4] bg-white p-2"
-                    />
-                  ) : null}
-                  {shortPairingCode ? (
-                    <p className="text-sm text-[#34342f]">
-                      Pairing code: <span className="font-mono">{shortPairingCode}</span>
-                    </p>
-                  ) : null}
-                  <p className="text-xs text-[#65655f]">
-                    Abra o WhatsApp no celular, va em Aparelhos conectados e escaneie o QR Code.
-                  </p>
-                </div>
-              ) : null}
-            </div>
-          )}
-        </section>
-
-        <section className="space-y-3 rounded-md border border-[#deddd4] bg-white p-4">
-          <h3 className="font-medium text-[#24382b]">Contas cadastradas</h3>
-          {accounts.length === 0 ? (
-            <p className="text-sm text-[#65655f]">Nenhuma conta de canal cadastrada nesta campanha.</p>
-          ) : (
-            <ul className="space-y-3">
-              {accounts.map((account) => (
-                <li
-                  key={account.id}
-                  className="flex flex-col gap-3 rounded-md border border-[#eef2ea] bg-[#f7f7f5] p-3 md:flex-row md:items-start md:justify-between"
-                >
-                  <div>
-                    <p className="font-medium text-[#24382b]">{account.name}</p>
-                    <p className="mt-1 text-sm text-[#65655f]">
-                      {getChannelProviderLabel(account.provider)} ·{' '}
-                      {getChannelAccountStatusLabel(account.status)}
-                    </p>
-                    {account.externalAccountId ? (
-                      <p className="mt-1 text-sm text-[#65655f]">
-                        ID externo: {account.externalAccountId}
-                      </p>
-                    ) : null}
-                    <p className="mt-1 text-xs text-[#65655f]">
-                      Criada em {formatDate(account.createdAt)}
-                    </p>
-                  </div>
-                  {canWrite ? (
-                    <button
-                      className="self-start text-sm font-medium text-[#24382b] underline"
-                      type="button"
-                      onClick={() => startEdit(account)}
-                    >
-                      Editar avancado
-                    </button>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-
-        <section className="space-y-4 rounded-md border border-dashed border-[#c9c8c0] bg-[#fafaf8] p-4">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h3 className="font-medium text-[#65655f]">Configuracoes avancadas</h3>
-              <p className="mt-1 text-sm text-[#65655f]">
-                Area tecnica para provider, status, ID externo e config JSON. Nao e o fluxo normal de
-                conexao do WhatsApp.
-              </p>
-            </div>
+          {canWrite ? (
             <button
-              className="rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm font-medium text-[#24382b]"
+              className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white"
               type="button"
-              onClick={() => setShowAdvanced((current) => !current)}
+              onClick={() => {
+                setShowCreateForm((current) => !current);
+                setPageError(null);
+                setPageSuccess(null);
+              }}
             >
-              {showAdvanced ? 'Ocultar' : 'Mostrar'}
+              {showCreateForm ? 'Cancelar' : 'Novo canal WhatsApp'}
             </button>
-          </div>
-
-          {showAdvanced ? (
-            canWrite ? (
-              <form className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleSubmit}>
-                <h4 className="font-medium text-[#24382b]">
-                  {editingAccountId ? 'Editar conta de canal' : 'Nova conta de canal'}
-                </h4>
-                <label className="block">
-                  <span className="text-sm font-medium text-[#34342f]">Nome</span>
-                  <input
-                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    required
-                    minLength={2}
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-sm font-medium text-[#34342f]">Provider</span>
-                  <select
-                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
-                    value={provider}
-                    onChange={(event) => setProvider(event.target.value)}
-                  >
-                    {CHANNEL_PROVIDERS.map((item) => (
-                      <option key={item.value} value={item.value} disabled={!item.available}>
-                        {item.label}
-                        {!item.available ? ' (em breve)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="text-sm font-medium text-[#34342f]">Status</span>
-                  <select
-                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
-                    value={status}
-                    onChange={(event) => setStatus(event.target.value)}
-                  >
-                    {CHANNEL_ACCOUNT_STATUSES.map((item) => (
-                      <option key={item.value} value={item.value}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="text-sm font-medium text-[#34342f]">ID externo (opcional)</span>
-                  <input
-                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
-                    value={externalAccountId}
-                    onChange={(event) => setExternalAccountId(event.target.value)}
-                    placeholder="Ex.: nome da instancia Evolution"
-                  />
-                </label>
-                <label className="block">
-                  <span className="text-sm font-medium text-[#34342f]">Config JSON (opcional)</span>
-                  <textarea
-                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2 font-mono text-sm"
-                    rows={5}
-                    value={config}
-                    onChange={(event) => setConfig(event.target.value)}
-                    placeholder={'{\n  "instanceName": "minha-instancia"\n}'}
-                  />
-                </label>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                    type="submit"
-                    disabled={saving}
-                  >
-                    {saving
-                      ? 'Salvando...'
-                      : editingAccountId
-                        ? 'Salvar conta'
-                        : 'Criar conta'}
-                  </button>
-                  {editingAccountId ? (
-                    <button
-                      className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
-                      type="button"
-                      onClick={resetForm}
-                    >
-                      Cancelar edicao
-                    </button>
-                  ) : null}
-                </div>
-              </form>
-            ) : (
-              <p className="text-sm text-[#65655f]">
-                Seu perfil possui acesso somente leitura. Configuracoes avancadas nao podem ser
-                editadas.
-              </p>
-            )
           ) : null}
+        </div>
+
+        {pageError ? (
+          <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+            {pageError}
+          </p>
+        ) : null}
+        {pageSuccess ? (
+          <p className="rounded-md border border-[#d7e5d8] bg-[#eef2ea] px-3 py-2 text-sm text-[#47624f]">
+            {pageSuccess}
+          </p>
+        ) : null}
+
+        {showCreateForm && canWrite ? (
+          <form
+            className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4"
+            onSubmit={handleCreateChannel}
+          >
+            <h3 className="font-medium text-[#24382b]">Novo canal WhatsApp</h3>
+            <label className="block">
+              <span className="text-sm font-medium text-[#34342f]">Nome do canal</span>
+              <input
+                className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                value={createName}
+                onChange={(event) => setCreateName(event.target.value)}
+                placeholder="Ex.: WhatsApp Atendimento"
+                required
+                minLength={2}
+              />
+            </label>
+            <label className="block">
+              <span className="text-sm font-medium text-[#34342f]">
+                Nome da instancia Evolution (opcional)
+              </span>
+              <input
+                className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                value={createInstanceName}
+                onChange={(event) => setCreateInstanceName(event.target.value)}
+                placeholder="Ex.: atendimento-campanha"
+              />
+              <span className="mt-1 block text-xs text-[#65655f]">
+                Se ficar vazio, a instancia sera gerada a partir do nome do canal na preparacao.
+              </span>
+            </label>
+            <button
+              className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              type="submit"
+              disabled={creating}
+            >
+              {creating ? 'Criando...' : 'Criar canal'}
+            </button>
+          </form>
+        ) : null}
+
+        {!canWrite ? (
+          <p className="rounded-md border border-[#deddd4] bg-white p-4 text-sm text-[#65655f]">
+            Seu perfil possui acesso somente leitura. Voce pode ver canais e status, mas nao criar ou
+            conectar.
+          </p>
+        ) : null}
+
+        <section className="space-y-4">
+          {visibleAccounts.length === 0 ? (
+            <div className="rounded-md border border-[#deddd4] bg-white p-4 text-sm text-[#65655f]">
+              Nenhum canal WhatsApp ativo nesta campanha.
+              {canWrite ? ' Clique em Novo canal WhatsApp para comecar.' : null}
+            </div>
+          ) : (
+            visibleAccounts.map((account) => {
+              const ui = getCardState(account.id);
+              const isConnected = account.status === 'CONNECTED';
+              const instanceMissing = isInstanceNotFoundMessage(ui.error);
+              const showPrepare =
+                !isConnected &&
+                (account.status === 'DISCONNECTED' ||
+                  account.status === 'ERROR' ||
+                  instanceMissing);
+              const showQrButton =
+                !isConnected &&
+                !instanceMissing &&
+                (account.status === 'CONNECTING' ||
+                  account.status === 'DISCONNECTED' ||
+                  account.status === 'ERROR');
+              const canShowQr =
+                !isConnected &&
+                ['CONNECTING', 'DISCONNECTED', 'ERROR'].includes(account.status) &&
+                Boolean(ui.qrBase64);
+              const qrImageSrc = ui.qrBase64 ? toQrCodeImageSrc(ui.qrBase64) : null;
+
+              return (
+                <article
+                  key={account.id}
+                  className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="font-medium text-[#24382b]">{account.name}</h3>
+                      <p className="mt-1 text-sm text-[#65655f]">
+                        Status: {getChannelAccountStatusLabel(account.status)}
+                      </p>
+                      {account.externalAccountId ? (
+                        <p className="mt-1 text-sm text-[#65655f]">
+                          Instancia Evolution: {account.externalAccountId}
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-sm text-[#65655f]">
+                          Instancia Evolution: sera definida na preparacao
+                        </p>
+                      )}
+                      {ui.evolutionState ? (
+                        <p className="mt-1 text-xs text-[#65655f]">
+                          Estado Evolution: {ui.evolutionState}
+                        </p>
+                      ) : null}
+                      <p className="mt-1 text-xs text-[#65655f]">
+                        Criado em {formatDate(account.createdAt)}
+                      </p>
+                    </div>
+                    {isConnected ? (
+                      <span className="rounded-md border border-[#d7e5d8] bg-[#eef2ea] px-2 py-1 text-xs font-medium text-[#47624f]">
+                        WhatsApp conectado
+                      </span>
+                    ) : null}
+                  </div>
+
+                  {ui.error ? (
+                    <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+                      {ui.error}
+                    </p>
+                  ) : null}
+                  {ui.message ? (
+                    <p className="rounded-md border border-[#d7e5d8] bg-[#eef2ea] px-3 py-2 text-sm text-[#47624f]">
+                      {ui.message}
+                    </p>
+                  ) : null}
+                  {instanceMissing ? (
+                    <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                      A instancia nao foi encontrada na Evolution. Prepare a conexao novamente.
+                    </p>
+                  ) : null}
+
+                  {canWrite ? (
+                    <div className="flex flex-wrap gap-2">
+                      {showPrepare ? (
+                        <button
+                          className="rounded-md bg-[#24382b] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                          type="button"
+                          disabled={ui.preparing}
+                          onClick={() => handlePrepare(account)}
+                        >
+                          {ui.preparing
+                            ? 'Preparando...'
+                            : instanceMissing
+                              ? 'Preparar conexao novamente'
+                              : 'Preparar conexao'}
+                        </button>
+                      ) : null}
+                      {showQrButton ? (
+                        <button
+                          className="rounded-md border border-[#24382b] px-3 py-2 text-sm font-semibold text-[#24382b] disabled:opacity-60"
+                          type="button"
+                          disabled={ui.loadingQr}
+                          onClick={() => handleGenerateQr(account)}
+                        >
+                          {ui.loadingQr ? 'Gerando QR...' : 'Gerar QR Code'}
+                        </button>
+                      ) : null}
+                      <button
+                        className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#24382b] disabled:opacity-60"
+                        type="button"
+                        disabled={ui.refreshing}
+                        onClick={() => handleRefresh(account)}
+                      >
+                        {ui.refreshing ? 'Atualizando...' : 'Atualizar status'}
+                      </button>
+                      <button
+                        className="rounded-md border border-amber-700 px-3 py-2 text-sm font-medium text-amber-900 disabled:opacity-60"
+                        type="button"
+                        disabled={ui.resetting}
+                        onClick={() => handleRestart(account)}
+                      >
+                        {ui.resetting ? 'Reiniciando...' : 'Reiniciar conexao'}
+                      </button>
+                      <button
+                        className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#65655f] disabled:opacity-60"
+                        type="button"
+                        disabled={ui.archiving}
+                        onClick={() => handleArchive(account)}
+                      >
+                        {ui.archiving ? 'Arquivando...' : 'Arquivar canal'}
+                      </button>
+                      <button
+                        className="rounded-md border border-dashed border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#65655f]"
+                        type="button"
+                        onClick={() =>
+                          ui.showAdvanced
+                            ? patchCardState(account.id, { showAdvanced: false })
+                            : openAdvanced(account)
+                        }
+                      >
+                        {ui.showAdvanced ? 'Ocultar avancado' : 'Configuracoes avancadas'}
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {canShowQr && qrImageSrc ? (
+                    <div className="space-y-2 rounded-md border border-[#eef2ea] bg-[#f7f7f5] p-4">
+                      <h4 className="text-sm font-medium text-[#24382b]">QR Code deste canal</h4>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={qrImageSrc}
+                        alt={`QR Code ${account.name}`}
+                        className="mx-auto h-56 w-56 rounded-md border border-[#deddd4] bg-white p-2"
+                      />
+                      <p className="text-xs text-[#65655f]">
+                        Abra o WhatsApp no celular, va em Aparelhos conectados e escaneie o QR Code.
+                      </p>
+                    </div>
+                  ) : null}
+
+                  {ui.showAdvanced && canWrite ? (
+                    <form
+                      className="space-y-3 rounded-md border border-dashed border-[#c9c8c0] bg-[#fafaf8] p-4"
+                      onSubmit={(event) => handleAdvancedSave(account, event)}
+                    >
+                      <p className="text-sm text-[#65655f]">
+                        Area tecnica. Nao e necessaria para o fluxo normal de conexao.
+                      </p>
+                      <label className="block">
+                        <span className="text-sm font-medium text-[#34342f]">Nome</span>
+                        <input
+                          className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                          value={ui.advancedName}
+                          onChange={(event) =>
+                            patchCardState(account.id, { advancedName: event.target.value })
+                          }
+                          required
+                          minLength={2}
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-sm font-medium text-[#34342f]">
+                          ID externo / instancia
+                        </span>
+                        <input
+                          className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                          value={ui.advancedExternalId}
+                          onChange={(event) =>
+                            patchCardState(account.id, {
+                              advancedExternalId: event.target.value,
+                            })
+                          }
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="text-sm font-medium text-[#34342f]">
+                          Config JSON (opcional)
+                        </span>
+                        <textarea
+                          className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2 font-mono text-sm"
+                          rows={4}
+                          value={ui.advancedConfig}
+                          onChange={(event) =>
+                            patchCardState(account.id, { advancedConfig: event.target.value })
+                          }
+                        />
+                      </label>
+                      <button
+                        className="rounded-md bg-[#24382b] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                        type="submit"
+                        disabled={ui.savingAdvanced}
+                      >
+                        {ui.savingAdvanced ? 'Salvando...' : 'Salvar avancado'}
+                      </button>
+                    </form>
+                  ) : null}
+
+                  <p className="text-xs text-[#65655f]">
+                    Arquivar remove o canal deste painel, mas nao exclui a instancia na Evolution.
+                  </p>
+                </article>
+              );
+            })
+          )}
         </section>
       </div>
     </DashboardShell>

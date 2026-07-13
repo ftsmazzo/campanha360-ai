@@ -34,6 +34,17 @@ export function getActiveWhatsappEvolutionAccount<
   );
 }
 
+export function listVisibleWhatsappEvolutionAccounts<
+  T extends { provider: string; status: string; name: string },
+>(accounts: T[]): T[] {
+  return accounts
+    .filter(
+      (account) =>
+        account.provider === 'WHATSAPP_EVOLUTION' && account.status !== 'ARCHIVED',
+    )
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
 export function toQrCodeImageSrc(base64: string) {
   const trimmed = base64.trim();
   if (!trimmed) return null;
