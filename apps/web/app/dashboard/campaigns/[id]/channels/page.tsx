@@ -188,13 +188,16 @@ export default function CampaignChannelsPage() {
 
     const qr = result.evolution.qrcode;
     const hasQr = Boolean(qr?.base64);
+    const webhookNote = result.webhook?.message
+      ? ` ${result.webhook.message}`
+      : '';
 
     if (result.channelAccount.status === 'CONNECTED') {
       patchCardState(accountId, {
         qrBase64: null,
         evolutionState: result.evolution.state,
-        message: 'WhatsApp conectado.',
-        error: null,
+        message: `WhatsApp conectado.${webhookNote}`,
+        error: result.webhook && !result.webhook.synced ? result.webhook.message : null,
       });
       return;
     }
@@ -203,10 +206,12 @@ export default function CampaignChannelsPage() {
       patchCardState(accountId, {
         qrBase64: qr.base64,
         evolutionState: result.evolution.state,
-        message: result.evolution.created
-          ? 'Instancia criada. Escaneie o QR Code no WhatsApp do celular.'
-          : 'QR Code disponivel. Escaneie no WhatsApp do celular.',
-        error: null,
+        message: `${
+          result.evolution.created
+            ? 'Instancia criada. Escaneie o QR Code no WhatsApp do celular.'
+            : 'QR Code disponivel. Escaneie no WhatsApp do celular.'
+        }${webhookNote}`,
+        error: result.webhook && !result.webhook.synced ? result.webhook.message : null,
       });
       return;
     }
@@ -214,18 +219,16 @@ export default function CampaignChannelsPage() {
     if (!result.evolution.created) {
       patchCardState(accountId, {
         evolutionState: result.evolution.state,
-        message:
-          'A instancia ja existe, mas a Evolution nao retornou QR Code. Se necessario, reinicie a conexao.',
-        error: null,
+        message: `A instancia ja existe, mas a Evolution nao retornou QR Code. Se necessario, reinicie a conexao.${webhookNote}`,
+        error: result.webhook && !result.webhook.synced ? result.webhook.message : null,
       });
       return;
     }
 
     patchCardState(accountId, {
       evolutionState: result.evolution.state,
-      message:
-        'Instancia criada, mas a Evolution nao retornou QR Code neste momento. Use Gerar QR Code.',
-      error: null,
+      message: `Instancia criada, mas a Evolution nao retornou QR Code neste momento. Use Gerar QR Code.${webhookNote}`,
+      error: result.webhook && !result.webhook.synced ? result.webhook.message : null,
     });
   }
 
@@ -791,7 +794,10 @@ export default function CampaignChannelsPage() {
                   <div className="space-y-2 rounded-md border border-[#e8e7df] bg-[#fafaf8] p-4">
                     <h4 className="text-sm font-medium text-[#24382b]">Webhook da Evolution</h4>
                     <p className="text-xs text-[#65655f]">
-                      Configure manualmente este URL na Evolution para receber mensagens inbound.
+                      Ao preparar a conexao, a API sincroniza este URL na Evolution. Se{' '}
+                      <span className="font-medium">EVOLUTION_WEBHOOK_SECRET</span> estiver
+                      configurado, tambem envia <span className="font-medium">jwt_key</span> para a
+                      Evolution autenticar com <span className="font-medium">Authorization: Bearer</span>.
                     </p>
                     <code className="block break-all rounded-md border border-[#deddd4] bg-white px-3 py-2 text-xs text-[#24382b]">
                       {buildEvolutionWebhookUrl(account.id)}
@@ -807,14 +813,11 @@ export default function CampaignChannelsPage() {
                       <span className="text-xs text-[#65655f]">ID do canal: {account.id}</span>
                     </div>
                     <p className="text-xs text-[#65655f]">
-                      Se <span className="font-medium">EVOLUTION_WEBHOOK_SECRET</span> estiver
-                      configurado na API, na Evolution use em{' '}
-                      <span className="font-medium">webhook.headers</span>:{' '}
-                      <span className="font-medium">{`{ "jwt_key": "<mesmo secret>" }`}</span>.
-                      A Evolution enviara <span className="font-medium">Authorization: Bearer</span>{' '}
-                      (JWT). Alternativa: header{' '}
-                      <span className="font-medium">x-evolution-webhook-secret</span>. O valor do
-                      secret nao e exibido nesta tela.
+                      Diagnostico: abra{' '}
+                      <span className="font-medium">
+                        {buildEvolutionWebhookUrl(account.id)}/health
+                      </span>{' '}
+                      no navegador. O valor do secret nao e exibido nesta tela.
                     </p>
                   </div>
 

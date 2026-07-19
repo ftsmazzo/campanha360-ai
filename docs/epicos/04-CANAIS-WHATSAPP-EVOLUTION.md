@@ -283,18 +283,20 @@ Exemplo:
 https://campanha-360-ia-api.kxryyk.easypanel.host/webhooks/evolution/<channelAccountId>
 ```
 
-Configure este URL manualmente na Evolution (configuração automática do webhook fica fora do escopo desta subetapa).
+O **prepare** sincroniza este URL na Evolution (e `jwt_key` quando `EVOLUTION_WEBHOOK_SECRET` existe).
+A URL continua visível na UI de Canais para diagnóstico.
 
 ### Segurança
 
 - env opcional `EVOLUTION_WEBHOOK_SECRET`;
-- formato preferencial (nativo Evolution): em `webhook.headers` configure
-  `{ "jwt_key": "<EVOLUTION_WEBHOOK_SECRET>" }` — a Evolution envia
-  `Authorization: Bearer <JWT HS256>` com claims `app=evolution` e `action=webhook`;
-- alternativa: header estático `x-evolution-webhook-secret` (ou legado
+- no prepare, a API sincroniza automaticamente o webhook na Evolution com a URL acima e,
+  se o secret existir, `headers.jwt_key` — a Evolution envia `Authorization: Bearer <JWT HS256>`
+  (claims `app=evolution`, `action=webhook`);
+- alternativa manual: header estático `x-evolution-webhook-secret` (ou legado
   `x-campanha360-webhook-secret`) com o valor cru do secret;
 - se **não** existir `EVOLUTION_WEBHOOK_SECRET`, o webhook é aceito sem autenticação
-  (apenas homologação/teste) — documentado em `.env.example`.
+  (apenas homologação/teste) — documentado em `.env.example`;
+- `API_PUBLIC_URL` é necessário para o sync automático no prepare;
 - `GET /webhooks/evolution/:channelAccountId/health` não exige secret.
 
 ### Regras
@@ -303,7 +305,6 @@ Configure este URL manualmente na Evolution (configuração automática do webho
 - não implementar envio de mensagens;
 - não implementar resposta automática;
 - não implementar IA nem automações;
-- não configurar automaticamente o webhook na Evolution;
 - preservar conexão/QR já validada e `GET /health`.
 
 ### Critério de aceite
@@ -318,12 +319,13 @@ A Evolution consegue enviar webhook para a API; mensagens inbound são normaliza
 
 - módulo `apps/api/src/webhooks/`;
 - índices Prisma em `Message` (externalMessageId) e `ConversationThread` (lookup por conta/contato);
-- audit `CHANNEL_EVOLUTION_WEBHOOK_PROCESSED` / `CHANNEL_EVOLUTION_WEBHOOK_IGNORED`;
+- audit `CHANNEL_EVOLUTION_WEBHOOK_PROCESSED` / `CHANNEL_EVOLUTION_WEBHOOK_IGNORED` /
+  `CHANNEL_EVOLUTION_WEBHOOK_SYNCED`;
+- sync automático do webhook no prepare (`setInstanceWebhook` com `jwt_key` quando secret existe);
 - env `EVOLUTION_WEBHOOK_SECRET` em `.env.example`.
 
 ### Fora de escopo (mantido)
 
-- configuração automática do webhook na Evolution;
 - inbox;
 - envio de mensagens;
 - resposta automática;
@@ -394,4 +396,4 @@ O próximo prompt ao Cursor deve executar apenas:
 
 **04.5 — Inbox básico.**
 
-Envio, resposta automática, IA, automações e configuração automática do webhook na Evolution continuam fora do escopo até suas subetapas.
+Envio, resposta automática, IA e automações continuam fora do escopo até suas subetapas.

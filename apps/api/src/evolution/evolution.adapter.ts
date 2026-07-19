@@ -38,6 +38,14 @@ export type EvolutionPrepareResult = {
   };
 };
 
+export type EvolutionWebhookSetResult = {
+  ok: true;
+  instanceName: string;
+  url: string;
+  authMode: 'jwt' | 'none';
+  path: string;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 @Injectable()
@@ -303,6 +311,104 @@ export class EvolutionAdapter {
     }
 
     return this.createInstance(instanceName);
+  }
+
+  /**
+   * Configura o webhook da instancia na Evolution.
+   * Com jwtKey, a Evolution envia Authorization: Bearer <JWT> em cada evento.
+   * Sem jwtKey, apenas URL (homologacao).
+   */
+  async setInstanceWebhook(input: {
+    instanceName: string;
+    url: string;
+    jwtKey?: string;
+  }): Promise<EvolutionWebhookSetResult> {
+    const instanceName = input.instanceName.trim();
+    if (!instanceName) {
+      throw new EvolutionApiException(
+        'Nome da instancia Evolution invalido',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const url = input.url.trim();
+    if (!url) {
+      throw new EvolutionApiException(
+        'URL do webhook Evolution invalida',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const jwtKey = (input.jwtKey || '').trim();
+    const authMode: 'jwt' | 'none' = jwtKey ? 'jwt' : 'none';
+
+    const webhookBody: JsonRecord = {
+      webhook: {
+        enabled: true,
+        url,
+        byEvents: false,
+        base64: false,
+        events: ['MESSAGES_UPSERT'],
+        ...(jwtKey
+          ? {
+              headers: {
+                jwt_key: jwtKey,
+              },
+            }
+          : {}),
+      },
+    };
+
+    const encodedName = encodeURIComponent(instanceName);
+    const primaryPath = `/webhook/set/${encodedName}`;
+    const fallbackPath = `/event/webhook/set/${encodedName}`;
+
+    try {
+      await this.request('POST', primaryPath, webhookBody);
+      this.logger.log(
+        `Webhook Evolution configurado path=${primaryPath} authMode=${authMode}`,
+      );
+      return {
+        ok: true,
+        instanceName,
+        url,
+        authMode,
+        path: primaryPath,
+      };
+    } catch (error) {
+      if (!this.isNotFoundStatus(error)) {
+        this.logger.warn(
+          `Falha ao configurar webhook Evolution path=${primaryPath} authMode=${authMode}`,
+        );
+        throw toSafeEvolutionError(error);
+      }
+    }
+
+    try {
+      await this.request('POST', fallbackPath, webhookBody);
+      this.logger.log(
+        `Webhook Evolution configurado path=${fallbackPath} authMode=${authMode}`,
+      );
+      return {
+        ok: true,
+        instanceName,
+        url,
+        authMode,
+        path: fallbackPath,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Falha ao configurar webhook Evolution path=${fallbackPath} authMode=${authMode}`,
+      );
+      throw toSafeEvolutionError(error);
+    }
+  }
+
+  private isNotFoundStatus(error: unknown): boolean {
+    if (error instanceof EvolutionApiException) {
+      return error.getStatus() === HttpStatus.NOT_FOUND;
+    }
+    return false;
   }
 
   private requireBaseUrl() {

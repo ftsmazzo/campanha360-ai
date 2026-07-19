@@ -722,6 +722,11 @@ export type EvolutionPrepareResponse = {
       pairingCode: string | null;
     } | null;
   };
+  webhook?: {
+    synced: boolean;
+    authMode: 'jwt' | 'none' | null;
+    message: string | null;
+  };
 };
 
 export type EvolutionStatusResponse = {

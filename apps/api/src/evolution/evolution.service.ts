@@ -2,8 +2,10 @@ import {
   BadRequestException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   ChannelAccountStatus,
   ChannelProvider,
@@ -45,11 +47,14 @@ const channelAccountPublicSelect = {
 
 @Injectable()
 export class EvolutionService {
+  private readonly logger = new Logger(EvolutionService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly organizationAccess: OrganizationAccessService,
     private readonly audit: AuditService,
     private readonly evolutionAdapter: EvolutionAdapter,
+    private readonly config: ConfigService,
   ) {}
 
   async prepare(userId: string, campaignId: string, channelAccountId: string) {
@@ -89,6 +94,14 @@ export class EvolutionService {
         select: channelAccountPublicSelect,
       });
 
+      const webhookSync = await this.syncInstanceWebhook({
+        instanceName: prepared.instanceName,
+        channelAccountId: account.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+      });
+
       await this.audit.log({
         organizationId: campaign.organizationId,
         campaignId,
@@ -104,6 +117,8 @@ export class EvolutionService {
           hasQrcode: Boolean(
             prepared.qrcode?.base64 || prepared.qrcode?.code || prepared.qrcode?.pairingCode,
           ),
+          webhookSynced: webhookSync.synced,
+          webhookAuthMode: webhookSync.authMode,
         },
       });
 
@@ -121,10 +136,87 @@ export class EvolutionService {
               }
             : null,
         },
+        webhook: {
+          synced: webhookSync.synced,
+          authMode: webhookSync.authMode,
+          message: webhookSync.message,
+        },
       };
     } catch (error) {
       await this.markAccountError(account.id);
       throw error;
+    }
+  }
+
+  private async syncInstanceWebhook(input: {
+    instanceName: string;
+    channelAccountId: string;
+    organizationId: string;
+    campaignId: string;
+    actorUserId: string;
+  }): Promise<{
+    synced: boolean;
+    authMode: 'jwt' | 'none' | null;
+    message: string | null;
+  }> {
+    const apiPublicUrl = (this.config.get<string>('API_PUBLIC_URL') || '')
+      .trim()
+      .replace(/\/+$/, '');
+    const jwtKey = (this.config.get<string>('EVOLUTION_WEBHOOK_SECRET') || '').trim();
+
+    if (!apiPublicUrl) {
+      this.logger.warn(
+        'API_PUBLIC_URL nao configurada: webhook Evolution nao foi sincronizado no prepare',
+      );
+      return {
+        synced: false,
+        authMode: null,
+        message:
+          'Webhook nao sincronizado: configure API_PUBLIC_URL na API e prepare a conexao novamente.',
+      };
+    }
+
+    const webhookUrl = `${apiPublicUrl}/webhooks/evolution/${input.channelAccountId}`;
+
+    try {
+      const result = await this.evolutionAdapter.setInstanceWebhook({
+        instanceName: input.instanceName,
+        url: webhookUrl,
+        jwtKey: jwtKey || undefined,
+      });
+
+      await this.audit.log({
+        organizationId: input.organizationId,
+        campaignId: input.campaignId,
+        actorUserId: input.actorUserId,
+        action: 'CHANNEL_EVOLUTION_WEBHOOK_SYNCED',
+        entityType: 'ChannelAccount',
+        entityId: input.channelAccountId,
+        metadata: {
+          configured: true,
+          authMode: result.authMode,
+          path: result.path,
+        },
+      });
+
+      return {
+        synced: true,
+        authMode: result.authMode,
+        message:
+          result.authMode === 'jwt'
+            ? 'Webhook sincronizado na Evolution com autenticacao JWT (jwt_key).'
+            : 'Webhook sincronizado na Evolution sem secret (modo homologacao).',
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Webhook Evolution nao sincronizado para channelAccountId=${input.channelAccountId}`,
+      );
+      return {
+        synced: false,
+        authMode: jwtKey ? 'jwt' : 'none',
+        message:
+          'Instancia preparada, mas o webhook nao foi sincronizado na Evolution. Tente Preparar conexao novamente.',
+      };
     }
   }
 
