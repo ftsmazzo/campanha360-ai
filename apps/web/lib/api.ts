@@ -784,3 +784,95 @@ export function fetchChannelEvolutionQrCode(
     token,
   );
 }
+
+export type InboxThreadListItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  contactId: string;
+  channelAccountId: string | null;
+  channel: string;
+  status: string;
+  lastMessageAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  contact: {
+    id: string;
+    name: string | null;
+    phoneNumber: string | null;
+    status: string;
+    optOutActive: boolean;
+  };
+  channelAccount: {
+    id: string;
+    name: string;
+    provider: string;
+    status: string;
+  } | null;
+  lastMessage: {
+    id: string;
+    body: string | null;
+    direction: string;
+    status: string;
+    createdAt: string;
+    optOutActive: boolean;
+  } | null;
+};
+
+export type InboxThreadDetail = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  contactId: string;
+  channelAccountId: string | null;
+  channel: string;
+  status: string;
+  lastMessageAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  contact: {
+    id: string;
+    name: string | null;
+    phoneNumber: string | null;
+    email: string | null;
+    status: string;
+    operationalStatus: string;
+    optOutActive: boolean;
+  };
+  channelAccount: {
+    id: string;
+    name: string;
+    provider: string;
+    status: string;
+  } | null;
+  messages: Array<{
+    id: string;
+    direction: string;
+    body: string | null;
+    status: string;
+    provider: string;
+    externalMessageId: string | null;
+    createdAt: string;
+    optOutActive: boolean;
+  }>;
+};
+
+export function fetchInboxThreads(token: string, campaignId: string) {
+  return request<InboxThreadListItem[]>(
+    `/campaigns/${campaignId}/inbox/threads`,
+    {},
+    token,
+  );
+}
+
+export function fetchInboxThread(
+  token: string,
+  campaignId: string,
+  threadId: string,
+) {
+  return request<InboxThreadDetail>(
+    `/campaigns/${campaignId}/inbox/threads/${threadId}`,
+    {},
+    token,
+  );
+}

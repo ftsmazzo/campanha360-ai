@@ -336,14 +336,48 @@ A Evolution consegue enviar webhook para a API; mensagens inbound são normaliza
 
 ### Objetivo
 
-Exibir conversas e mensagens para operação manual.
+Exibir conversas e mensagens para operação manual (somente leitura nesta etapa).
 
-### Entregas previstas
+### Entregas
 
-- lista de conversas por campanha;
-- detalhe de conversa com mensagens inbound/outbound;
-- vínculo com contato;
-- tela inicial de inbox.
+- API de listagem/detalhe de conversas por campanha;
+- tela `/dashboard/campaigns/[id]/inbox` (Atendimento);
+- lista de conversas com última mensagem;
+- detalhe com histórico inbound/outbound (sem envio);
+- vínculo com contato e indicação de opt-out;
+- navegação a partir da campanha;
+- estados vazios e de erro.
+
+### Regras
+
+- leitura para membros da organização da campanha;
+- tenancy por `organizationId` + `campaignId`;
+- não implementar envio de mensagem;
+- não implementar IA nem automações;
+- não alterar autenticação/configuração do webhook Evolution.
+
+### Critério de aceite
+
+Operador consegue abrir Atendimento na campanha, ver conversas geradas pelo webhook e abrir o histórico de uma conversa.
+
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- módulo `apps/api/src/inbox/`:
+  - `GET /campaigns/:campaignId/inbox/threads`
+  - `GET /campaigns/:campaignId/inbox/threads/:threadId`
+- página `/dashboard/campaigns/[id]/inbox`;
+- link **Atendimento** na página da campanha.
+
+### Fora de escopo (mantido)
+
+- envio de resposta;
+- IA;
+- automações;
+- atribuição complexa de inbox.
 
 ## 11. Subetapa 04.6 — Resposta manual
 
@@ -390,10 +424,10 @@ O sistema consegue receber mensagens reais via Evolution, agrupá-las em convers
 
 ## 15. Próximo passo após este documento
 
-A subetapa **04.4 — Webhook Evolution inbound** está concluída.
+A subetapa **04.5 — Inbox básico** está concluída.
 
 O próximo prompt ao Cursor deve executar apenas:
 
-**04.5 — Inbox básico.**
+**04.6 — Resposta manual.**
 
-Envio, resposta automática, IA e automações continuam fora do escopo até suas subetapas.
+IA e automações continuam fora do escopo até suas subetapas.
