@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
@@ -17,6 +17,8 @@ import {
   fetchMe,
   getStoredToken,
 } from '../../../../../lib/api';
+
+const POLL_INTERVAL_MS = 5000;
 
 function formatDateTime(value: string | null | undefined) {
   if (!value) return '—';
@@ -40,6 +42,36 @@ function directionLabel(direction: string) {
   return direction === 'OUTBOUND' ? 'Enviada' : 'Recebida';
 }
 
+function mergeMessagesById(
+  current: InboxThreadDetail['messages'],
+  incoming: InboxThreadDetail['messages'],
+) {
+  const byId = new Map(current.map((message) => [message.id, message]));
+  for (const message of incoming) {
+    byId.set(message.id, message);
+  }
+  return [...byId.values()].sort(
+    (left, right) =>
+      new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime(),
+  );
+}
+
+function mergeThreadsById(
+  current: InboxThreadListItem[],
+  incoming: InboxThreadListItem[],
+) {
+  const byId = new Map(current.map((thread) => [thread.id, thread]));
+  for (const thread of incoming) {
+    byId.set(thread.id, thread);
+  }
+
+  return [...byId.values()].sort((left, right) => {
+    const leftAt = left.lastMessageAt || left.updatedAt;
+    const rightAt = right.lastMessageAt || right.updatedAt;
+    return new Date(rightAt).getTime() - new Date(leftAt).getTime();
+  });
+}
+
 export default function CampaignInboxPage() {
   const router = useRouter();
   const params = useParams<{ id: string }>();
@@ -55,6 +87,14 @@ export default function CampaignInboxPage() {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  const [pollNotice, setPollNotice] = useState<string | null>(null);
+
+  const selectedThreadIdRef = useRef(selectedThreadId);
+  const threadDetailRef = useRef(threadDetail);
+  const pollInFlightRef = useRef(false);
+
+  selectedThreadIdRef.current = selectedThreadId;
+  threadDetailRef.current = threadDetail;
 
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
@@ -136,6 +176,78 @@ export default function CampaignInboxPage() {
     loadDetail();
   }, [campaignId, selectedThreadId, router]);
 
+  useEffect(() => {
+    if (loading) return;
+
+    let cancelled = false;
+
+    async function pollInbox() {
+      if (cancelled || pollInFlightRef.current) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+        return;
+      }
+
+      const token = getStoredToken();
+      if (!token) return;
+
+      const activeThreadId = selectedThreadIdRef.current;
+      pollInFlightRef.current = true;
+
+      try {
+        const threadItems = await fetchInboxThreads(token, campaignId);
+        if (cancelled) return;
+        setThreads((current) => mergeThreadsById(current, threadItems));
+
+        if (activeThreadId) {
+          const detail = await fetchInboxThread(token, campaignId, activeThreadId);
+          if (cancelled) return;
+          if (selectedThreadIdRef.current !== activeThreadId) return;
+
+          setThreadDetail((current) => {
+            if (!current || current.id !== detail.id) {
+              return detail;
+            }
+            return {
+              ...detail,
+              messages: mergeMessagesById(current.messages, detail.messages),
+            };
+          });
+          setDetailError(null);
+        }
+
+        setPollNotice(null);
+      } catch (err) {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status === 401) {
+          clearStoredToken();
+          router.replace('/login');
+          return;
+        }
+        setPollNotice('Atualizacao automatica temporariamente indisponivel');
+      } finally {
+        pollInFlightRef.current = false;
+      }
+    }
+
+    const intervalId = window.setInterval(() => {
+      void pollInbox();
+    }, POLL_INTERVAL_MS);
+
+    function onVisibilityChange() {
+      if (document.visibilityState === 'visible') {
+        void pollInbox();
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [campaignId, loading, router]);
+
   function selectThread(threadId: string) {
     const next = new URLSearchParams(searchParams.toString());
     next.set('thread', threadId);
@@ -162,7 +274,7 @@ export default function CampaignInboxPage() {
           {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
           <p className="mt-2 text-sm text-[#65655f]">
             Conversas recebidas via WhatsApp. Envio de respostas ainda nao esta disponivel nesta
-            etapa.
+            etapa. A conversa aberta atualiza automaticamente a cada {POLL_INTERVAL_MS / 1000}s.
           </p>
         </div>
 
@@ -170,6 +282,10 @@ export default function CampaignInboxPage() {
           <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
             {error}
           </p>
+        ) : null}
+
+        {pollNotice ? (
+          <p className="text-xs text-[#8a8a82]">{pollNotice}</p>
         ) : null}
 
         <div className="grid gap-4 lg:grid-cols-[minmax(260px,340px)_minmax(0,1fr)]">
