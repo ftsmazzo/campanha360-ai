@@ -35,4 +35,14 @@ export class InboxController {
   ) {
     return this.inboxService.sendReply(user.id, campaignId, threadId, dto.body);
   }
+
+  @Post('threads/:threadId/messages/:messageId/retry')
+  retryMessage(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('threadId') threadId: string,
+    @Param('messageId') messageId: string,
+  ) {
+    return this.inboxService.retryMessage(user.id, campaignId, threadId, messageId);
+  }
 }

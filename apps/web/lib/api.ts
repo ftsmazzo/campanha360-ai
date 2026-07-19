@@ -39,10 +39,12 @@ export type OrganizationItem = {
 
 export class ApiError extends Error {
   status: number;
+  data: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, data: unknown = null) {
     super(message);
     this.status = status;
+    this.data = data;
   }
 }
 
@@ -79,7 +81,7 @@ async function request<T>(path: string, options: RequestInit = {}, token?: strin
         : Array.isArray(payload?.message)
           ? payload.message.join(', ')
           : raw || 'Erro na requisicao';
-    throw new ApiError(message, response.status);
+    throw new ApiError(message, response.status, data);
   }
 
   return data as T;
@@ -802,6 +804,7 @@ export type InboxThreadListItem = {
     phoneNumber: string | null;
     status: string;
     optOutActive: boolean;
+    optOutReason?: 'BLOCKED' | 'OPT_OUT' | null;
   };
   channelAccount: {
     id: string;
@@ -838,6 +841,7 @@ export type InboxThreadDetail = {
     status: string;
     operationalStatus: string;
     optOutActive: boolean;
+    optOutReason?: 'BLOCKED' | 'OPT_OUT' | null;
   };
   channelAccount: {
     id: string;
@@ -906,6 +910,19 @@ export function sendInboxReply(
       method: 'POST',
       body: JSON.stringify({ body }),
     },
+    token,
+  );
+}
+
+export function retryInboxMessage(
+  token: string,
+  campaignId: string,
+  threadId: string,
+  messageId: string,
+) {
+  return request<InboxReplyResponse>(
+    `/campaigns/${campaignId}/inbox/threads/${threadId}/messages/${messageId}/retry`,
+    { method: 'POST' },
     token,
   );
 }

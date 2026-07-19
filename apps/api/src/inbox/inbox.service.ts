@@ -1,6 +1,8 @@
 import {
   BadRequestException,
   ForbiddenException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
   NotFoundException,
@@ -17,6 +19,7 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { EvolutionAdapter } from '../evolution/evolution.adapter';
+import { EvolutionApiException } from '../evolution/evolution.errors';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   normalizeOutboundReplyBody,
@@ -40,6 +43,7 @@ type ThreadListItem = {
     phoneNumber: string | null;
     status: string;
     optOutActive: boolean;
+    optOutReason: 'BLOCKED' | 'OPT_OUT' | null;
   };
   channelAccount: {
     id: string;
@@ -55,6 +59,42 @@ type ThreadListItem = {
     createdAt: string;
     optOutActive: boolean;
   } | null;
+};
+
+type MappedMessage = {
+  id: string;
+  direction: string;
+  body: string | null;
+  status: string;
+  provider: string;
+  externalMessageId: string | null;
+  createdAt: string;
+  optOutActive: boolean;
+};
+
+type OutboundContext = {
+  campaign: { id: string; organizationId: string; name: string };
+  thread: {
+    id: string;
+    contactId: string;
+    channelAccountId: string | null;
+  };
+  contact: {
+    id: string;
+    phoneNumber: string | null;
+    status: ContactStatus;
+    optOuts: Array<{ id: string }>;
+    consents: Array<{ id: string }>;
+  };
+  channelAccount: {
+    id: string;
+    name: string;
+    provider: ChannelProvider;
+    status: ChannelAccountStatus;
+    externalAccountId: string | null;
+  };
+  instanceName: string;
+  number: string;
 };
 
 @Injectable()
@@ -184,13 +224,14 @@ export class InboxService {
         lastMessageAt: thread.lastMessageAt?.toISOString() ?? null,
         createdAt: thread.createdAt.toISOString(),
         updatedAt: thread.updatedAt.toISOString(),
-        contact: {
-          id: contact.id,
-          name: contact.name,
-          phoneNumber: contact.phoneNumber,
-          status: contact.status,
-          optOutActive: this.isOptOutActive(contact),
-        },
+          contact: {
+            id: contact.id,
+            name: contact.name,
+            phoneNumber: contact.phoneNumber,
+            status: contact.status,
+            optOutActive: this.isOptOutActive(contact),
+            optOutReason: this.getOptOutReason(contact),
+          },
         channelAccount: channelAccount
           ? {
               id: channelAccount.id,
@@ -311,6 +352,7 @@ export class InboxService {
         status: contact.status,
         operationalStatus: contact.operationalStatus,
         optOutActive: this.isOptOutActive(contact),
+        optOutReason: this.getOptOutReason(contact),
       },
       channelAccount: channelAccount
         ? {
@@ -320,16 +362,7 @@ export class InboxService {
             status: channelAccount.status,
           }
         : null,
-      messages: messages.map((message) => ({
-        id: message.id,
-        direction: message.direction,
-        body: message.body,
-        status: message.status,
-        provider: message.provider,
-        externalMessageId: message.externalMessageId,
-        createdAt: message.createdAt.toISOString(),
-        optOutActive: this.extractOptOutFromPayload(message.rawPayload),
-      })),
+      messages: messages.map((message) => this.mapMessage(message)),
     };
   }
 
@@ -340,6 +373,187 @@ export class InboxService {
     rawBody: string,
   ) {
     const body = normalizeOutboundReplyBody(rawBody);
+    const context = await this.resolveOutboundContext(userId, campaignId, threadId);
+
+    this.logger.log(
+      `Envio manual inbox threadId=${context.thread.id} channelAccountId=${context.channelAccount.id}`,
+    );
+
+    try {
+      const sent = await this.evolutionAdapter.sendTextMessage({
+        instanceName: context.instanceName,
+        number: context.number,
+        text: body,
+      });
+
+      return this.persistOutboundMessage({
+        userId,
+        context,
+        body,
+        status: sent.status || 'SENT',
+        externalMessageId: sent.externalMessageId,
+        rawPayload: {
+          source: 'manual_reply',
+          evolution: {
+            instanceName: sent.instanceName,
+            hasExternalId: Boolean(sent.externalMessageId),
+            status: sent.status ?? null,
+          },
+        },
+        auditAction: 'INBOX_MANUAL_REPLY_SENT',
+      });
+    } catch (error) {
+      const friendly = this.toFriendlySendError(error);
+      const failed = await this.persistOutboundMessage({
+        userId,
+        context,
+        body,
+        status: 'ERROR',
+        externalMessageId: null,
+        rawPayload: {
+          source: 'manual_reply',
+          sendError: true,
+        },
+        auditAction: 'INBOX_MANUAL_REPLY_FAILED',
+      });
+
+      throw new HttpException(
+        {
+          message: friendly,
+          failedMessage: failed.message,
+          thread: failed.thread,
+        },
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  async retryMessage(
+    userId: string,
+    campaignId: string,
+    threadId: string,
+    messageId: string,
+  ) {
+    const context = await this.resolveOutboundContext(userId, campaignId, threadId);
+
+    const existing = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        organizationId: context.campaign.organizationId,
+        campaignId,
+        conversationId: threadId,
+        direction: MessageDirection.OUTBOUND,
+      },
+      select: {
+        id: true,
+        body: true,
+        status: true,
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException('Mensagem nao encontrada');
+    }
+
+    if (existing.status !== 'ERROR') {
+      throw new BadRequestException('Somente mensagens com falha podem ser reenviadas');
+    }
+
+    const body = normalizeOutboundReplyBody(existing.body || '');
+
+    this.logger.log(
+      `Reenvio manual inbox messageId=${existing.id} threadId=${threadId}`,
+    );
+
+    try {
+      const sent = await this.evolutionAdapter.sendTextMessage({
+        instanceName: context.instanceName,
+        number: context.number,
+        text: body,
+      });
+
+      const now = new Date();
+      const updated = await this.prisma.message.update({
+        where: { id: existing.id },
+        data: {
+          status: sent.status || 'SENT',
+          externalMessageId: sent.externalMessageId,
+          rawPayload: {
+            source: 'manual_reply_retry',
+            evolution: {
+              instanceName: sent.instanceName,
+              hasExternalId: Boolean(sent.externalMessageId),
+              status: sent.status ?? null,
+            },
+          } as Prisma.InputJsonValue,
+        },
+        select: {
+          id: true,
+          direction: true,
+          body: true,
+          status: true,
+          provider: true,
+          externalMessageId: true,
+          createdAt: true,
+          rawPayload: true,
+        },
+      });
+
+      await this.prisma.conversationThread.update({
+        where: { id: threadId },
+        data: { lastMessageAt: now },
+      });
+
+      await this.audit.log({
+        organizationId: context.campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'INBOX_MANUAL_REPLY_RETRIED',
+        entityType: 'Message',
+        entityId: updated.id,
+        metadata: {
+          threadId,
+          channelAccountId: context.channelAccount.id,
+          contactId: context.contact.id,
+          hasExternalId: Boolean(sent.externalMessageId),
+          bodyLength: body.length,
+        },
+      });
+
+      return {
+        message: this.mapMessage(updated),
+        thread: {
+          id: threadId,
+          lastMessageAt: now.toISOString(),
+        },
+      };
+    } catch (error) {
+      const friendly = this.toFriendlySendError(error);
+      await this.prisma.message.update({
+        where: { id: existing.id },
+        data: {
+          status: 'ERROR',
+          rawPayload: {
+            source: 'manual_reply_retry',
+            sendError: true,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      throw new HttpException(
+        {
+          message: friendly,
+        },
+        HttpStatus.BAD_GATEWAY,
+      );
+    }
+  }
+
+  private async resolveOutboundContext(
+    userId: string,
+    campaignId: string,
+    threadId: string,
+  ): Promise<OutboundContext> {
     const campaign = await this.getCampaignContext(userId, campaignId, true);
 
     const thread = await this.prisma.conversationThread.findFirst({
@@ -409,8 +623,11 @@ export class InboxService {
     }
 
     if (this.isOptOutActive(contact)) {
+      const reason = this.getOptOutReason(contact);
       throw new ForbiddenException(
-        'Contato com opt-out ou bloqueado. Envio manual nao permitido.',
+        reason === 'BLOCKED'
+          ? 'Contato bloqueado. Envio manual nao permitido.'
+          : 'Contato com opt-out. Envio manual nao permitido.',
       );
     }
 
@@ -450,37 +667,43 @@ export class InboxService {
       );
     }
 
-    this.logger.log(
-      `Envio manual inbox threadId=${thread.id} channelAccountId=${channelAccount.id}`,
-    );
-
-    const sent = await this.evolutionAdapter.sendTextMessage({
+    return {
+      campaign,
+      thread: {
+        id: thread.id,
+        contactId: thread.contactId,
+        channelAccountId: thread.channelAccountId,
+      },
+      contact,
+      channelAccount,
       instanceName,
       number,
-      text: body,
-    });
+    };
+  }
 
+  private async persistOutboundMessage(input: {
+    userId: string;
+    context: OutboundContext;
+    body: string;
+    status: string;
+    externalMessageId: string | null | undefined;
+    rawPayload: Prisma.InputJsonValue;
+    auditAction: string;
+  }) {
     const now = new Date();
     const message = await this.prisma.message.create({
       data: {
-        organizationId: campaign.organizationId,
-        campaignId,
-        contactId: contact.id,
-        conversationId: thread.id,
-        channelAccountId: channelAccount.id,
+        organizationId: input.context.campaign.organizationId,
+        campaignId: input.context.campaign.id,
+        contactId: input.context.contact.id,
+        conversationId: input.context.thread.id,
+        channelAccountId: input.context.channelAccount.id,
         provider: ChannelProvider.WHATSAPP_EVOLUTION,
         direction: MessageDirection.OUTBOUND,
-        externalMessageId: sent.externalMessageId,
-        body,
-        status: sent.status || 'SENT',
-        rawPayload: {
-          source: 'manual_reply',
-          evolution: {
-            instanceName: sent.instanceName,
-            hasExternalId: Boolean(sent.externalMessageId),
-            status: sent.status ?? null,
-          },
-        } as Prisma.InputJsonValue,
+        externalMessageId: input.externalMessageId,
+        body: input.body,
+        status: input.status,
+        rawPayload: input.rawPayload,
         createdAt: now,
       },
       select: {
@@ -496,42 +719,77 @@ export class InboxService {
     });
 
     await this.prisma.conversationThread.update({
-      where: { id: thread.id },
+      where: { id: input.context.thread.id },
       data: { lastMessageAt: now },
     });
 
     await this.audit.log({
-      organizationId: campaign.organizationId,
-      campaignId,
-      actorUserId: userId,
-      action: 'INBOX_MANUAL_REPLY_SENT',
+      organizationId: input.context.campaign.organizationId,
+      campaignId: input.context.campaign.id,
+      actorUserId: input.userId,
+      action: input.auditAction,
       entityType: 'Message',
       entityId: message.id,
       metadata: {
-        threadId: thread.id,
-        channelAccountId: channelAccount.id,
-        contactId: contact.id,
-        hasExternalId: Boolean(sent.externalMessageId),
-        bodyLength: body.length,
+        threadId: input.context.thread.id,
+        channelAccountId: input.context.channelAccount.id,
+        contactId: input.context.contact.id,
+        hasExternalId: Boolean(input.externalMessageId),
+        bodyLength: input.body.length,
+        status: input.status,
       },
     });
 
     return {
-      message: {
-        id: message.id,
-        direction: message.direction,
-        body: message.body,
-        status: message.status,
-        provider: message.provider,
-        externalMessageId: message.externalMessageId,
-        createdAt: message.createdAt.toISOString(),
-        optOutActive: false,
-      },
+      message: this.mapMessage(message),
       thread: {
-        id: thread.id,
+        id: input.context.thread.id,
         lastMessageAt: now.toISOString(),
       },
     };
+  }
+
+  private mapMessage(message: {
+    id: string;
+    direction: string;
+    body: string | null;
+    status: string;
+    provider: string;
+    externalMessageId: string | null;
+    createdAt: Date;
+    rawPayload: Prisma.JsonValue | null;
+  }): MappedMessage {
+    return {
+      id: message.id,
+      direction: message.direction,
+      body: message.body,
+      status: message.status,
+      provider: message.provider,
+      externalMessageId: message.externalMessageId,
+      createdAt: message.createdAt.toISOString(),
+      optOutActive: this.extractOptOutFromPayload(message.rawPayload),
+    };
+  }
+
+  private toFriendlySendError(error: unknown): string {
+    if (error instanceof EvolutionApiException) {
+      const payload = error.getResponse();
+      if (typeof payload === 'object' && payload && 'message' in payload) {
+        const message = (payload as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) {
+          return message;
+        }
+      }
+    }
+    if (error instanceof HttpException) {
+      const payload = error.getResponse();
+      if (typeof payload === 'string' && payload.trim()) return payload;
+      if (typeof payload === 'object' && payload && 'message' in payload) {
+        const message = (payload as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) return message;
+      }
+    }
+    return 'Nao foi possivel entregar a mensagem no WhatsApp. Tente novamente.';
   }
 
   private isOptOutActive(contact: {
@@ -539,10 +797,17 @@ export class InboxService {
     optOuts: Array<{ id: string }>;
     consents: Array<{ id: string }>;
   }) {
-    if (contact.status === ContactStatus.BLOCKED) return true;
-    if (contact.optOuts.length > 0) return true;
-    if (contact.consents.length > 0) return true;
-    return false;
+    return this.getOptOutReason(contact) !== null;
+  }
+
+  private getOptOutReason(contact: {
+    status: ContactStatus;
+    optOuts: Array<{ id: string }>;
+    consents: Array<{ id: string }>;
+  }): 'BLOCKED' | 'OPT_OUT' | null {
+    if (contact.status === ContactStatus.BLOCKED) return 'BLOCKED';
+    if (contact.optOuts.length > 0 || contact.consents.length > 0) return 'OPT_OUT';
+    return null;
   }
 
   private extractOptOutFromPayload(rawPayload: Prisma.JsonValue | null): boolean {

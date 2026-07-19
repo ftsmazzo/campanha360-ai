@@ -425,18 +425,51 @@ Operador envia texto simples pelo Atendimento; a mensagem aparece como enviada n
 - anexos/mídia;
 - múltiplos operadores.
 
-## 12. Subetapa 04.7 — Hardening de canal
+## 12. Subetapa 04.7 — Acabamento operacional do Atendimento
 
 ### Objetivo
 
-Endurecer a operação de canais em produção.
+Melhorar confiabilidade e usabilidade do Atendimento já funcional, sem abrir novos módulos.
 
-### Entregas previstas
+### Entregas
 
-- validação de assinatura/token de webhook;
-- idempotência por `externalMessageId`;
-- logs de falha;
-- prevenção de duplicidade.
+- estados de envio claros (enviando / enviado / erro);
+- erro amigável no envio e persistência de outbound com status `ERROR`;
+- botão discreto **Tentar reenviar** para outbound com falha;
+- prevenção de duplo clique durante envio;
+- timestamps relativos + ordenação estável;
+- diferenciação visual inbound/outbound/erro;
+- empty states da lista e do detalhe;
+- opt-out/BLOCKED como bloqueio explícito de envio;
+- polling preservado (pausa durante envio; falha não quebra a tela).
+
+### Regras
+
+- não implementar IA, automação, templates, mídia ou disparo em massa;
+- não alterar webhook Evolution nem configuração de instância;
+- sem migration (status `ERROR` usa campo `Message.status` existente).
+
+### Critério de aceite
+
+Operador envia resposta com feedback claro; falha aparece no histórico com opção de reenvio; inbound continua atualizando via polling.
+
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- `InboxService.sendReply` persiste `ERROR` e retorna `failedMessage` no HTTP 502;
+- `POST .../messages/:messageId/retry`;
+- UI de Atendimento com estados, retry, empty states e opt-out/BLOCKED.
+
+### Fora de escopo (mantido)
+
+- IA;
+- automações;
+- templates;
+- mídia;
+- hardening avançado de webhook (já tratado em 04.4).
 
 ## 13. Regras de tenancy
 
@@ -457,10 +490,8 @@ O sistema consegue receber mensagens reais via Evolution, agrupá-las em convers
 
 ## 15. Próximo passo após este documento
 
-A subetapa **04.6 — Resposta manual** está concluída.
+A subetapa **04.7 — Acabamento operacional do Atendimento** está concluída.
 
-O próximo prompt ao Cursor deve executar apenas:
+O épico **04 — Canais e WhatsApp Evolution** fica operacionalmente fechado para inbox + resposta manual.
 
-**04.7 — Hardening de canal.**
-
-IA e automações continuam fora do escopo até suas subetapas.
+Próximos épicos seguem o roadmap (IA assistiva / automações apenas quando autorizados).

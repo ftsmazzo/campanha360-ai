@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
@@ -16,15 +16,36 @@ import {
   fetchInboxThreads,
   fetchMe,
   getStoredToken,
+  retryInboxMessage,
   sendInboxReply,
 } from '../../../../../lib/api';
 import { canWriteRole, getOrganizationRole } from '../../../../../lib/roles';
 
 const POLL_INTERVAL_MS = 5000;
 
+type InboxMessage = InboxThreadDetail['messages'][number];
+
 function formatDateTime(value: string | null | undefined) {
   if (!value) return '—';
-  return new Date(value).toLocaleString('pt-BR');
+  return new Date(value).toLocaleString('pt-BR', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatRelativeTime(value: string | null | undefined) {
+  if (!value) return '—';
+  const date = new Date(value);
+  const diffMs = Date.now() - date.getTime();
+  if (Number.isNaN(diffMs)) return formatDateTime(value);
+  const diffSec = Math.floor(diffMs / 1000);
+  if (diffSec < 45) return 'agora';
+  if (diffSec < 3600) return `ha ${Math.floor(diffSec / 60)} min`;
+  if (diffSec < 86400) return `ha ${Math.floor(diffSec / 3600)} h`;
+  return formatDateTime(value);
 }
 
 function contactLabel(contact: {
@@ -44,6 +65,31 @@ function directionLabel(direction: string) {
   return direction === 'OUTBOUND' ? 'Enviada' : 'Recebida';
 }
 
+function deliveryStatusLabel(status: string) {
+  const normalized = status.toUpperCase();
+  if (normalized === 'ERROR' || normalized === 'FAILED') return 'Falhou';
+  if (normalized === 'PENDING' || normalized === 'SENDING') return 'Enviando';
+  if (normalized === 'SENT' || normalized === 'DELIVERED' || normalized === 'READ') {
+    return 'Enviado';
+  }
+  if (normalized === 'RECEIVED') return 'Recebida';
+  return status;
+}
+
+function isFailedOutbound(message: InboxMessage) {
+  return (
+    message.direction === 'OUTBOUND' &&
+    ['ERROR', 'FAILED'].includes(message.status.toUpperCase())
+  );
+}
+
+function optOutBannerText(reason?: 'BLOCKED' | 'OPT_OUT' | null) {
+  if (reason === 'BLOCKED') {
+    return 'Contato bloqueado. Envio manual desabilitado.';
+  }
+  return 'Contato com opt-out ativo. Envio manual desabilitado.';
+}
+
 function mergeMessagesById(
   current: InboxThreadDetail['messages'],
   incoming: InboxThreadDetail['messages'],
@@ -52,10 +98,12 @@ function mergeMessagesById(
   for (const message of incoming) {
     byId.set(message.id, message);
   }
-  return [...byId.values()].sort(
-    (left, right) =>
-      new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime(),
-  );
+  return [...byId.values()].sort((left, right) => {
+    const timeDiff =
+      new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return left.id.localeCompare(right.id);
+  });
 }
 
 function mergeThreadsById(
@@ -70,8 +118,56 @@ function mergeThreadsById(
   return [...byId.values()].sort((left, right) => {
     const leftAt = left.lastMessageAt || left.updatedAt;
     const rightAt = right.lastMessageAt || right.updatedAt;
-    return new Date(rightAt).getTime() - new Date(leftAt).getTime();
+    const timeDiff = new Date(rightAt).getTime() - new Date(leftAt).getTime();
+    if (timeDiff !== 0) return timeDiff;
+    return left.id.localeCompare(right.id);
   });
+}
+
+function applyMessageToThreadList(
+  current: InboxThreadListItem[],
+  threadId: string,
+  message: InboxMessage,
+  lastMessageAt: string,
+) {
+  const existing = current.find((thread) => thread.id === threadId);
+  if (!existing) return current;
+  return mergeThreadsById(current, [
+    {
+      ...existing,
+      lastMessageAt,
+      updatedAt: lastMessageAt,
+      lastMessage: {
+        id: message.id,
+        body: message.body,
+        direction: message.direction,
+        status: message.status,
+        createdAt: message.createdAt,
+        optOutActive: message.optOutActive,
+      },
+    },
+  ]);
+}
+
+function readFailedPayload(error: unknown): {
+  message: string;
+  failedMessage?: InboxMessage;
+  lastMessageAt?: string;
+} | null {
+  if (!(error instanceof ApiError)) return null;
+  const data = error.data as
+    | {
+        message?: string;
+        failedMessage?: InboxMessage;
+        thread?: { lastMessageAt?: string };
+      }
+    | null;
+  if (!data) return { message: error.message };
+  return {
+    message: typeof data.message === 'string' ? data.message : error.message,
+    failedMessage: data.failedMessage,
+    lastMessageAt: data.thread?.lastMessageAt,
+  };
 }
 
 export default function CampaignInboxPage() {
@@ -92,15 +188,16 @@ export default function CampaignInboxPage() {
   const [pollNotice, setPollNotice] = useState<string | null>(null);
   const [replyBody, setReplyBody] = useState('');
   const [sending, setSending] = useState(false);
+  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [sendSuccess, setSendSuccess] = useState<string | null>(null);
 
   const selectedThreadIdRef = useRef(selectedThreadId);
-  const threadDetailRef = useRef(threadDetail);
   const pollInFlightRef = useRef(false);
+  const sendingRef = useRef(false);
+  const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   selectedThreadIdRef.current = selectedThreadId;
-  threadDetailRef.current = threadDetail;
 
   const canWrite = campaign
     ? canWriteRole(getOrganizationRole(user?.memberships, campaign.organizationId))
@@ -110,6 +207,9 @@ export default function CampaignInboxPage() {
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
     [threads, selectedThreadId],
   );
+
+  const sendBlocked = Boolean(threadDetail?.contact.optOutActive);
+  const canCompose = canWrite && !sendBlocked && !sending;
 
   useEffect(() => {
     async function load() {
@@ -192,7 +292,7 @@ export default function CampaignInboxPage() {
     let cancelled = false;
 
     async function pollInbox() {
-      if (cancelled || pollInFlightRef.current) return;
+      if (cancelled || pollInFlightRef.current || sendingRef.current) return;
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
         return;
       }
@@ -222,7 +322,6 @@ export default function CampaignInboxPage() {
               messages: mergeMessagesById(current.messages, detail.messages),
             };
           });
-          setDetailError(null);
         }
 
         setPollNotice(null);
@@ -262,7 +361,12 @@ export default function CampaignInboxPage() {
     setReplyBody('');
     setSendError(null);
     setSendSuccess(null);
+    setRetryingMessageId(null);
   }, [selectedThreadId]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+  }, [threadDetail?.messages.length, selectedThreadId]);
 
   function selectThread(threadId: string) {
     const next = new URLSearchParams(searchParams.toString());
@@ -270,9 +374,32 @@ export default function CampaignInboxPage() {
     router.replace(`/dashboard/campaigns/${campaignId}/inbox?${next.toString()}`);
   }
 
-  async function handleSendReply() {
+  function applySuccessfulSend(result: {
+    message: InboxMessage;
+    thread: { id: string; lastMessageAt: string };
+  }) {
+    setThreadDetail((current) => {
+      if (!current || current.id !== result.thread.id) return current;
+      return {
+        ...current,
+        lastMessageAt: result.thread.lastMessageAt,
+        messages: mergeMessagesById(current.messages, [result.message]),
+      };
+    });
+    setThreads((current) =>
+      applyMessageToThreadList(
+        current,
+        result.thread.id,
+        result.message,
+        result.thread.lastMessageAt,
+      ),
+    );
+  }
+
+  async function handleSendReply(event?: FormEvent) {
+    event?.preventDefault();
     const token = getStoredToken();
-    if (!token || !selectedThreadId || !canWrite || sending) return;
+    if (!token || !selectedThreadId || !canWrite || sendingRef.current) return;
 
     const trimmed = replyBody.trim();
     if (!trimmed) {
@@ -281,39 +408,14 @@ export default function CampaignInboxPage() {
       return;
     }
 
+    sendingRef.current = true;
     setSending(true);
     setSendError(null);
     setSendSuccess(null);
 
     try {
       const result = await sendInboxReply(token, campaignId, selectedThreadId, trimmed);
-      setThreadDetail((current) => {
-        if (!current || current.id !== selectedThreadId) return current;
-        return {
-          ...current,
-          lastMessageAt: result.thread.lastMessageAt,
-          messages: mergeMessagesById(current.messages, [result.message]),
-        };
-      });
-      setThreads((current) => {
-        const existing = current.find((thread) => thread.id === selectedThreadId);
-        if (!existing) return current;
-        return mergeThreadsById(current, [
-          {
-            ...existing,
-            lastMessageAt: result.thread.lastMessageAt,
-            updatedAt: result.thread.lastMessageAt,
-            lastMessage: {
-              id: result.message.id,
-              body: result.message.body,
-              direction: result.message.direction,
-              status: result.message.status,
-              createdAt: result.message.createdAt,
-              optOutActive: result.message.optOutActive,
-            },
-          },
-        ]);
-      });
+      applySuccessfulSend(result);
       setReplyBody('');
       setSendSuccess('Mensagem enviada');
     } catch (err) {
@@ -322,9 +424,72 @@ export default function CampaignInboxPage() {
         router.replace('/login');
         return;
       }
-      setSendError(err instanceof ApiError ? err.message : 'Nao foi possivel enviar a mensagem');
+
+      const failed = readFailedPayload(err);
+      if (failed?.failedMessage && selectedThreadId) {
+        setThreadDetail((current) => {
+          if (!current || current.id !== selectedThreadId) return current;
+          return {
+            ...current,
+            lastMessageAt: failed.lastMessageAt || current.lastMessageAt,
+            messages: mergeMessagesById(current.messages, [failed.failedMessage!]),
+          };
+        });
+        if (failed.lastMessageAt) {
+          setThreads((current) =>
+            applyMessageToThreadList(
+              current,
+              selectedThreadId,
+              failed.failedMessage!,
+              failed.lastMessageAt!,
+            ),
+          );
+        }
+      }
+
+      setSendError(
+        failed?.message ||
+          (err instanceof ApiError ? err.message : 'Nao foi possivel enviar a mensagem'),
+      );
+      setSendSuccess(null);
     } finally {
+      sendingRef.current = false;
       setSending(false);
+    }
+  }
+
+  async function handleRetryMessage(messageId: string) {
+    const token = getStoredToken();
+    if (!token || !selectedThreadId || !canWrite || sendingRef.current) return;
+
+    sendingRef.current = true;
+    setRetryingMessageId(messageId);
+    setSendError(null);
+    setSendSuccess(null);
+
+    try {
+      const result = await retryInboxMessage(
+        token,
+        campaignId,
+        selectedThreadId,
+        messageId,
+      );
+      applySuccessfulSend(result);
+      setSendSuccess('Mensagem reenviada');
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        clearStoredToken();
+        router.replace('/login');
+        return;
+      }
+      setSendError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel reenviar a mensagem',
+      );
+    } finally {
+      sendingRef.current = false;
+      setRetryingMessageId(null);
     }
   }
 
@@ -347,8 +512,7 @@ export default function CampaignInboxPage() {
           <h2 className="text-2xl font-semibold text-[#151515]">Atendimento</h2>
           {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
           <p className="mt-2 text-sm text-[#65655f]">
-            Conversas recebidas via WhatsApp. A conversa aberta atualiza automaticamente a cada{' '}
-            {POLL_INTERVAL_MS / 1000}s.
+            Conversas WhatsApp com atualizacao automatica a cada {POLL_INTERVAL_MS / 1000}s.
           </p>
         </div>
 
@@ -368,10 +532,10 @@ export default function CampaignInboxPage() {
               <h3 className="text-sm font-medium text-[#24382b]">Conversas</h3>
             </div>
             {threads.length === 0 ? (
-              <div className="space-y-2 px-4 py-8 text-sm text-[#65655f]">
-                <p>Nenhuma conversa nesta campanha ainda.</p>
+              <div className="space-y-2 px-4 py-10 text-center text-sm text-[#65655f]">
+                <p className="font-medium text-[#34342f]">Nenhuma conversa ainda</p>
                 <p>
-                  Quando uma mensagem chegar pelo webhook Evolution, ela aparece aqui
+                  Assim que uma mensagem chegar pelo WhatsApp, ela aparece nesta lista
                   automaticamente.
                 </p>
               </div>
@@ -392,8 +556,11 @@ export default function CampaignInboxPage() {
                           <p className="font-medium text-[#24382b]">
                             {contactLabel(thread.contact)}
                           </p>
-                          <span className="shrink-0 text-[11px] text-[#65655f]">
-                            {formatDateTime(thread.lastMessageAt || thread.updatedAt)}
+                          <span
+                            className="shrink-0 text-[11px] text-[#65655f]"
+                            title={formatDateTime(thread.lastMessageAt || thread.updatedAt)}
+                          >
+                            {formatRelativeTime(thread.lastMessageAt || thread.updatedAt)}
                           </span>
                         </div>
                         <p className="mt-1 text-xs text-[#65655f]">
@@ -403,11 +570,14 @@ export default function CampaignInboxPage() {
                             : ''}
                         </p>
                         <p className="mt-1 line-clamp-2 text-sm text-[#34342f]">
+                          {thread.lastMessage?.direction === 'OUTBOUND' ? 'Voce: ' : ''}
                           {previewBody(thread.lastMessage?.body)}
                         </p>
                         {thread.contact.optOutActive ? (
                           <span className="mt-2 inline-block rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-900">
-                            Opt-out ativo
+                            {thread.contact.optOutReason === 'BLOCKED'
+                              ? 'Bloqueado'
+                              : 'Opt-out'}
                           </span>
                         ) : null}
                       </button>
@@ -420,8 +590,9 @@ export default function CampaignInboxPage() {
 
           <section className="min-h-[420px] rounded-md border border-[#deddd4] bg-white">
             {!selectedThreadId ? (
-              <div className="flex h-full min-h-[420px] items-center justify-center px-6 text-center text-sm text-[#65655f]">
-                Selecione uma conversa para ver o historico de mensagens.
+              <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-2 px-6 text-center text-sm text-[#65655f]">
+                <p className="font-medium text-[#34342f]">Selecione uma conversa</p>
+                <p>Escolha um contato a esquerda para ver o historico e responder.</p>
               </div>
             ) : loadingDetail ? (
               <div className="flex h-full min-h-[420px] items-center justify-center text-sm text-[#65655f]">
@@ -454,7 +625,9 @@ export default function CampaignInboxPage() {
                     <div className="flex flex-wrap gap-2">
                       {threadDetail.contact.optOutActive ? (
                         <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
-                          Opt-out ativo
+                          {threadDetail.contact.optOutReason === 'BLOCKED'
+                            ? 'Bloqueado'
+                            : 'Opt-out ativo'}
                         </span>
                       ) : null}
                       <Link
@@ -469,25 +642,37 @@ export default function CampaignInboxPage() {
 
                 <div className="flex-1 space-y-3 overflow-y-auto bg-[#fafaf8] px-4 py-4">
                   {threadDetail.messages.length === 0 ? (
-                    <p className="text-sm text-[#65655f]">
-                      Esta conversa ainda nao possui mensagens registradas.
-                    </p>
+                    <div className="rounded-md border border-dashed border-[#d7d6cd] bg-white px-4 py-8 text-center text-sm text-[#65655f]">
+                      <p className="font-medium text-[#34342f]">Sem mensagens nesta conversa</p>
+                      <p className="mt-1">
+                        O historico aparece aqui quando houver mensagens recebidas ou enviadas.
+                      </p>
+                    </div>
                   ) : (
                     threadDetail.messages.map((message) => {
                       const inbound = message.direction !== 'OUTBOUND';
+                      const failed = isFailedOutbound(message);
                       return (
                         <div
                           key={message.id}
-                          className={`max-w-[85%] rounded-md border px-3 py-2 text-sm ${
+                          className={`max-w-[85%] rounded-md border px-3 py-2 text-sm shadow-sm ${
                             inbound
                               ? 'mr-auto border-[#deddd4] bg-white text-[#24382b]'
-                              : 'ml-auto border-[#d7e5d8] bg-[#eef2ea] text-[#24382b]'
+                              : failed
+                                ? 'ml-auto border-red-200 bg-red-50 text-[#24382b]'
+                                : 'ml-auto border-[#cfe0d1] bg-[#e7f0e4] text-[#24382b]'
                           }`}
                         >
                           <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-[#65655f]">
-                            <span>{directionLabel(message.direction)}</span>
+                            <span className="font-medium">
+                              {inbound ? 'Recebida' : 'Enviada'}
+                            </span>
                             <span>·</span>
-                            <span>{formatDateTime(message.createdAt)}</span>
+                            <span title={formatDateTime(message.createdAt)}>
+                              {formatRelativeTime(message.createdAt)}
+                            </span>
+                            <span>·</span>
+                            <span>{deliveryStatusLabel(message.status)}</span>
                             {message.optOutActive ? (
                               <>
                                 <span>·</span>
@@ -498,25 +683,38 @@ export default function CampaignInboxPage() {
                           <p className="whitespace-pre-wrap">
                             {message.body?.trim() || '(mensagem sem texto)'}
                           </p>
+                          {failed && canWrite && !sendBlocked ? (
+                            <button
+                              type="button"
+                              className="mt-2 text-xs font-medium text-[#8a2f2f] underline disabled:opacity-60"
+                              disabled={retryingMessageId === message.id || sending}
+                              onClick={() => void handleRetryMessage(message.id)}
+                            >
+                              {retryingMessageId === message.id
+                                ? 'Reenviando...'
+                                : 'Tentar reenviar'}
+                            </button>
+                          ) : null}
                         </div>
                       );
                     })
                   )}
+                  <div ref={messagesEndRef} />
                 </div>
 
                 <div className="space-y-3 border-t border-[#e8e7df] px-4 py-3">
-                  {threadDetail.contact.optOutActive ? (
+                  {sendBlocked ? (
                     <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-                      Contato com opt-out ativo. Envio manual bloqueado.
+                      {optOutBannerText(threadDetail.contact.optOutReason)}
                     </p>
                   ) : null}
 
-                  {canWrite && !threadDetail.contact.optOutActive ? (
-                    <div className="space-y-2">
+                  {canWrite && !sendBlocked ? (
+                    <form className="space-y-2" onSubmit={(event) => void handleSendReply(event)}>
                       <label className="block">
                         <span className="text-sm font-medium text-[#34342f]">Resposta manual</span>
                         <textarea
-                          className="mt-1 min-h-[88px] w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2 text-sm"
+                          className="mt-1 min-h-[88px] w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2 text-sm disabled:bg-[#f3f3f0]"
                           value={replyBody}
                           onChange={(event) => {
                             setReplyBody(event.target.value);
@@ -526,18 +724,26 @@ export default function CampaignInboxPage() {
                           placeholder="Escreva a mensagem para enviar pelo WhatsApp"
                           maxLength={4000}
                           disabled={sending}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+                              event.preventDefault();
+                              void handleSendReply();
+                            }
+                          }}
                         />
                       </label>
                       <div className="flex flex-wrap items-center gap-2">
                         <button
-                          type="button"
-                          className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                          disabled={sending || !replyBody.trim()}
-                          onClick={() => void handleSendReply()}
+                          type="submit"
+                          className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                          disabled={!canCompose || !replyBody.trim()}
                         >
                           {sending ? 'Enviando...' : 'Enviar'}
                         </button>
-                        {sendSuccess ? (
+                        {sending ? (
+                          <span className="text-xs text-[#65655f]">Enviando mensagem...</span>
+                        ) : null}
+                        {!sending && sendSuccess ? (
                           <span className="text-xs text-[#47624f]">{sendSuccess}</span>
                         ) : null}
                       </div>
@@ -546,7 +752,7 @@ export default function CampaignInboxPage() {
                           {sendError}
                         </p>
                       ) : null}
-                    </div>
+                    </form>
                   ) : null}
 
                   {!canWrite ? (
@@ -557,14 +763,16 @@ export default function CampaignInboxPage() {
 
                   {selectedThread?.lastMessage ? (
                     <p className="text-xs text-[#65655f]">
-                      Ultima mensagem listada: {formatDateTime(selectedThread.lastMessage.createdAt)}
+                      Ultima mensagem: {formatDateTime(selectedThread.lastMessage.createdAt)} (
+                      {directionLabel(selectedThread.lastMessage.direction)})
                     </p>
                   ) : null}
                 </div>
               </div>
             ) : (
-              <div className="flex h-full min-h-[420px] items-center justify-center px-6 text-sm text-[#65655f]">
-                Conversa nao encontrada.
+              <div className="flex h-full min-h-[420px] flex-col items-center justify-center gap-2 px-6 text-center text-sm text-[#65655f]">
+                <p className="font-medium text-[#34342f]">Conversa nao encontrada</p>
+                <p>Selecione outra conversa na lista ou aguarde novas mensagens.</p>
               </div>
             )}
           </section>
