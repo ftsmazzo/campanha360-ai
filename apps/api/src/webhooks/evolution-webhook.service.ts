@@ -44,6 +44,19 @@ export class EvolutionWebhookService {
     private readonly audit: AuditService,
   ) {}
 
+  async getHealth(channelAccountId: string) {
+    const account = await this.findActiveEvolutionAccount(channelAccountId);
+
+    return {
+      ok: true as const,
+      service: 'evolution-webhook',
+      channelAccountId: account.id,
+      campaignId: account.campaignId,
+      provider: account.provider,
+      status: account.status,
+    };
+  }
+
   async handleInbound(
     channelAccountId: string,
     payload: unknown,
@@ -51,28 +64,7 @@ export class EvolutionWebhookService {
   ): Promise<ProcessResult> {
     this.assertWebhookSecret(secretHeader);
 
-    const account = await this.prisma.channelAccount.findUnique({
-      where: { id: channelAccountId },
-      select: {
-        id: true,
-        organizationId: true,
-        campaignId: true,
-        provider: true,
-        status: true,
-      },
-    });
-
-    if (!account) {
-      throw new NotFoundException('Conta de canal nao encontrada');
-    }
-
-    if (account.provider !== ChannelProvider.WHATSAPP_EVOLUTION) {
-      throw new ForbiddenException('Conta de canal nao usa provider WHATSAPP_EVOLUTION');
-    }
-
-    if (account.status === ChannelAccountStatus.ARCHIVED) {
-      throw new GoneException('Conta de canal arquivada');
-    }
+    const account = await this.findActiveEvolutionAccount(channelAccountId);
 
     const normalizedItems = normalizeEvolutionWebhookPayload(payload);
     const inboundItems = normalizedItems.filter((item) => item.isInboundMessage && !item.fromMe);
@@ -127,6 +119,33 @@ export class EvolutionWebhookService {
       duplicates,
       skippedOutbound,
     };
+  }
+
+  private async findActiveEvolutionAccount(channelAccountId: string) {
+    const account = await this.prisma.channelAccount.findUnique({
+      where: { id: channelAccountId },
+      select: {
+        id: true,
+        organizationId: true,
+        campaignId: true,
+        provider: true,
+        status: true,
+      },
+    });
+
+    if (!account) {
+      throw new NotFoundException('Conta de canal nao encontrada');
+    }
+
+    if (account.provider !== ChannelProvider.WHATSAPP_EVOLUTION) {
+      throw new ForbiddenException('Conta de canal nao usa provider WHATSAPP_EVOLUTION');
+    }
+
+    if (account.status === ChannelAccountStatus.ARCHIVED) {
+      throw new GoneException('Conta de canal arquivada');
+    }
+
+    return account;
   }
 
   private assertWebhookSecret(secretHeader: string | undefined) {

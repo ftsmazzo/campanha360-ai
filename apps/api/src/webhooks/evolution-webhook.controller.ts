@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   Headers,
   HttpCode,
   Param,
@@ -13,6 +14,11 @@ import { EvolutionWebhookService } from './evolution-webhook.service';
 @Controller('webhooks/evolution')
 export class EvolutionWebhookController {
   constructor(private readonly evolutionWebhookService: EvolutionWebhookService) {}
+
+  @Get(':channelAccountId/health')
+  getHealth(@Param('channelAccountId') channelAccountId: string) {
+    return this.evolutionWebhookService.getHealth(channelAccountId);
+  }
 
   @Post(':channelAccountId')
   @HttpCode(200)
