@@ -46,6 +46,13 @@ export type EvolutionWebhookSetResult = {
   path: string;
 };
 
+export type EvolutionSendTextResult = {
+  instanceName: string;
+  number: string;
+  externalMessageId?: string;
+  status?: string;
+};
+
 type JsonRecord = Record<string, unknown>;
 
 @Injectable()
@@ -409,6 +416,67 @@ export class EvolutionAdapter {
       return error.getStatus() === HttpStatus.NOT_FOUND;
     }
     return false;
+  }
+
+  /**
+   * Envia texto simples via Evolution.
+   * Endpoint: POST /message/sendText/{instanceName}
+   * Body: { number, text }
+   */
+  async sendTextMessage(input: {
+    instanceName: string;
+    number: string;
+    text: string;
+  }): Promise<EvolutionSendTextResult> {
+    const instanceName = input.instanceName.trim();
+    const number = input.number.replace(/\D/g, '');
+    const text = input.text.trim();
+
+    if (!instanceName) {
+      throw new EvolutionApiException(
+        'Nome da instancia Evolution invalido',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (!number) {
+      throw new EvolutionApiException(
+        'Numero de destino invalido',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (!text) {
+      throw new EvolutionApiException(
+        'Texto da mensagem vazio',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+
+    const path = `/message/sendText/${encodeURIComponent(instanceName)}`;
+    const payload = await this.request('POST', path, {
+      number,
+      text,
+    });
+
+    const record = this.asRecord(payload) ?? {};
+    const key = this.asRecord(record.key);
+    const externalMessageId =
+      this.asString(key?.id) ??
+      this.asString(record.messageId) ??
+      this.asString(record.id);
+    const status =
+      this.asString(record.status) ??
+      this.asString(this.asRecord(record.message)?.status);
+
+    this.logger.log(
+      `Mensagem Evolution enviada instance=${instanceName} hasExternalId=${Boolean(externalMessageId)}`,
+    );
+
+    return {
+      instanceName,
+      number,
+      externalMessageId,
+      status,
+    };
   }
 
   private requireBaseUrl() {

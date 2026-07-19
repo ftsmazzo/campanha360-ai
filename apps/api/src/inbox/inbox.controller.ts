@@ -1,6 +1,7 @@
-import { Controller, Get, Param, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { AuthUser, CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { SendInboxReplyDto } from './dto/send-inbox-reply.dto';
 import { InboxService } from './inbox.service';
 
 @Controller('campaigns/:campaignId/inbox')
@@ -23,5 +24,15 @@ export class InboxController {
     @Param('threadId') threadId: string,
   ) {
     return this.inboxService.getThread(user.id, campaignId, threadId);
+  }
+
+  @Post('threads/:threadId/messages')
+  sendReply(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('threadId') threadId: string,
+    @Body() dto: SendInboxReplyDto,
+  ) {
+    return this.inboxService.sendReply(user.id, campaignId, threadId, dto.body);
   }
 }

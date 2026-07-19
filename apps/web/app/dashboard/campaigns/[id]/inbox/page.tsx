@@ -16,7 +16,9 @@ import {
   fetchInboxThreads,
   fetchMe,
   getStoredToken,
+  sendInboxReply,
 } from '../../../../../lib/api';
+import { canWriteRole, getOrganizationRole } from '../../../../../lib/roles';
 
 const POLL_INTERVAL_MS = 5000;
 
@@ -88,6 +90,10 @@ export default function CampaignInboxPage() {
   const [error, setError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [pollNotice, setPollNotice] = useState<string | null>(null);
+  const [replyBody, setReplyBody] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sendSuccess, setSendSuccess] = useState<string | null>(null);
 
   const selectedThreadIdRef = useRef(selectedThreadId);
   const threadDetailRef = useRef(threadDetail);
@@ -95,6 +101,10 @@ export default function CampaignInboxPage() {
 
   selectedThreadIdRef.current = selectedThreadId;
   threadDetailRef.current = threadDetail;
+
+  const canWrite = campaign
+    ? canWriteRole(getOrganizationRole(user?.memberships, campaign.organizationId))
+    : false;
 
   const selectedThread = useMemo(
     () => threads.find((thread) => thread.id === selectedThreadId) ?? null,
@@ -248,10 +258,74 @@ export default function CampaignInboxPage() {
     };
   }, [campaignId, loading, router]);
 
+  useEffect(() => {
+    setReplyBody('');
+    setSendError(null);
+    setSendSuccess(null);
+  }, [selectedThreadId]);
+
   function selectThread(threadId: string) {
     const next = new URLSearchParams(searchParams.toString());
     next.set('thread', threadId);
     router.replace(`/dashboard/campaigns/${campaignId}/inbox?${next.toString()}`);
+  }
+
+  async function handleSendReply() {
+    const token = getStoredToken();
+    if (!token || !selectedThreadId || !canWrite || sending) return;
+
+    const trimmed = replyBody.trim();
+    if (!trimmed) {
+      setSendError('Informe o texto da mensagem');
+      setSendSuccess(null);
+      return;
+    }
+
+    setSending(true);
+    setSendError(null);
+    setSendSuccess(null);
+
+    try {
+      const result = await sendInboxReply(token, campaignId, selectedThreadId, trimmed);
+      setThreadDetail((current) => {
+        if (!current || current.id !== selectedThreadId) return current;
+        return {
+          ...current,
+          lastMessageAt: result.thread.lastMessageAt,
+          messages: mergeMessagesById(current.messages, [result.message]),
+        };
+      });
+      setThreads((current) => {
+        const existing = current.find((thread) => thread.id === selectedThreadId);
+        if (!existing) return current;
+        return mergeThreadsById(current, [
+          {
+            ...existing,
+            lastMessageAt: result.thread.lastMessageAt,
+            updatedAt: result.thread.lastMessageAt,
+            lastMessage: {
+              id: result.message.id,
+              body: result.message.body,
+              direction: result.message.direction,
+              status: result.message.status,
+              createdAt: result.message.createdAt,
+              optOutActive: result.message.optOutActive,
+            },
+          },
+        ]);
+      });
+      setReplyBody('');
+      setSendSuccess('Mensagem enviada');
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        clearStoredToken();
+        router.replace('/login');
+        return;
+      }
+      setSendError(err instanceof ApiError ? err.message : 'Nao foi possivel enviar a mensagem');
+    } finally {
+      setSending(false);
+    }
   }
 
   if (loading) {
@@ -273,8 +347,8 @@ export default function CampaignInboxPage() {
           <h2 className="text-2xl font-semibold text-[#151515]">Atendimento</h2>
           {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
           <p className="mt-2 text-sm text-[#65655f]">
-            Conversas recebidas via WhatsApp. Envio de respostas ainda nao esta disponivel nesta
-            etapa. A conversa aberta atualiza automaticamente a cada {POLL_INTERVAL_MS / 1000}s.
+            Conversas recebidas via WhatsApp. A conversa aberta atualiza automaticamente a cada{' '}
+            {POLL_INTERVAL_MS / 1000}s.
           </p>
         </div>
 
@@ -430,13 +504,61 @@ export default function CampaignInboxPage() {
                   )}
                 </div>
 
-                <div className="border-t border-[#e8e7df] px-4 py-3 text-xs text-[#65655f]">
-                  Resposta manual fica para a proxima etapa. Nesta tela voce apenas visualiza o
-                  historico.
+                <div className="space-y-3 border-t border-[#e8e7df] px-4 py-3">
+                  {threadDetail.contact.optOutActive ? (
+                    <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      Contato com opt-out ativo. Envio manual bloqueado.
+                    </p>
+                  ) : null}
+
+                  {canWrite && !threadDetail.contact.optOutActive ? (
+                    <div className="space-y-2">
+                      <label className="block">
+                        <span className="text-sm font-medium text-[#34342f]">Resposta manual</span>
+                        <textarea
+                          className="mt-1 min-h-[88px] w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2 text-sm"
+                          value={replyBody}
+                          onChange={(event) => {
+                            setReplyBody(event.target.value);
+                            setSendError(null);
+                            setSendSuccess(null);
+                          }}
+                          placeholder="Escreva a mensagem para enviar pelo WhatsApp"
+                          maxLength={4000}
+                          disabled={sending}
+                        />
+                      </label>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                          disabled={sending || !replyBody.trim()}
+                          onClick={() => void handleSendReply()}
+                        >
+                          {sending ? 'Enviando...' : 'Enviar'}
+                        </button>
+                        {sendSuccess ? (
+                          <span className="text-xs text-[#47624f]">{sendSuccess}</span>
+                        ) : null}
+                      </div>
+                      {sendError ? (
+                        <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+                          {sendError}
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  {!canWrite ? (
+                    <p className="text-xs text-[#65655f]">
+                      Seu perfil possui acesso somente leitura neste atendimento.
+                    </p>
+                  ) : null}
+
                   {selectedThread?.lastMessage ? (
-                    <span className="mt-1 block">
+                    <p className="text-xs text-[#65655f]">
                       Ultima mensagem listada: {formatDateTime(selectedThread.lastMessage.createdAt)}
-                    </span>
+                    </p>
                   ) : null}
                 </div>
               </div>

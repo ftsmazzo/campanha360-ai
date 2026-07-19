@@ -374,7 +374,6 @@ Operador consegue abrir Atendimento na campanha, ver conversas geradas pelo webh
 
 ### Fora de escopo (mantido)
 
-- envio de resposta;
 - IA;
 - automações;
 - atribuição complexa de inbox.
@@ -383,14 +382,48 @@ Operador consegue abrir Atendimento na campanha, ver conversas geradas pelo webh
 
 ### Objetivo
 
-Permitir envio manual de mensagens pela Evolution com segurança.
+Permitir envio manual de mensagens pela Evolution com segurança, a partir do Atendimento.
 
-### Entregas previstas
+### Entregas
 
-- envio manual via adapter;
-- gravação de mensagem outbound;
-- bloqueio se contato tiver opt-out;
-- audit log.
+- campo e botão de resposta no detalhe da conversa;
+- `POST /campaigns/:campaignId/inbox/threads/:threadId/messages`;
+- envio via Evolution `POST /message/sendText/{instance}`;
+- persistência de `Message` outbound;
+- bloqueio de envio vazio e de contato com opt-out/BLOCKED;
+- canal precisa estar `CONNECTED`;
+- audit `INBOX_MANUAL_REPLY_SENT`;
+- atualização local do histórico sem reload (polling continua).
+
+### Regras
+
+- escrita apenas para OWNER/ADMIN/MANAGER;
+- não implementar IA, automação, templates ou mídia;
+- não alterar autenticação do webhook;
+- usar `EVOLUTION_API_URL` e `EVOLUTION_API_KEY`.
+
+### Critério de aceite
+
+Operador envia texto simples pelo Atendimento; a mensagem aparece como enviada no histórico e chega no WhatsApp; inbound continua atualizando via polling.
+
+### Status
+
+**Concluída.**
+
+### Implementado
+
+- `EvolutionAdapter.sendTextMessage`;
+- `InboxService.sendReply`;
+- UI de resposta no inbox;
+- util/testes de normalização de body e telefone.
+
+### Fora de escopo (mantido)
+
+- IA;
+- automações;
+- templates;
+- anexos/mídia;
+- múltiplos operadores.
 
 ## 12. Subetapa 04.7 — Hardening de canal
 
@@ -424,10 +457,10 @@ O sistema consegue receber mensagens reais via Evolution, agrupá-las em convers
 
 ## 15. Próximo passo após este documento
 
-A subetapa **04.5 — Inbox básico** está concluída.
+A subetapa **04.6 — Resposta manual** está concluída.
 
 O próximo prompt ao Cursor deve executar apenas:
 
-**04.6 — Resposta manual.**
+**04.7 — Hardening de canal.**
 
 IA e automações continuam fora do escopo até suas subetapas.

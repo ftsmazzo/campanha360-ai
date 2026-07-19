@@ -876,3 +876,36 @@ export function fetchInboxThread(
     token,
   );
 }
+
+export type InboxReplyResponse = {
+  message: {
+    id: string;
+    direction: string;
+    body: string | null;
+    status: string;
+    provider: string;
+    externalMessageId: string | null;
+    createdAt: string;
+    optOutActive: boolean;
+  };
+  thread: {
+    id: string;
+    lastMessageAt: string;
+  };
+};
+
+export function sendInboxReply(
+  token: string,
+  campaignId: string,
+  threadId: string,
+  body: string,
+) {
+  return request<InboxReplyResponse>(
+    `/campaigns/${campaignId}/inbox/threads/${threadId}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ body }),
+    },
+    token,
+  );
+}

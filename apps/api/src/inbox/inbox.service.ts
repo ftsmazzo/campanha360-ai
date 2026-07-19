@@ -1,7 +1,27 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { ConsentStatus, ContactStatus, Prisma } from '@prisma/client';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import {
+  ChannelAccountStatus,
+  ChannelProvider,
+  ChannelType,
+  ConsentStatus,
+  ContactStatus,
+  MessageDirection,
+  Prisma,
+} from '@prisma/client';
+import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
+import { EvolutionAdapter } from '../evolution/evolution.adapter';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  normalizeOutboundReplyBody,
+  resolveWhatsAppDestination,
+} from './inbox-reply.util';
 
 type ThreadListItem = {
   id: string;
@@ -39,9 +59,13 @@ type ThreadListItem = {
 
 @Injectable()
 export class InboxService {
+  private readonly logger = new Logger(InboxService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly organizationAccess: OrganizationAccessService,
+    private readonly evolutionAdapter: EvolutionAdapter,
+    private readonly audit: AuditService,
   ) {}
 
   async listThreads(userId: string, campaignId: string): Promise<ThreadListItem[]> {
@@ -309,6 +333,207 @@ export class InboxService {
     };
   }
 
+  async sendReply(
+    userId: string,
+    campaignId: string,
+    threadId: string,
+    rawBody: string,
+  ) {
+    const body = normalizeOutboundReplyBody(rawBody);
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+
+    const thread = await this.prisma.conversationThread.findFirst({
+      where: {
+        id: threadId,
+        organizationId: campaign.organizationId,
+        campaignId,
+      },
+    });
+
+    if (!thread) {
+      throw new NotFoundException('Conversa nao encontrada');
+    }
+
+    if (!thread.channelAccountId) {
+      throw new BadRequestException('Conversa sem canal associado para envio');
+    }
+
+    const [contact, channelAccount, whatsappChannel] = await Promise.all([
+      this.prisma.contact.findFirst({
+        where: {
+          id: thread.contactId,
+          organizationId: campaign.organizationId,
+          campaignId,
+        },
+        select: {
+          id: true,
+          name: true,
+          phoneNumber: true,
+          status: true,
+          optOuts: { select: { id: true }, take: 1 },
+          consents: {
+            where: { status: ConsentStatus.OPT_OUT },
+            select: { id: true },
+            take: 1,
+          },
+        },
+      }),
+      this.prisma.channelAccount.findFirst({
+        where: {
+          id: thread.channelAccountId,
+          organizationId: campaign.organizationId,
+          campaignId,
+        },
+        select: {
+          id: true,
+          name: true,
+          provider: true,
+          status: true,
+          externalAccountId: true,
+        },
+      }),
+      this.prisma.contactChannel.findFirst({
+        where: {
+          contactId: thread.contactId,
+          organizationId: campaign.organizationId,
+          campaignId,
+          channel: ChannelType.WHATSAPP,
+        },
+        select: { normalizedValue: true },
+        orderBy: { updatedAt: 'desc' },
+      }),
+    ]);
+
+    if (!contact) {
+      throw new NotFoundException('Contato da conversa nao encontrado');
+    }
+
+    if (this.isOptOutActive(contact)) {
+      throw new ForbiddenException(
+        'Contato com opt-out ou bloqueado. Envio manual nao permitido.',
+      );
+    }
+
+    if (!channelAccount) {
+      throw new NotFoundException('Canal da conversa nao encontrado');
+    }
+
+    if (channelAccount.provider !== ChannelProvider.WHATSAPP_EVOLUTION) {
+      throw new BadRequestException('Canal nao suporta envio via Evolution');
+    }
+
+    if (channelAccount.status === ChannelAccountStatus.ARCHIVED) {
+      throw new BadRequestException('Canal arquivado. Envio nao permitido.');
+    }
+
+    if (channelAccount.status !== ChannelAccountStatus.CONNECTED) {
+      throw new BadRequestException(
+        'Canal WhatsApp nao esta conectado. Conecte o canal antes de enviar.',
+      );
+    }
+
+    const instanceName = channelAccount.externalAccountId?.trim();
+    if (!instanceName) {
+      throw new BadRequestException(
+        'Canal sem instancia Evolution. Prepare a conexao novamente.',
+      );
+    }
+
+    const number = resolveWhatsAppDestination({
+      phoneNumber: contact.phoneNumber,
+      channelNormalizedValue: whatsappChannel?.normalizedValue,
+    });
+
+    if (!number) {
+      throw new BadRequestException(
+        'Contato sem telefone WhatsApp valido para envio',
+      );
+    }
+
+    this.logger.log(
+      `Envio manual inbox threadId=${thread.id} channelAccountId=${channelAccount.id}`,
+    );
+
+    const sent = await this.evolutionAdapter.sendTextMessage({
+      instanceName,
+      number,
+      text: body,
+    });
+
+    const now = new Date();
+    const message = await this.prisma.message.create({
+      data: {
+        organizationId: campaign.organizationId,
+        campaignId,
+        contactId: contact.id,
+        conversationId: thread.id,
+        channelAccountId: channelAccount.id,
+        provider: ChannelProvider.WHATSAPP_EVOLUTION,
+        direction: MessageDirection.OUTBOUND,
+        externalMessageId: sent.externalMessageId,
+        body,
+        status: sent.status || 'SENT',
+        rawPayload: {
+          source: 'manual_reply',
+          evolution: {
+            instanceName: sent.instanceName,
+            hasExternalId: Boolean(sent.externalMessageId),
+            status: sent.status ?? null,
+          },
+        } as Prisma.InputJsonValue,
+        createdAt: now,
+      },
+      select: {
+        id: true,
+        direction: true,
+        body: true,
+        status: true,
+        provider: true,
+        externalMessageId: true,
+        createdAt: true,
+        rawPayload: true,
+      },
+    });
+
+    await this.prisma.conversationThread.update({
+      where: { id: thread.id },
+      data: { lastMessageAt: now },
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'INBOX_MANUAL_REPLY_SENT',
+      entityType: 'Message',
+      entityId: message.id,
+      metadata: {
+        threadId: thread.id,
+        channelAccountId: channelAccount.id,
+        contactId: contact.id,
+        hasExternalId: Boolean(sent.externalMessageId),
+        bodyLength: body.length,
+      },
+    });
+
+    return {
+      message: {
+        id: message.id,
+        direction: message.direction,
+        body: message.body,
+        status: message.status,
+        provider: message.provider,
+        externalMessageId: message.externalMessageId,
+        createdAt: message.createdAt.toISOString(),
+        optOutActive: false,
+      },
+      thread: {
+        id: thread.id,
+        lastMessageAt: now.toISOString(),
+      },
+    };
+  }
+
   private isOptOutActive(contact: {
     status: ContactStatus;
     optOuts: Array<{ id: string }>;
@@ -327,7 +552,11 @@ export class InboxService {
     return (rawPayload as Record<string, unknown>).optOutActive === true;
   }
 
-  private async getCampaignContext(userId: string, campaignId: string) {
+  private async getCampaignContext(
+    userId: string,
+    campaignId: string,
+    requireWrite = false,
+  ) {
     const campaign = await this.prisma.campaign.findUnique({
       where: { id: campaignId },
       select: { id: true, organizationId: true, name: true },
@@ -337,7 +566,12 @@ export class InboxService {
       throw new NotFoundException('Campanha nao encontrada');
     }
 
-    await this.organizationAccess.requireMembership(userId, campaign.organizationId);
+    if (requireWrite) {
+      await this.organizationAccess.requireWriteAccess(userId, campaign.organizationId);
+    } else {
+      await this.organizationAccess.requireMembership(userId, campaign.organizationId);
+    }
+
     return campaign;
   }
 }
