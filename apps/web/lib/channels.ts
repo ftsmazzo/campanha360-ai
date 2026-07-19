@@ -61,3 +61,15 @@ export function parseConfig(value: string) {
   if (!value.trim()) return undefined;
   return JSON.parse(value) as Record<string, unknown>;
 }
+
+export function getApiPublicBaseUrl() {
+  const raw =
+    process.env.NEXT_PUBLIC_API_URL ||
+    process.env.API_PUBLIC_URL ||
+    'http://localhost:3001';
+  return raw.trim().replace(/\/+$/, '');
+}
+
+export function buildEvolutionWebhookUrl(channelAccountId: string) {
+  return `${getApiPublicBaseUrl()}/webhooks/evolution/${channelAccountId}`;
+}

@@ -22,6 +22,7 @@ import {
   updateChannelAccount,
 } from '../../../../../lib/api';
 import {
+  buildEvolutionWebhookUrl,
   configToText,
   getChannelAccountStatusLabel,
   listVisibleWhatsappEvolutionAccounts,
@@ -45,6 +46,7 @@ type CardUiState = {
   advancedName: string;
   advancedExternalId: string;
   advancedConfig: string;
+  webhookCopied: boolean;
 };
 
 const emptyCardState = (): CardUiState => ({
@@ -62,6 +64,7 @@ const emptyCardState = (): CardUiState => ({
   advancedName: '',
   advancedExternalId: '',
   advancedConfig: '',
+  webhookCopied: false,
 });
 
 function formatDate(value: string) {
@@ -125,6 +128,21 @@ export default function CampaignChannelsPage() {
     setAccounts((current) => upsertAccount(current, account));
     if (account.provider === 'WHATSAPP_EVOLUTION' && account.status === 'CONNECTED') {
       patchCardState(account.id, { qrBase64: null });
+    }
+  }
+
+  async function handleCopyWebhookUrl(accountId: string) {
+    const url = buildEvolutionWebhookUrl(accountId);
+    try {
+      await navigator.clipboard.writeText(url);
+      patchCardState(accountId, { webhookCopied: true });
+      window.setTimeout(() => {
+        patchCardState(accountId, { webhookCopied: false });
+      }, 2000);
+    } catch {
+      patchCardState(accountId, {
+        error: 'Nao foi possivel copiar a URL do webhook',
+      });
     }
   }
 
@@ -769,6 +787,32 @@ export default function CampaignChannelsPage() {
                       </p>
                     </div>
                   ) : null}
+
+                  <div className="space-y-2 rounded-md border border-[#e8e7df] bg-[#fafaf8] p-4">
+                    <h4 className="text-sm font-medium text-[#24382b]">Webhook da Evolution</h4>
+                    <p className="text-xs text-[#65655f]">
+                      Configure manualmente este URL na Evolution para receber mensagens inbound.
+                    </p>
+                    <code className="block break-all rounded-md border border-[#deddd4] bg-white px-3 py-2 text-xs text-[#24382b]">
+                      {buildEvolutionWebhookUrl(account.id)}
+                    </code>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        className="rounded-md border border-[#24382b] px-3 py-1.5 text-sm font-medium text-[#24382b]"
+                        type="button"
+                        onClick={() => handleCopyWebhookUrl(account.id)}
+                      >
+                        {ui.webhookCopied ? 'URL copiada' : 'Copiar URL'}
+                      </button>
+                      <span className="text-xs text-[#65655f]">ID do canal: {account.id}</span>
+                    </div>
+                    <p className="text-xs text-[#65655f]">
+                      Se <span className="font-medium">EVOLUTION_WEBHOOK_SECRET</span> estiver
+                      configurado na API, a Evolution deve enviar o header{' '}
+                      <span className="font-medium">x-campanha360-webhook-secret</span>. O valor do
+                      secret nao e exibido nesta tela.
+                    </p>
+                  </div>
 
                   {ui.showAdvanced && canWrite ? (
                     <form
