@@ -31,9 +31,15 @@ export class EvolutionWebhookController {
   )
   handleInbound(
     @Param('channelAccountId') channelAccountId: string,
-    @Headers('x-campanha360-webhook-secret') secretHeader: string | undefined,
+    @Headers('authorization') authorization: string | undefined,
+    @Headers('x-evolution-webhook-secret') evolutionSecret: string | undefined,
+    @Headers('x-campanha360-webhook-secret') campanhaSecret: string | undefined,
     @Body() body: unknown,
   ) {
-    return this.evolutionWebhookService.handleInbound(channelAccountId, body, secretHeader);
+    return this.evolutionWebhookService.handleInbound(channelAccountId, body, {
+      authorization,
+      evolutionSecret,
+      campanhaSecret,
+    });
   }
 }

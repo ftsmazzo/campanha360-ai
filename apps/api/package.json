@@ -7,7 +7,8 @@
     "build": "nest build",
     "start": "node dist/main.js",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint \"src/**/*.ts\""
+    "lint": "eslint \"src/**/*.ts\"",
+    "test:webhook-auth": "npx --yes tsx --test src/webhooks/evolution-webhook.auth.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",

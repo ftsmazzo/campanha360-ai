@@ -288,8 +288,14 @@ Configure este URL manualmente na Evolution (configuração automática do webho
 ### Segurança
 
 - env opcional `EVOLUTION_WEBHOOK_SECRET`;
-- se existir, o header `x-campanha360-webhook-secret` deve coincidir;
-- se **não** existir, o webhook é aceito sem autenticação — risco em produção; documentado em `.env.example`.
+- formato preferencial (nativo Evolution): em `webhook.headers` configure
+  `{ "jwt_key": "<EVOLUTION_WEBHOOK_SECRET>" }` — a Evolution envia
+  `Authorization: Bearer <JWT HS256>` com claims `app=evolution` e `action=webhook`;
+- alternativa: header estático `x-evolution-webhook-secret` (ou legado
+  `x-campanha360-webhook-secret`) com o valor cru do secret;
+- se **não** existir `EVOLUTION_WEBHOOK_SECRET`, o webhook é aceito sem autenticação
+  (apenas homologação/teste) — documentado em `.env.example`.
+- `GET /webhooks/evolution/:channelAccountId/health` não exige secret.
 
 ### Regras
 

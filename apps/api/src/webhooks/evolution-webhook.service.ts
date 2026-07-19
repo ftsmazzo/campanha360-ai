@@ -16,10 +16,13 @@ import {
   MessageDirection,
   Prisma,
 } from '@prisma/client';
-import { timingSafeEqual } from 'crypto';
 import { AuditService } from '../audit/audit.service';
 import { normalizePhone } from '../common/phone.util';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  EvolutionWebhookAuthHeaders,
+  validateEvolutionWebhookAuth,
+} from './evolution-webhook.auth';
 import {
   NormalizedEvolutionInbound,
   normalizeEvolutionWebhookPayload,
@@ -60,9 +63,9 @@ export class EvolutionWebhookService {
   async handleInbound(
     channelAccountId: string,
     payload: unknown,
-    secretHeader: string | undefined,
+    authHeaders: EvolutionWebhookAuthHeaders,
   ): Promise<ProcessResult> {
-    this.assertWebhookSecret(secretHeader);
+    this.assertWebhookAuth(authHeaders);
 
     const account = await this.findActiveEvolutionAccount(channelAccountId);
 
@@ -148,29 +151,43 @@ export class EvolutionWebhookService {
     return account;
   }
 
-  private assertWebhookSecret(secretHeader: string | undefined) {
+  private assertWebhookAuth(headers: EvolutionWebhookAuthHeaders) {
     const expected = (this.config.get<string>('EVOLUTION_WEBHOOK_SECRET') || '').trim();
+    const result = validateEvolutionWebhookAuth(expected || null, headers);
 
-    if (!expected) {
-      this.logger.warn(
-        'EVOLUTION_WEBHOOK_SECRET nao configurado: webhook Evolution aceito sem autenticacao (risco em producao)',
-      );
+    if (result.ok) {
+      if (result.mode === 'disabled') {
+        this.logger.warn(
+          'EVOLUTION_WEBHOOK_SECRET nao configurado: webhook Evolution aceito sem autenticacao (apenas homologacao/teste; risco em producao)',
+        );
+        return;
+      }
+
+      this.logger.log(`Webhook Evolution autenticado mode=${result.mode}`);
       return;
     }
 
-    const provided = (secretHeader || '').trim();
-    if (!provided || !this.secretsMatch(expected, provided)) {
-      throw new UnauthorizedException('Webhook secret invalido');
+    switch (result.reason) {
+      case 'missing_auth':
+        this.logger.warn(
+          'Webhook Evolution rejeitado: faltou Authorization Bearer ou header de secret',
+        );
+        throw new UnauthorizedException(
+          'Autenticacao do webhook Evolution ausente (Authorization Bearer ou header de secret)',
+        );
+      case 'invalid_jwt':
+        this.logger.warn('Webhook Evolution rejeitado: JWT invalido');
+        throw new UnauthorizedException('JWT do webhook Evolution invalido');
+      case 'invalid_jwt_claims':
+        this.logger.warn('Webhook Evolution rejeitado: JWT com claims invalidas');
+        throw new UnauthorizedException('JWT do webhook Evolution com claims invalidas');
+      case 'invalid_secret':
+        this.logger.warn('Webhook Evolution rejeitado: secret de header invalido');
+        throw new UnauthorizedException('Secret do webhook Evolution invalido');
+      default:
+        this.logger.warn('Webhook Evolution rejeitado: nao autorizado');
+        throw new UnauthorizedException('Webhook Evolution nao autorizado');
     }
-  }
-
-  private secretsMatch(expected: string, provided: string): boolean {
-    const expectedBuffer = Buffer.from(expected);
-    const providedBuffer = Buffer.from(provided);
-    if (expectedBuffer.length !== providedBuffer.length) {
-      return false;
-    }
-    return timingSafeEqual(expectedBuffer, providedBuffer);
   }
 
   private async persistInboundMessage(

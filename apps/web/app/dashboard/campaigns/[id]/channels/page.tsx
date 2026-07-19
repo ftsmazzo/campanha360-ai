@@ -808,8 +808,12 @@ export default function CampaignChannelsPage() {
                     </div>
                     <p className="text-xs text-[#65655f]">
                       Se <span className="font-medium">EVOLUTION_WEBHOOK_SECRET</span> estiver
-                      configurado na API, a Evolution deve enviar o header{' '}
-                      <span className="font-medium">x-campanha360-webhook-secret</span>. O valor do
+                      configurado na API, na Evolution use em{' '}
+                      <span className="font-medium">webhook.headers</span>:{' '}
+                      <span className="font-medium">{`{ "jwt_key": "<mesmo secret>" }`}</span>.
+                      A Evolution enviara <span className="font-medium">Authorization: Bearer</span>{' '}
+                      (JWT). Alternativa: header{' '}
+                      <span className="font-medium">x-evolution-webhook-secret</span>. O valor do
                       secret nao e exibido nesta tela.
                     </p>
                   </div>
