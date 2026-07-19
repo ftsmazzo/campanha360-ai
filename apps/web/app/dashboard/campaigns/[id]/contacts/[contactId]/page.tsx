@@ -568,6 +568,14 @@ export default function ContactDetailPage() {
             >
               Voltar para contatos
             </Link>
+            {contact.latestThreadId ? (
+              <Link
+                className="rounded-md bg-[#24382b] px-3 py-2 text-sm font-semibold text-white"
+                href={`/dashboard/campaigns/${campaignId}/inbox?thread=${contact.latestThreadId}`}
+              >
+                Abrir conversa
+              </Link>
+            ) : null}
             {campaign ? (
               <Link
                 className="rounded-md border border-[#d7d6cd] px-3 py-2 text-sm font-medium text-[#65655f] hover:bg-[#f7f7f5]"

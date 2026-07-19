@@ -171,6 +171,9 @@ export default function CampaignContactsPage() {
           <div>
             <h2 className="text-2xl font-semibold text-[#151515]">Contatos da campanha</h2>
             {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
+            <p className="mt-2 text-sm text-[#65655f]">
+              Base operacional da campanha, incluindo contatos gerados pelo Atendimento/WhatsApp.
+            </p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Link
@@ -178,6 +181,12 @@ export default function CampaignContactsPage() {
               href={`/dashboard/campaigns/${campaignId}/contacts/new`}
             >
               Novo contato
+            </Link>
+            <Link
+              className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
+              href={`/dashboard/campaigns/${campaignId}/inbox`}
+            >
+              Atendimento
             </Link>
             <Link
               className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
@@ -313,12 +322,28 @@ export default function CampaignContactsPage() {
         <div className="mt-6 space-y-3">
           {contacts.length === 0 ? (
             <div className="rounded-md border border-dashed border-[#d7d6cd] bg-white p-6 text-sm text-[#65655f]">
-              {hasActiveFilters
-                ? 'Nenhum contato encontrado com os filtros aplicados.'
-                : 'Nenhum contato cadastrado nesta campanha.'}
+              {hasActiveFilters ? (
+                <p>Nenhum contato encontrado com os filtros aplicados.</p>
+              ) : (
+                <div className="space-y-2">
+                  <p className="font-medium text-[#34342f]">Nenhum contato nesta campanha</p>
+                  <p>
+                    Cadastre um contato manualmente ou aguarde mensagens pelo WhatsApp — o
+                    Atendimento cria/atualiza contatos automaticamente.
+                  </p>
+                </div>
+              )}
             </div>
           ) : (
-            contacts.map((contact) => (
+            contacts.map((contact) => {
+              const primaryChannel =
+                contact.channels.find((channel) => channel.isPrimary)?.channel ||
+                contact.channels[0]?.channel ||
+                contact.latestChannel ||
+                null;
+              const blocked = contact.status === 'BLOCKED' || hasOptOut(contact);
+
+              return (
               <article key={contact.id} className="rounded-md border border-[#deddd4] bg-white p-4">
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div>
@@ -328,11 +353,21 @@ export default function CampaignContactsPage() {
                       {contact.email ? ` · ${contact.email}` : ''}
                     </p>
                     <p className="mt-1 text-sm text-[#65655f]">
-                      {[contact.city, contact.neighborhood].filter(Boolean).join(' · ') || 'Sem localizacao'}
+                      Canal/origem:{' '}
+                      {primaryChannel ? getChannelLabel(primaryChannel) : 'Nao informado'}
+                      {contact.messageCount !== undefined
+                        ? ` · ${contact.messageCount} mensagem(ns)`
+                        : ''}
+                    </p>
+                    <p className="mt-1 text-sm text-[#65655f]">
+                      Ultima interacao:{' '}
+                      {contact.lastInteractionAt
+                        ? new Date(contact.lastInteractionAt).toLocaleString('pt-BR')
+                        : 'Sem interacao registrada'}
                     </p>
                     <p className="mt-2 text-sm text-[#24382b]">
                       {getContactStatusLabel(contact.status)}
-                      {hasOptOut(contact) ? ' · Opt-out' : ''}
+                      {blocked ? ' · Opt-out/bloqueio ativo' : ''}
                     </p>
                     <div className="mt-2 flex flex-wrap items-center gap-2">
                       <span className="rounded-full bg-[#eef2ea] px-2 py-1 text-xs font-medium text-[#47624f]">
@@ -364,15 +399,26 @@ export default function CampaignContactsPage() {
                       </div>
                     ) : null}
                   </div>
-                  <Link
-                    className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#24382b]"
-                    href={`/dashboard/campaigns/${campaignId}/contacts/${contact.id}`}
-                  >
-                    Abrir
-                  </Link>
+                  <div className="flex flex-wrap gap-2">
+                    {contact.latestThreadId ? (
+                      <Link
+                        className="rounded-md bg-[#24382b] px-3 py-2 text-sm font-medium text-white"
+                        href={`/dashboard/campaigns/${campaignId}/inbox?thread=${contact.latestThreadId}`}
+                      >
+                        Abrir conversa
+                      </Link>
+                    ) : null}
+                    <Link
+                      className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#24382b]"
+                      href={`/dashboard/campaigns/${campaignId}/contacts/${contact.id}`}
+                    >
+                      Ver contato
+                    </Link>
+                  </div>
                 </div>
               </article>
-            ))
+              );
+            })
           )}
         </div>
       </div>

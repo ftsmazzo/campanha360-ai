@@ -311,6 +311,13 @@ export class EvolutionWebhookService {
     });
 
     if (byChannel?.contact) {
+      if (pushName?.trim() && !byChannel.contact.name?.trim()) {
+        await this.prisma.contact.update({
+          where: { id: byChannel.contact.id },
+          data: { name: pushName.trim() },
+        });
+        return { ...byChannel.contact, name: pushName.trim() };
+      }
       return byChannel.contact;
     }
 
@@ -327,6 +334,13 @@ export class EvolutionWebhookService {
 
     if (byPhone) {
       await this.ensureWhatsappChannel(account, byPhone.id, phone);
+      if (pushName?.trim() && !byPhone.name?.trim()) {
+        await this.prisma.contact.update({
+          where: { id: byPhone.id },
+          data: { name: pushName.trim() },
+        });
+        return { ...byPhone, name: pushName.trim() };
+      }
       return byPhone;
     }
 

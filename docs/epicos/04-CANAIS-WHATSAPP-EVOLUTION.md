@@ -494,4 +494,6 @@ A subetapa **04.7 — Acabamento operacional do Atendimento** está concluída.
 
 O épico **04 — Canais e WhatsApp Evolution** fica operacionalmente fechado para inbox + resposta manual.
 
-Próximos épicos seguem o roadmap (IA assistiva / automações apenas quando autorizados).
+Próximo épico documentado: **05 — Base de Contatos da Campanha** (`docs/epicos/05-BASE-CONTATOS-CAMPANHA.md`), começando por **05.1**.
+
+Próximos épicos de IA/automações apenas quando autorizados.

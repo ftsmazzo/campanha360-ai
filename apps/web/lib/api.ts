@@ -295,6 +295,10 @@ export type ContactItem = {
   consents: ConsentItem[];
   optOuts: OptOutItem[];
   tags: ContactTagItem[];
+  lastInteractionAt?: string | null;
+  messageCount?: number;
+  latestThreadId?: string | null;
+  latestChannel?: string | null;
 };
 
 export type ContactListFilters = {

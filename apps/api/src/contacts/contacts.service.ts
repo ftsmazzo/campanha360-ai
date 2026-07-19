@@ -13,6 +13,7 @@ import { AuditService } from '../audit/audit.service';
 import { normalizePhone } from '../common/phone.util';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildContactInteractionMap } from './contact-interaction.util';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { CreateOptOutDto } from './dto/create-opt-out.dto';
 import { ListContactsQueryDto } from './dto/list-contacts-query.dto';
@@ -113,10 +114,89 @@ export class ContactsService {
 
     const where = this.buildListWhere(campaign.organizationId, campaignId, query);
 
-    return this.prisma.contact.findMany({
+    const contacts = await this.prisma.contact.findMany({
       where,
       select: contactSelect,
       orderBy: { createdAt: 'desc' },
+    });
+
+    return this.attachInteractionSummaries(
+      contacts,
+      campaign.organizationId,
+      campaignId,
+    );
+  }
+
+  async getById(userId: string, campaignId: string, contactId: string) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    const contact = await this.getContactOrThrow(contactId, campaign.organizationId, campaignId);
+    const [enriched] = await this.attachInteractionSummaries(
+      [contact],
+      campaign.organizationId,
+      campaignId,
+    );
+    return enriched;
+  }
+
+  private async attachInteractionSummaries<T extends { id: string }>(
+    contacts: T[],
+    organizationId: string,
+    campaignId: string,
+  ) {
+    if (contacts.length === 0) {
+      return contacts.map((contact) => ({
+        ...contact,
+        lastInteractionAt: null as string | null,
+        messageCount: 0,
+        latestThreadId: null as string | null,
+        latestChannel: null as string | null,
+      }));
+    }
+
+    const contactIds = contacts.map((contact) => contact.id);
+
+    const [threads, messageCounts] = await Promise.all([
+      this.prisma.conversationThread.findMany({
+        where: {
+          organizationId,
+          campaignId,
+          contactId: { in: contactIds },
+        },
+        select: {
+          id: true,
+          contactId: true,
+          lastMessageAt: true,
+          channel: true,
+        },
+      }),
+      this.prisma.message.groupBy({
+        by: ['contactId'],
+        where: {
+          organizationId,
+          campaignId,
+          contactId: { in: contactIds },
+        },
+        _count: { _all: true },
+      }),
+    ]);
+
+    const interactionMap = buildContactInteractionMap(
+      threads,
+      messageCounts.map((row) => ({
+        contactId: row.contactId,
+        count: row._count._all,
+      })),
+    );
+
+    return contacts.map((contact) => {
+      const summary = interactionMap.get(contact.id);
+      return {
+        ...contact,
+        lastInteractionAt: summary?.lastInteractionAt ?? null,
+        messageCount: summary?.messageCount ?? 0,
+        latestThreadId: summary?.latestThreadId ?? null,
+        latestChannel: summary?.latestChannel ?? null,
+      };
     });
   }
 
@@ -242,11 +322,6 @@ export class ContactsService {
     });
 
     return contact;
-  }
-
-  async getById(userId: string, campaignId: string, contactId: string) {
-    const campaign = await this.getCampaignContext(userId, campaignId);
-    return this.getContactOrThrow(contactId, campaign.organizationId, campaignId);
   }
 
   async update(
