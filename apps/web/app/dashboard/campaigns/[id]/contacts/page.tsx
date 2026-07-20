@@ -258,6 +258,12 @@ export default function CampaignContactsPage() {
             >
               Gerenciar tags
             </Link>
+            <Link
+              className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
+              href={`/dashboard/campaigns/${campaignId}/segments`}
+            >
+              Segmentos
+            </Link>
           </div>
         </div>
 

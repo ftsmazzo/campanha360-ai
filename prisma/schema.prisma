@@ -380,3 +380,18 @@ model AuditLog {
   actor          User?    @relation(fields: [actorUserId], references: [id])
   createdAt      DateTime @default(now())
 }
+
+model Segment {
+  id              String   @id @default(cuid())
+  organizationId  String
+  campaignId      String
+  name            String
+  description     String?
+  filters         Json
+  createdByUserId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([campaignId, name])
+  @@index([organizationId, campaignId])
+}

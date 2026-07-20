@@ -14,7 +14,8 @@
     "test:contact-opt-out": "npx --yes tsx --test src/contacts/contact-opt-out.util.spec.ts",
     "test:contact-tag": "npx --yes tsx --test src/contacts/contact-tag.util.spec.ts",
     "test:contact-import": "npx --yes tsx --test src/contacts/contact-import.util.spec.ts",
-    "test:contact-removal": "npx --yes tsx --test src/contacts/contact-removal.util.spec.ts"
+    "test:contact-removal": "npx --yes tsx --test src/contacts/contact-removal.util.spec.ts",
+    "test:segments": "npx --yes tsx --test src/segments/segment-filters.util.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.4.0",

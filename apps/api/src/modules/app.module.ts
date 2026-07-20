@@ -12,6 +12,7 @@ import { EvolutionModule } from '../evolution/evolution.module';
 import { OrganizationsModule } from '../organizations/organizations.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TagsModule } from '../tags/tags.module';
+import { SegmentsModule } from '../segments/segments.module';
 import { EvolutionWebhookModule } from '../webhooks/evolution-webhook.module';
 import { InboxModule } from '../inbox/inbox.module';
 import { HealthController } from './health.controller';
@@ -27,6 +28,7 @@ import { HealthController } from './health.controller';
     ChannelAccountsModule,
     ContactsModule,
     TagsModule,
+    SegmentsModule,
     ContactNotesModule,
     ContactTasksModule,
     ContactTimelineModule,

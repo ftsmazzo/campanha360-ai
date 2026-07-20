@@ -78,4 +78,6 @@ Operador remove contato errado; some da lista/busca; com histórico o Atendiment
 
 ## 10. Próximo passo
 
-Épico 05 operacionalmente fechado para base de contatos. Próximos épicos apenas quando autorizados.
+Épico 05 operacionalmente fechado para base de contatos.
+
+Próximo: **Épico 06 — Segmentos Operacionais** (`docs/epicos/06-SEGMENTOS-OPERACIONAIS.md`).

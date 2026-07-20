@@ -508,6 +508,105 @@ export function deleteTag(token: string, campaignId: string, tagId: string) {
   );
 }
 
+export type SegmentFilters = {
+  tagIds?: string[];
+  status?: string | null;
+  includeOptOut?: boolean;
+  channel?: string | null;
+};
+
+export type SegmentContactPreview = {
+  id: string;
+  name: string | null;
+  phoneNumber: string | null;
+  email: string | null;
+  status: string;
+  channels: ContactChannelItem[];
+  tags: ContactTagItem[];
+};
+
+export type SegmentItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  name: string;
+  description: string | null;
+  filters: SegmentFilters;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  contactCount?: number;
+  includeOptOutWarning?: boolean;
+};
+
+export type SegmentDetail = SegmentItem & {
+  contacts: SegmentContactPreview[];
+};
+
+export type SegmentPreviewResult = {
+  filters: SegmentFilters;
+  contactCount: number;
+  contacts: SegmentContactPreview[];
+  includeOptOutWarning: boolean;
+};
+
+export function fetchSegments(token: string, campaignId: string) {
+  return request<SegmentItem[]>(`/campaigns/${campaignId}/segments`, {}, token);
+}
+
+export function fetchSegment(token: string, campaignId: string, segmentId: string) {
+  return request<SegmentDetail>(
+    `/campaigns/${campaignId}/segments/${segmentId}`,
+    {},
+    token,
+  );
+}
+
+export function previewSegment(
+  token: string,
+  campaignId: string,
+  filters: SegmentFilters,
+) {
+  return request<SegmentPreviewResult>(
+    `/campaigns/${campaignId}/segments/preview`,
+    { method: 'POST', body: JSON.stringify({ filters }) },
+    token,
+  );
+}
+
+export function createSegment(
+  token: string,
+  campaignId: string,
+  payload: { name: string; description?: string; filters: SegmentFilters },
+) {
+  return request<SegmentItem>(
+    `/campaigns/${campaignId}/segments`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateSegment(
+  token: string,
+  campaignId: string,
+  segmentId: string,
+  payload: { name?: string; description?: string; filters?: SegmentFilters },
+) {
+  return request<SegmentItem>(
+    `/campaigns/${campaignId}/segments/${segmentId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function deleteSegment(token: string, campaignId: string, segmentId: string) {
+  return request<{ success: boolean }>(
+    `/campaigns/${campaignId}/segments/${segmentId}`,
+    { method: 'DELETE' },
+    token,
+  );
+}
+
 export function applyContactTag(
   token: string,
   campaignId: string,
