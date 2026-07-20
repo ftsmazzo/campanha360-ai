@@ -14,6 +14,7 @@ import { normalizePhone } from '../common/phone.util';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildContactInteractionMap } from './contact-interaction.util';
+import { resolveStatusAfterClearOptOut } from './contact-opt-out.util';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { CreateOptOutDto } from './dto/create-opt-out.dto';
 import { ListContactsQueryDto } from './dto/list-contacts-query.dto';
@@ -382,7 +383,7 @@ export class ContactsService {
       metadata: { changes: JSON.parse(JSON.stringify(dto)) },
     });
 
-    return contact;
+    return this.getById(userId, campaignId, contactId);
   }
 
   async updateOperations(
@@ -601,6 +602,64 @@ export class ContactsService {
         channel: dto.channel ?? 'ALL',
         reason: dto.reason ?? null,
         source,
+      },
+    });
+
+    return this.getById(userId, campaignId, contactId);
+  }
+
+  async clearOptOut(userId: string, campaignId: string, contactId: string) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getContactOrThrow(
+      contactId,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    const nextStatus = resolveStatusAfterClearOptOut(existing.status);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.optOut.deleteMany({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          contactId,
+        },
+      });
+
+      await tx.consent.updateMany({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          contactId,
+          status: ConsentStatus.OPT_OUT,
+        },
+        data: {
+          status: ConsentStatus.UNKNOWN,
+          source: 'manual_clear',
+          revokedAt: null,
+        },
+      });
+
+      if (nextStatus) {
+        await tx.contact.update({
+          where: { id: contactId },
+          data: { status: nextStatus },
+        });
+      }
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'OPT_OUT_CLEARED',
+      entityType: 'Contact',
+      entityId: contactId,
+      metadata: {
+        previousStatus: existing.status,
+        status: nextStatus ?? existing.status,
+        source: 'manual_clear',
       },
     });
 

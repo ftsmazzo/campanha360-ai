@@ -20,6 +20,7 @@ import {
   clearStoredToken,
   createContactNote,
   createContactOptOut,
+  clearContactOptOut,
   createContactTask,
   fetchCampaign,
   fetchCampaignMembers,
@@ -144,6 +145,7 @@ export default function ContactDetailPage() {
   const [saving, setSaving] = useState(false);
   const [savingConsent, setSavingConsent] = useState(false);
   const [savingOptOut, setSavingOptOut] = useState(false);
+  const [editingBasics, setEditingBasics] = useState(false);
   const [savingTag, setSavingTag] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
   const [savingTask, setSavingTask] = useState(false);
@@ -243,6 +245,7 @@ export default function ContactDetailPage() {
       });
       fillContact(updated);
       await refreshTimeline(token);
+      setEditingBasics(false);
       setSuccess('Contato atualizado com sucesso.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel atualizar o contato');
@@ -281,6 +284,11 @@ export default function ContactDetailPage() {
     const token = getStoredToken();
     if (!token) return;
 
+    const confirmed = window.confirm(
+      'Marcar este contato como opt-out/bloqueado? Envios manuais no Atendimento serao bloqueados.',
+    );
+    if (!confirmed) return;
+
     setSavingOptOut(true);
     setError(null);
     setSuccess(null);
@@ -293,9 +301,34 @@ export default function ContactDetailPage() {
       });
       fillContact(updated);
       await refreshTimeline(token);
-      setSuccess('Opt-out registrado com sucesso.');
+      setSuccess('Opt-out/bloqueio registrado com sucesso.');
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel registrar opt-out');
+    } finally {
+      setSavingOptOut(false);
+    }
+  }
+
+  async function handleClearOptOut() {
+    const token = getStoredToken();
+    if (!token) return;
+
+    const confirmed = window.confirm(
+      'Desmarcar opt-out/bloqueio deste contato? Envios manuais no Atendimento voltarao a ficar disponiveis.',
+    );
+    if (!confirmed) return;
+
+    setSavingOptOut(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const updated = await clearContactOptOut(token, campaignId, contactId);
+      fillContact(updated);
+      await refreshTimeline(token);
+      setSuccess('Opt-out/bloqueio removido com sucesso.');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel remover opt-out');
     } finally {
       setSavingOptOut(false);
     }
@@ -627,6 +660,37 @@ export default function ContactDetailPage() {
                   <dd className="mt-1 text-sm text-[#151515]">{contact.email?.trim() || '—'}</dd>
                 </div>
                 <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Canal / origem</dt>
+                  <dd className="mt-1 text-sm text-[#151515]">
+                    {contact.latestChannel
+                      ? getChannelLabel(contact.latestChannel)
+                      : contact.channels[0]
+                        ? getChannelLabel(contact.channels[0].channel)
+                        : '—'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">
+                    Opt-out / bloqueio
+                  </dt>
+                  <dd className="mt-1 text-sm text-[#151515]">
+                    {contactHasOptOut ? 'Ativo' : 'Nao'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">
+                    Ultima interacao
+                  </dt>
+                  <dd className="mt-1 text-sm text-[#151515]">
+                    {contact.lastInteractionAt
+                      ? formatDate(contact.lastInteractionAt)
+                      : 'Sem interacao registrada'}
+                    {contact.messageCount !== undefined
+                      ? ` · ${contact.messageCount} mensagem(ns)`
+                      : ''}
+                  </dd>
+                </div>
+                <div>
                   <dt className="text-xs font-medium uppercase tracking-wide text-[#65655f]">Cidade</dt>
                   <dd className="mt-1 text-sm text-[#151515]">{contact.city?.trim() || '—'}</dd>
                 </div>
@@ -641,6 +705,22 @@ export default function ContactDetailPage() {
                   <pre className="mt-1 overflow-x-auto rounded-md bg-[#f7f7f5] p-3 font-mono text-xs text-[#34342f]">
                     {metadataToText(contact.metadata)}
                   </pre>
+                </div>
+              ) : null}
+              {canWrite ? (
+                <div className="mt-4">
+                  <button
+                    className="rounded-md border border-[#24382b] px-3 py-2 text-sm font-medium text-[#24382b] hover:bg-[#eef2ea]"
+                    type="button"
+                    onClick={() => {
+                      fillContact(contact);
+                      setEditingBasics((current) => !current);
+                      setError(null);
+                      setSuccess(null);
+                    }}
+                  >
+                    {editingBasics ? 'Fechar edicao' : 'Editar contato'}
+                  </button>
                 </div>
               ) : null}
             </ContactSection>
@@ -789,6 +869,29 @@ export default function ContactDetailPage() {
               ) : (
                 <p className="text-sm text-[#65655f]">Nenhum opt-out registrado.</p>
               )}
+              {canWrite ? (
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {contactHasOptOut ? (
+                    <button
+                      className="rounded-md border border-red-700 px-3 py-2 text-sm font-semibold text-red-800 disabled:opacity-60"
+                      type="button"
+                      disabled={savingOptOut}
+                      onClick={handleClearOptOut}
+                    >
+                      {savingOptOut ? 'Atualizando...' : 'Desmarcar opt-out / bloqueio'}
+                    </button>
+                  ) : (
+                    <button
+                      className="rounded-md border border-red-700 px-3 py-2 text-sm font-semibold text-red-800 disabled:opacity-60"
+                      type="button"
+                      disabled={savingOptOut}
+                      onClick={handleOptOut}
+                    >
+                      {savingOptOut ? 'Registrando...' : 'Marcar opt-out / bloqueado'}
+                    </button>
+                  )}
+                </div>
+              ) : null}
             </ContactSection>
 
             <ContactSection
@@ -1021,6 +1124,7 @@ export default function ContactDetailPage() {
               </form>
             ) : null}
 
+            {canWrite && editingBasics ? (
             <form className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleSubmit}>
               <div>
                 <h3 className="font-medium text-[#24382b]">Editar contato</h3>
@@ -1090,14 +1194,27 @@ export default function ContactDetailPage() {
                   onChange={(e) => setMetadata(e.target.value)}
                 />
               </label>
-              <button
-                className="w-full rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                type="submit"
-                disabled={saving}
-              >
-                {saving ? 'Salvando...' : 'Salvar contato'}
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  className="flex-1 rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  type="submit"
+                  disabled={saving}
+                >
+                  {saving ? 'Salvando...' : 'Salvar contato'}
+                </button>
+                <button
+                  className="rounded-md border border-[#d7d6cd] px-4 py-2 text-sm font-medium text-[#65655f]"
+                  type="button"
+                  onClick={() => {
+                    fillContact(contact);
+                    setEditingBasics(false);
+                  }}
+                >
+                  Cancelar
+                </button>
+              </div>
             </form>
+            ) : null}
 
             <form
               className="space-y-4 rounded-md border border-[#deddd4] bg-white p-4"
@@ -1349,28 +1466,38 @@ export default function ContactDetailPage() {
               </form>
             ) : null}
 
+            {canWrite ? (
             <section className="rounded-md border border-[#deddd4] bg-white p-4">
-              <h3 className="font-medium text-[#24382b]">Registrar opt-out</h3>
+              <h3 className="font-medium text-[#24382b]">Opt-out / bloqueio</h3>
               <p className="mt-1 text-sm text-[#65655f]">
-                Registra opt-out no canal selecionado e bloqueia o contato para envios futuros.
+                {contactHasOptOut
+                  ? 'Remova o bloqueio para liberar envios manuais no Atendimento.'
+                  : 'Registra opt-out no canal selecionado e bloqueia o contato para envios futuros.'}
               </p>
-              <label className="mt-4 block">
-                <span className="text-sm font-medium text-[#34342f]">Motivo</span>
-                <input
-                  className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
-                  value={optOutReason}
-                  onChange={(e) => setOptOutReason(e.target.value)}
-                />
-              </label>
+              {!contactHasOptOut ? (
+                <label className="mt-4 block">
+                  <span className="text-sm font-medium text-[#34342f]">Motivo</span>
+                  <input
+                    className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
+                    value={optOutReason}
+                    onChange={(e) => setOptOutReason(e.target.value)}
+                  />
+                </label>
+              ) : null}
               <button
                 className="mt-4 w-full rounded-md bg-red-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 type="button"
-                disabled={savingOptOut || contactHasOptOut}
-                onClick={handleOptOut}
+                disabled={savingOptOut}
+                onClick={contactHasOptOut ? handleClearOptOut : handleOptOut}
               >
-                {savingOptOut ? 'Registrando...' : 'Registrar opt-out'}
+                {savingOptOut
+                  ? 'Atualizando...'
+                  : contactHasOptOut
+                    ? 'Desmarcar opt-out / bloqueio'
+                    : 'Registrar opt-out'}
               </button>
             </section>
+            ) : null}
           </div>
         </div>
       </div>

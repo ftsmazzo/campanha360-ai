@@ -91,6 +91,15 @@ export class ContactsController {
     return this.contactsService.createOptOut(user.id, campaignId, contactId, dto);
   }
 
+  @Delete(':contactId/opt-out')
+  clearOptOut(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('contactId') contactId: string,
+  ) {
+    return this.contactsService.clearOptOut(user.id, campaignId, contactId);
+  }
+
   @Post(':contactId/tags/:tagId')
   applyTag(
     @CurrentUser() user: AuthUser,

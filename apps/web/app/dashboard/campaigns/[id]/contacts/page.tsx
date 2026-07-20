@@ -119,6 +119,19 @@ export default function CampaignContactsPage() {
     load();
   }, [campaignId, router]);
 
+  useEffect(() => {
+    function refreshOnFocus() {
+      const token = getStoredToken();
+      if (!token || loading) return;
+      void loadContacts(token, appliedFilters).catch(() => {
+        // Mantem lista atual se o refresh em foco falhar.
+      });
+    }
+
+    window.addEventListener('focus', refreshOnFocus);
+    return () => window.removeEventListener('focus', refreshOnFocus);
+  }, [appliedFilters, loadContacts, loading]);
+
   async function handleFilterSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const token = getStoredToken();

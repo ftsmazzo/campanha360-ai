@@ -427,6 +427,14 @@ export function createContactOptOut(
   );
 }
 
+export function clearContactOptOut(token: string, campaignId: string, contactId: string) {
+  return request<ContactItem>(
+    `/campaigns/${campaignId}/contacts/${contactId}/opt-out`,
+    { method: 'DELETE' },
+    token,
+  );
+}
+
 export function fetchTags(token: string, campaignId: string) {
   return request<TagItem[]>(`/campaigns/${campaignId}/tags`, {}, token);
 }
