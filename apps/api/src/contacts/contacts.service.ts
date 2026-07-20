@@ -15,6 +15,11 @@ import { OrganizationAccessService } from '../common/organization-access.service
 import { PrismaService } from '../prisma/prisma.service';
 import { buildContactInteractionMap } from './contact-interaction.util';
 import { resolveStatusAfterClearOptOut } from './contact-opt-out.util';
+import {
+  buildContactListAndClauses,
+  resolveApplyContactTag,
+  resolveRemoveContactTag,
+} from './contact-tag.util';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { CreateOptOutDto } from './dto/create-opt-out.dto';
 import { ListContactsQueryDto } from './dto/list-contacts-query.dto';
@@ -206,63 +211,18 @@ export class ContactsService {
     campaignId: string,
     query: ListContactsQueryDto,
   ): Prisma.ContactWhereInput {
-    const and: Prisma.ContactWhereInput[] = [
-      { organizationId },
-      { campaignId },
-    ];
-
-    const search = query.q?.trim();
-    if (search) {
-      and.push({
-        OR: [
-          { name: { contains: search, mode: 'insensitive' } },
-          { phoneNumber: { contains: search, mode: 'insensitive' } },
-          { email: { contains: search, mode: 'insensitive' } },
-          { city: { contains: search, mode: 'insensitive' } },
-          { neighborhood: { contains: search, mode: 'insensitive' } },
-        ],
-      });
-    }
-
-    if (query.status) {
-      and.push({ status: query.status });
-    }
-
-    if (query.operationalStatus) {
-      and.push({ operationalStatus: query.operationalStatus });
-    }
-
-    if (query.assignedToUserId) {
-      and.push({ assignedToUserId: query.assignedToUserId });
-    }
-
-    if (query.tagId) {
-      and.push({
-        tags: {
-          some: { tagId: query.tagId },
-        },
-      });
-    }
-
-    if (query.hasOptOut === true) {
-      and.push({
-        OR: [
-          { status: ContactStatus.BLOCKED },
-          { optOuts: { some: {} } },
-          { consents: { some: { status: ConsentStatus.OPT_OUT } } },
-        ],
-      });
-    } else if (query.hasOptOut === false) {
-      and.push({
-        AND: [
-          { status: { not: ContactStatus.BLOCKED } },
-          { optOuts: { none: {} } },
-          { consents: { none: { status: ConsentStatus.OPT_OUT } } },
-        ],
-      });
-    }
-
-    return { AND: and };
+    return {
+      AND: buildContactListAndClauses({
+        organizationId,
+        campaignId,
+        q: query.q,
+        tagId: query.tagId,
+        status: query.status,
+        operationalStatus: query.operationalStatus,
+        assignedToUserId: query.assignedToUserId,
+        hasOptOut: query.hasOptOut,
+      }),
+    };
   }
 
   private async validateCampaignTag(
@@ -694,7 +654,7 @@ export class ContactsService {
       },
     });
 
-    if (!existing) {
+    if (resolveApplyContactTag(Boolean(existing)) === 'created') {
       await this.prisma.contactTag.create({
         data: { contactId, tagId },
       });
@@ -745,7 +705,7 @@ export class ContactsService {
       },
     });
 
-    if (existing) {
+    if (resolveRemoveContactTag(Boolean(existing)) === 'removed') {
       await this.prisma.contactTag.delete({
         where: {
           contactId_tagId: { contactId, tagId },

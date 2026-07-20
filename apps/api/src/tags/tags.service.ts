@@ -9,6 +9,7 @@ import { OrganizationAccessService } from '../common/organization-access.service
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTagDto } from './dto/create-tag.dto';
 import { UpdateTagDto } from './dto/update-tag.dto';
+import { normalizeTagName } from '../contacts/contact-tag.util';
 
 const tagSelect = {
   id: true,
@@ -44,7 +45,7 @@ export class TagsService {
 
   async create(userId: string, campaignId: string, dto: CreateTagDto) {
     const campaign = await this.getCampaignContext(userId, campaignId, true);
-    const name = dto.name.trim();
+    const name = normalizeTagName(dto.name);
 
     try {
       const tag = await this.prisma.tag.create({
@@ -91,7 +92,7 @@ export class TagsService {
       const tag = await this.prisma.tag.update({
         where: { id: existing.id },
         data: {
-          name: dto.name === undefined ? undefined : dto.name.trim(),
+          name: dto.name === undefined ? undefined : normalizeTagName(dto.name),
           color: dto.color === undefined ? undefined : dto.color?.trim() || null,
           description:
             dto.description === undefined ? undefined : dto.description?.trim() || null,

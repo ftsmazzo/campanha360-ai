@@ -65,6 +65,8 @@ export default function CampaignContactsPage() {
       appliedFilters.hasOptOut !== undefined,
   );
 
+  const selectedTag = tags.find((tag) => tag.id === appliedFilters.tagId) ?? null;
+
   const loadContacts = useCallback(
     async (token: string, nextFilters: ContactListFilters) => {
       const payload: ContactListFilters = {
@@ -123,14 +125,17 @@ export default function CampaignContactsPage() {
     function refreshOnFocus() {
       const token = getStoredToken();
       if (!token || loading) return;
-      void loadContacts(token, appliedFilters).catch(() => {
+      void Promise.all([
+        loadContacts(token, appliedFilters),
+        fetchTags(token, campaignId).then(setTags),
+      ]).catch(() => {
         // Mantem lista atual se o refresh em foco falhar.
       });
     }
 
     window.addEventListener('focus', refreshOnFocus);
     return () => window.removeEventListener('focus', refreshOnFocus);
-  }, [appliedFilters, loadContacts, loading]);
+  }, [appliedFilters, campaignId, loadContacts, loading]);
 
   async function handleFilterSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -205,10 +210,23 @@ export default function CampaignContactsPage() {
               className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
               href={`/dashboard/campaigns/${campaignId}/tags`}
             >
-              Tags
+              Gerenciar tags
             </Link>
           </div>
         </div>
+
+        {tags.length === 0 ? (
+          <div className="mt-4 rounded-md border border-dashed border-[#d7d6cd] bg-white px-4 py-3 text-sm text-[#65655f]">
+            Nenhuma tag nesta campanha.{' '}
+            <Link
+              className="font-medium text-[#24382b] underline"
+              href={`/dashboard/campaigns/${campaignId}/tags`}
+            >
+              Criar tags
+            </Link>{' '}
+            para organizar contatos.
+          </div>
+        ) : null}
 
         <form
           className="mt-6 grid gap-4 rounded-md border border-[#deddd4] bg-white p-4 md:grid-cols-2 lg:grid-cols-3"
@@ -335,7 +353,17 @@ export default function CampaignContactsPage() {
         <div className="mt-6 space-y-3">
           {contacts.length === 0 ? (
             <div className="rounded-md border border-dashed border-[#d7d6cd] bg-white p-6 text-sm text-[#65655f]">
-              {hasActiveFilters ? (
+              {selectedTag ? (
+                <div className="space-y-2">
+                  <p className="font-medium text-[#34342f]">
+                    Nenhum contato com a tag &quot;{selectedTag.name}&quot;
+                  </p>
+                  <p>
+                    Associe esta tag no detalhe de um contato ou limpe o filtro para ver toda a
+                    base.
+                  </p>
+                </div>
+              ) : hasActiveFilters ? (
                 <p>Nenhum contato encontrado com os filtros aplicados.</p>
               ) : (
                 <div className="space-y-2">

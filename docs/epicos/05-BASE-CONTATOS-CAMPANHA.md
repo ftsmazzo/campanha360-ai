@@ -13,23 +13,26 @@ Já existem:
 - CRM operacional (épico 03): cadastro, tags, notas, tarefas, filtros;
 - canais WhatsApp Evolution e inbox (épico 04);
 - criação/atualização de contatos no webhook inbound;
-- listagem operacional com última interação e atalho para Atendimento (05.1).
+- listagem operacional com última interação e atalho para Atendimento (05.1);
+- edição básica e opt-out manual (05.2).
 
 ## 3. Fora de escopo do épico (nesta fase)
 
 - importação CSV em massa;
-- segmentação avançada / listas salvas;
+- segmentação avançada / listas dinâmicas;
 - disparos em massa;
 - IA;
 - templates;
-- enriquecimento externo avançado.
+- enriquecimento externo avançado;
+- automações baseadas em tag.
 
 ## 4. Subetapas
 
 1. **05.1 — Base inicial de Contatos por campanha.**
 2. **05.2 — Edição e organização básica de contatos.**
-3. **05.3 — Importação CSV manual** (posterior; alinhada ao Blueprint 01/07).
-4. **05.4 — Filtros/segmentação inicial** (posterior).
+3. **05.3 — Tags/listas simples de contatos.**
+4. **05.4 — Importação CSV manual** (posterior; alinhada ao Blueprint 01/07).
+5. **05.5 — Segmentação inicial avançada** (posterior).
 
 ## 5. Subetapa 05.1 — Base inicial de Contatos por campanha
 
@@ -37,61 +40,68 @@ Já existem:
 
 **Concluída.**
 
-### Implementado
-
-- enriquecimento da listagem/detalhe: `lastInteractionAt`, `messageCount`, `latestThreadId`, `latestChannel`;
-- util `contact-interaction.util` + testes;
-- UI de Contatos com canal, interação, mensagens e link ao Atendimento;
-- webhook preenche nome a partir do `pushName` quando ausente.
-
 ## 6. Subetapa 05.2 — Edição e organização básica de contatos
-
-### Objetivo
-
-Permitir que o operador organize contatos individualmente: editar nome, registrar notas internas e marcar/desmarcar opt-out/bloqueio com confirmação — sem CSV, segmentação ou disparos.
-
-### Entregas
-
-- detalhe do contato com **modo de edição** (abrir/fechar formulário);
-- edição de nome (e demais dados cadastrais já existentes) via API `PUT`;
-- notas internas via `ContactNote` (modelo já existente; sem migration);
-- exibição clara de telefone, canal/origem, status, opt-out/bloqueio e última interação;
-- marcar e **desmarcar** opt-out/bloqueio manual com confirmação;
-- feedback de sucesso/erro;
-- link **Abrir conversa** preservado;
-- lista de Contatos atualiza ao voltar (remount + refresh em foco);
-- documentação deste épico.
-
-### Regras
-
-- tenancy por `organizationId` + `campaignId`;
-- não implementar CSV, tags/listas avançadas novas, segmentação, disparos ou IA;
-- não alterar webhook Evolution, envio manual do Atendimento ou autenticação;
-- sem migration (modelo já suportava notas e opt-out).
-
-### Critério de aceite
-
-Operador edita nome, salva, vê alteração na lista; marca opt-out e envio no Atendimento fica bloqueado; desmarca e envio volta a ficar disponível.
 
 ### Status
 
 **Concluída.**
 
-### Implementado
+## 7. Subetapa 05.3 — Tags/listas simples de contatos
 
-- `DELETE /campaigns/:campaignId/contacts/:contactId/opt-out` (`clearOptOut`);
-- `update` retorna contato enriquecido com interação;
-- util `contact-opt-out.util` + testes;
-- UI: modo edição, confirmação marcar/desmarcar, resumo operacional no detalhe;
-- refresh da lista ao focar a janela.
+### Objetivo
+
+Permitir organização simples dos contatos por tags da campanha, preparando segmentação futura sem disparos em massa.
+
+### Estrutura reutilizada
+
+Modelos Prisma já existentes (sem migration):
+
+- `Tag` — por `organizationId` + `campaignId`, nome único por campanha;
+- `ContactTag` — associação N:N contato ↔ tag.
+
+Não há `List`/`Segment` dinâmicos; tags simples cobrem esta subetapa.
+
+### Entregas
+
+- criar/listar/editar/excluir tags da campanha (`/dashboard/campaigns/[id]/tags`);
+- associar/remover tags no detalhe do contato;
+- exibir tags na lista de Contatos;
+- filtrar contatos por tag (combinável com busca nome/telefone);
+- empty state quando a tag filtrada não tiver contatos;
+- feedback de sucesso/erro;
+- documentação deste épico.
+
+### Regras
+
+- tags pertencem à campanha/tenant (não globais);
+- não implementar listas dinâmicas, segmentação complexa, CSV, disparos, IA ou automações por tag;
+- não alterar webhook Evolution, Atendimento ou opt-out validado;
+- sem migration.
+
+### Critério de aceite
+
+Operador cria tag, associa a um contato, vê a tag na lista, filtra por tag e remove a tag com atualização visível.
+
+### Status
+
+**Concluída.**
+
+### Implementado / reforçado
+
+- reutilização de `TagsService` + `ContactsService.applyTag/removeTag`;
+- util `contact-tag.util` (normalização, apply/remove, filtro busca+tag) + testes;
+- empty state específico de filtro por tag;
+- atalho **Gerenciar tags** / **Criar tags** na página de Contatos;
+- filtro `tagId` + `q` na listagem.
 
 ### Fora de escopo (mantido)
 
 - CSV;
 - segmentação avançada;
 - disparos;
-- IA.
+- IA;
+- automações por tag.
 
-## 7. Próximo passo
+## 8. Próximo passo
 
-**05.3 — Importação CSV manual**, apenas quando autorizada explicitamente.
+**05.4 — Importação CSV manual**, apenas quando autorizada explicitamente.
