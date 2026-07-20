@@ -10,6 +10,7 @@ import {
   AuthUser,
   CampaignItem,
   CampaignMemberItem,
+  ContactImportResult,
   ContactItem,
   ContactListFilters,
   TagItem,
@@ -20,6 +21,7 @@ import {
   fetchMe,
   fetchTags,
   getStoredToken,
+  importContactsCsv,
 } from '../../../../../lib/api';
 import {
   CONTACT_STATUSES,
@@ -29,6 +31,7 @@ import {
   hasOptOut,
 } from '../../../../../lib/contacts';
 import { CONTACT_OPERATIONAL_STATUSES, getOperationalStatusLabel } from '../../../../../lib/operational';
+import { canWriteRole, getOrganizationRole } from '../../../../../lib/roles';
 import { getContactTags } from '../../../../../lib/tags';
 
 const EMPTY_FILTERS: ContactListFilters = {
@@ -54,7 +57,10 @@ export default function CampaignContactsPage() {
   const [appliedFilters, setAppliedFilters] = useState<ContactListFilters>(EMPTY_FILTERS);
   const [loading, setLoading] = useState(true);
   const [searching, setSearching] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+  const [importResult, setImportResult] = useState<ContactImportResult | null>(null);
 
   const hasActiveFilters = Boolean(
     appliedFilters.q?.trim() ||
@@ -171,6 +177,42 @@ export default function CampaignContactsPage() {
     }
   }
 
+  async function handleImportFile(file: File | null) {
+    const token = getStoredToken();
+    if (!token || !file) return;
+
+    setImporting(true);
+    setError(null);
+    setSuccess(null);
+    setImportResult(null);
+
+    try {
+      const csv = await file.text();
+      const result = await importContactsCsv(token, campaignId, csv);
+      setImportResult(result);
+      setSuccess(
+        `Importacao concluida: ${result.created} criado(s), ${result.updated} atualizado(s), ${result.ignored} ignorado(s), ${result.errorCount} erro(s).`,
+      );
+      const [contactItems, tagItems] = await Promise.all([
+        fetchContacts(token, campaignId, {
+          q: appliedFilters.q?.trim() || undefined,
+          status: appliedFilters.status || undefined,
+          operationalStatus: appliedFilters.operationalStatus || undefined,
+          assignedToUserId: appliedFilters.assignedToUserId || undefined,
+          tagId: appliedFilters.tagId || undefined,
+          hasOptOut: appliedFilters.hasOptOut,
+        }),
+        fetchTags(token, campaignId),
+      ]);
+      setContacts(contactItems);
+      setTags(tagItems);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel importar o CSV');
+    } finally {
+      setImporting(false);
+    }
+  }
+
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#f7f7f5]">
@@ -178,6 +220,10 @@ export default function CampaignContactsPage() {
       </main>
     );
   }
+
+  const canWrite = campaign
+    ? canWriteRole(getOrganizationRole(user?.memberships, campaign.organizationId))
+    : false;
 
   return (
     <DashboardShell userName={user?.name}>
@@ -214,6 +260,57 @@ export default function CampaignContactsPage() {
             </Link>
           </div>
         </div>
+
+        {canWrite ? (
+          <section className="mt-6 rounded-md border border-[#deddd4] bg-white p-4">
+            <h3 className="font-medium text-[#24382b]">Importar CSV</h3>
+            <p className="mt-1 text-sm text-[#65655f]">
+              Colunas: <code>nome</code>, <code>telefone</code> (obrigatorio). Opcionais:{' '}
+              <code>observacao</code>, <code>tags</code> (separadas por ; ou |).
+            </p>
+            <p className="mt-1 text-sm text-[#65655f]">
+              Contatos existentes sao atualizados pelo telefone. Opt-out/bloqueio existente nao e
+              removido.
+            </p>
+            <label className="mt-4 inline-flex cursor-pointer items-center gap-2 rounded-md border border-[#24382b] px-4 py-2 text-sm font-semibold text-[#24382b]">
+              <input
+                className="sr-only"
+                type="file"
+                accept=".csv,text/csv"
+                disabled={importing}
+                onChange={(event) => {
+                  const file = event.target.files?.[0] ?? null;
+                  void handleImportFile(file);
+                  event.target.value = '';
+                }}
+              />
+              {importing ? 'Importando...' : 'Selecionar arquivo CSV'}
+            </label>
+            {success ? <p className="mt-3 text-sm text-[#47624f]">{success}</p> : null}
+            {importResult ? (
+              <div className="mt-3 rounded-md bg-[#f7f7f5] px-3 py-3 text-sm text-[#34342f]">
+                <p>
+                  Criados: <strong>{importResult.created}</strong> · Atualizados:{' '}
+                  <strong>{importResult.updated}</strong> · Ignorados:{' '}
+                  <strong>{importResult.ignored}</strong> · Erros:{' '}
+                  <strong>{importResult.errorCount}</strong>
+                </p>
+                {importResult.errors.length > 0 ? (
+                  <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto text-[#8a1f1f]">
+                    {importResult.errors.slice(0, 20).map((item) => (
+                      <li key={`${item.lineNumber}-${item.reason}`}>
+                        Linha {item.lineNumber}: {item.reason}
+                      </li>
+                    ))}
+                    {importResult.errors.length > 20 ? (
+                      <li>+ {importResult.errors.length - 20} erro(s) adicionais</li>
+                    ) : null}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+        ) : null}
 
         {tags.length === 0 ? (
           <div className="mt-4 rounded-md border border-dashed border-[#d7d6cd] bg-white px-4 py-3 text-sm text-[#65655f]">

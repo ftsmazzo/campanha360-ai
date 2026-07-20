@@ -14,14 +14,21 @@ import { normalizePhone } from '../common/phone.util';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { buildContactInteractionMap } from './contact-interaction.util';
+import {
+  buildImportAuditMetadata,
+  parseAndValidateImportCsv,
+  resolveImportNameUpdate,
+} from './contact-import.util';
 import { resolveStatusAfterClearOptOut } from './contact-opt-out.util';
 import {
   buildContactListAndClauses,
+  normalizeTagName,
   resolveApplyContactTag,
   resolveRemoveContactTag,
 } from './contact-tag.util';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { CreateOptOutDto } from './dto/create-opt-out.dto';
+import { ImportContactsDto } from './dto/import-contacts.dto';
 import { ListContactsQueryDto } from './dto/list-contacts-query.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
 import { UpdateContactOperationsDto } from './dto/update-contact-operations.dto';
@@ -283,6 +290,280 @@ export class ContactsService {
     });
 
     return contact;
+  }
+
+  async importFromCsv(userId: string, campaignId: string, dto: ImportContactsDto) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const parsed = parseAndValidateImportCsv(dto.csv);
+    const structuralError = parsed.errors.find(
+      (error) =>
+        error.reason === 'CSV vazio' || error.reason === 'Coluna telefone obrigatoria ausente',
+    );
+
+    if (structuralError && parsed.rows.length === 0) {
+      throw new BadRequestException(structuralError.reason);
+    }
+
+    if (parsed.rows.length > 1000) {
+      throw new BadRequestException('Limite de 1000 contatos por importacao');
+    }
+
+    let created = 0;
+    let updated = 0;
+    const validationErrors = [...parsed.errors];
+    let ignored = parsed.ignored;
+
+    const tagCache = new Map<string, string>();
+
+    for (const row of parsed.rows) {
+      try {
+        const existing = await this.findContactByNormalizedPhone(
+          campaign.organizationId,
+          campaignId,
+          row.phone,
+        );
+
+        if (existing) {
+          const nextName = resolveImportNameUpdate(row.name, existing.name);
+
+          await this.prisma.$transaction(async (tx) => {
+            await tx.contact.update({
+              where: { id: existing.id },
+              data: {
+                name: nextName,
+                phoneNumber: row.phone,
+                // Importacao nunca altera status (preserva BLOCKED/opt-out).
+                metadata: this.mergeImportMetadata(existing.metadata),
+              },
+            });
+
+            await this.syncChannels(
+              tx,
+              existing.id,
+              campaign.organizationId,
+              campaignId,
+              row.phone,
+              existing.email,
+            );
+
+            if (row.note) {
+              await tx.contactNote.create({
+                data: {
+                  organizationId: campaign.organizationId,
+                  campaignId,
+                  contactId: existing.id,
+                  authorUserId: userId,
+                  body: row.note,
+                },
+              });
+            }
+
+            await this.ensureImportTags(
+              tx,
+              campaign.organizationId,
+              campaignId,
+              existing.id,
+              row.tagNames,
+              tagCache,
+            );
+          });
+
+          updated += 1;
+          continue;
+        }
+
+        await this.prisma.$transaction(async (tx) => {
+          const createdContact = await tx.contact.create({
+            data: {
+              organizationId: campaign.organizationId,
+              campaignId,
+              name: row.name,
+              phoneNumber: row.phone,
+              status: ContactStatus.ACTIVE,
+              metadata: this.mergeImportMetadata(null),
+            },
+            select: { id: true },
+          });
+
+          await this.syncChannels(
+            tx,
+            createdContact.id,
+            campaign.organizationId,
+            campaignId,
+            row.phone,
+            null,
+          );
+
+          if (row.note) {
+            await tx.contactNote.create({
+              data: {
+                organizationId: campaign.organizationId,
+                campaignId,
+                contactId: createdContact.id,
+                authorUserId: userId,
+                body: row.note,
+              },
+            });
+          }
+
+          await this.ensureImportTags(
+            tx,
+            campaign.organizationId,
+            campaignId,
+            createdContact.id,
+            row.tagNames,
+            tagCache,
+          );
+        });
+
+        created += 1;
+      } catch {
+        validationErrors.push({
+          lineNumber: row.lineNumber,
+          reason: 'Falha ao importar linha',
+        });
+        ignored += 1;
+      }
+    }
+
+    const summary = {
+      created,
+      updated,
+      ignored,
+      errors: validationErrors,
+      errorCount: validationErrors.length,
+    };
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'CONTACTS_IMPORTED',
+      entityType: 'Campaign',
+      entityId: campaignId,
+      metadata: buildImportAuditMetadata({
+        created,
+        updated,
+        ignored,
+        errors: validationErrors.length,
+        totalRows: parsed.rows.length + parsed.errors.length + parsed.ignored,
+      }),
+    });
+
+    return summary;
+  }
+
+  private mergeImportMetadata(existing: unknown): Prisma.InputJsonValue {
+    const base =
+      existing && typeof existing === 'object' && !Array.isArray(existing)
+        ? { ...(existing as Record<string, unknown>) }
+        : {};
+
+    return {
+      ...base,
+      lastImportSource: 'csv',
+      lastImportedAt: new Date().toISOString(),
+    } as Prisma.InputJsonValue;
+  }
+
+  private async findContactByNormalizedPhone(
+    organizationId: string,
+    campaignId: string,
+    phone: string,
+  ) {
+    const byChannel = await this.prisma.contactChannel.findFirst({
+      where: {
+        organizationId,
+        campaignId,
+        channel: ChannelType.WHATSAPP,
+        normalizedValue: phone,
+      },
+      select: {
+        contact: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            status: true,
+            metadata: true,
+          },
+        },
+      },
+    });
+
+    if (byChannel?.contact) {
+      return byChannel.contact;
+    }
+
+    return this.prisma.contact.findFirst({
+      where: {
+        organizationId,
+        campaignId,
+        phoneNumber: phone,
+      },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        status: true,
+        metadata: true,
+      },
+    });
+  }
+
+  private async ensureImportTags(
+    tx: Prisma.TransactionClient,
+    organizationId: string,
+    campaignId: string,
+    contactId: string,
+    tagNames: string[],
+    tagCache: Map<string, string>,
+  ) {
+    for (const rawName of tagNames) {
+      const name = normalizeTagName(rawName);
+      if (!name) continue;
+
+      let tagId = tagCache.get(name.toLowerCase());
+
+      if (!tagId) {
+        const existingTag = await tx.tag.findFirst({
+          where: {
+            organizationId,
+            campaignId,
+            name: { equals: name, mode: 'insensitive' },
+          },
+          select: { id: true, name: true },
+        });
+
+        if (existingTag) {
+          tagId = existingTag.id;
+        } else {
+          const createdTag = await tx.tag.create({
+            data: {
+              organizationId,
+              campaignId,
+              name,
+            },
+            select: { id: true },
+          });
+          tagId = createdTag.id;
+        }
+
+        tagCache.set(name.toLowerCase(), tagId);
+      }
+
+      const link = await tx.contactTag.findUnique({
+        where: {
+          contactId_tagId: { contactId, tagId },
+        },
+      });
+
+      if (resolveApplyContactTag(Boolean(link)) === 'created') {
+        await tx.contactTag.create({
+          data: { contactId, tagId },
+        });
+      }
+    }
   }
 
   async update(

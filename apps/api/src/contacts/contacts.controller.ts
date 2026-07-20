@@ -14,6 +14,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ContactsService } from './contacts.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { CreateOptOutDto } from './dto/create-opt-out.dto';
+import { ImportContactsDto } from './dto/import-contacts.dto';
 import { ListContactsQueryDto } from './dto/list-contacts-query.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
 import { UpdateContactOperationsDto } from './dto/update-contact-operations.dto';
@@ -40,6 +41,15 @@ export class ContactsController {
     @Body() dto: CreateContactDto,
   ) {
     return this.contactsService.create(user.id, campaignId, dto);
+  }
+
+  @Post('import')
+  importFromCsv(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Body() dto: ImportContactsDto,
+  ) {
+    return this.contactsService.importFromCsv(user.id, campaignId, dto);
   }
 
   @Get(':contactId')

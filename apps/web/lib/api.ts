@@ -355,6 +355,27 @@ export function createContact(
   );
 }
 
+export type ContactImportError = {
+  lineNumber: number;
+  reason: string;
+};
+
+export type ContactImportResult = {
+  created: number;
+  updated: number;
+  ignored: number;
+  errors: ContactImportError[];
+  errorCount: number;
+};
+
+export function importContactsCsv(token: string, campaignId: string, csv: string) {
+  return request<ContactImportResult>(
+    `/campaigns/${campaignId}/contacts/import`,
+    { method: 'POST', body: JSON.stringify({ csv }) },
+    token,
+  );
+}
+
 export function updateContact(
   token: string,
   campaignId: string,
