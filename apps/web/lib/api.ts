@@ -562,6 +562,49 @@ export function fetchSegment(token: string, campaignId: string, segmentId: strin
   );
 }
 
+export type SegmentPrevalidateAlert = {
+  code: string;
+  severity: 'info' | 'warning' | 'critical';
+  message: string;
+};
+
+export type SegmentPrevalidateResult = {
+  segmentId: string;
+  segmentName: string;
+  filters: SegmentFilters;
+  totalGross: number;
+  eligible: number;
+  optOutOrBlocked: number;
+  deleted: number;
+  invalidPhone: number;
+  duplicatePhone: number;
+  missingCompatibleChannel: number;
+  softLimit: number;
+  whatsappChannelConnected: boolean;
+  channelAccount: {
+    id: string;
+    name: string;
+    provider: string;
+    status: string;
+  } | null;
+  requiredChannel: string;
+  truncated: boolean;
+  alerts: SegmentPrevalidateAlert[];
+  canDispatch: false;
+};
+
+export function prevalidateSegment(
+  token: string,
+  campaignId: string,
+  segmentId: string,
+) {
+  return request<SegmentPrevalidateResult>(
+    `/campaigns/${campaignId}/segments/${segmentId}/prevalidate`,
+    {},
+    token,
+  );
+}
+
 export function previewSegment(
   token: string,
   campaignId: string,

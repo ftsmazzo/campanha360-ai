@@ -4,7 +4,13 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import {
+  ChannelAccountStatus,
+  ChannelProvider,
+  ChannelType,
+  ConsentStatus,
+  Prisma,
+} from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -18,6 +24,12 @@ import {
   normalizeSegmentFilters,
   segmentRequiresOptOutWarning,
 } from './segment-filters.util';
+import {
+  PROVISIONAL_DISPATCH_SOFT_LIMIT,
+  analyzeSegmentDispatchReadiness,
+  buildSegmentStructuralWhere,
+  consentHasOptOut,
+} from './segment-prevalidate.util';
 
 const segmentSelect = {
   id: true,
@@ -136,6 +148,96 @@ export class SegmentsService {
       contactCount,
       contacts,
       includeOptOutWarning: segmentRequiresOptOutWarning(filters),
+    };
+  }
+
+  async prevalidate(userId: string, campaignId: string, segmentId: string) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    const segment = await this.getSegmentOrThrow(
+      segmentId,
+      campaign.organizationId,
+      campaignId,
+    );
+    const filters = normalizeSegmentFilters(
+      segment.filters as Record<string, unknown>,
+    );
+
+    const structuralWhere = buildSegmentStructuralWhere(
+      campaign.organizationId,
+      campaignId,
+      filters,
+    );
+
+    const softLimit = Number(process.env.SEGMENT_DISPATCH_SOFT_LIMIT);
+    const resolvedSoftLimit =
+      Number.isFinite(softLimit) && softLimit > 0
+        ? softLimit
+        : PROVISIONAL_DISPATCH_SOFT_LIMIT;
+
+    const [contacts, connectedWhatsApp] = await Promise.all([
+      this.prisma.contact.findMany({
+        where: structuralWhere,
+        select: {
+          id: true,
+          status: true,
+          phoneNumber: true,
+          optOuts: { select: { id: true }, take: 1 },
+          consents: {
+            where: { status: ConsentStatus.OPT_OUT },
+            select: { id: true, status: true },
+            take: 1,
+          },
+          channels: {
+            select: {
+              channel: true,
+              status: true,
+            },
+          },
+        },
+        take: 5000,
+      }),
+      this.prisma.channelAccount.findFirst({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          provider: {
+            in: [ChannelProvider.WHATSAPP_EVOLUTION, ChannelProvider.WHATSAPP_CLOUD_API],
+          },
+          status: ChannelAccountStatus.CONNECTED,
+        },
+        select: { id: true, name: true, provider: true, status: true },
+      }),
+    ]);
+
+    const summary = analyzeSegmentDispatchReadiness({
+      contacts: contacts.map((contact) => ({
+        id: contact.id,
+        status: contact.status,
+        phoneNumber: contact.phoneNumber,
+        optOutCount: contact.optOuts.length,
+        hasOptOutConsent: consentHasOptOut(contact.consents),
+        channels: contact.channels,
+      })),
+      filters,
+      whatsappChannelConnected: Boolean(connectedWhatsApp),
+      softLimit: resolvedSoftLimit,
+    });
+
+    return {
+      segmentId: segment.id,
+      segmentName: segment.name,
+      filters,
+      channelAccount: connectedWhatsApp
+        ? {
+            id: connectedWhatsApp.id,
+            name: connectedWhatsApp.name,
+            provider: connectedWhatsApp.provider,
+            status: connectedWhatsApp.status,
+          }
+        : null,
+      requiredChannel: filters.channel ?? ChannelType.WHATSAPP,
+      truncated: contacts.length >= 5000,
+      ...summary,
     };
   }
 

@@ -69,4 +69,4 @@ Migration mínima `Segment`:
 
 ## 6. Próximo passo
 
-Refinamentos de segmentação ou Captação Pública, apenas quando autorizados.
+**Épico 07 — Pré-validação e Disparo Operacional** (`docs/epicos/07-PREVALIDACAO-DISPARO.md`), começando por **07.1**.

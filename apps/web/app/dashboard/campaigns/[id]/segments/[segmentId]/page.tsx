@@ -10,6 +10,7 @@ import {
   CampaignItem,
   SegmentDetail,
   SegmentFilters,
+  SegmentPrevalidateResult,
   TagItem,
   clearStoredToken,
   deleteSegment,
@@ -18,6 +19,7 @@ import {
   fetchSegment,
   fetchTags,
   getStoredToken,
+  prevalidateSegment,
   previewSegment,
   updateSegment,
 } from '../../../../../../lib/api';
@@ -52,6 +54,8 @@ export default function SegmentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [prevalidating, setPrevalidating] = useState(false);
+  const [prevalidation, setPrevalidation] = useState<SegmentPrevalidateResult | null>(null);
   const [previewCount, setPreviewCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -101,6 +105,12 @@ export default function SegmentDetailPage() {
         setCampaign(campaignItem);
         fillSegment(segmentItem);
         setTags(tagItems);
+        try {
+          const prevalidateResult = await prevalidateSegment(token, campaignId, segmentId);
+          setPrevalidation(prevalidateResult);
+        } catch {
+          // Pre-validacao e opcional no carregamento inicial.
+        }
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
           clearStoredToken();
@@ -115,6 +125,23 @@ export default function SegmentDetailPage() {
 
     load();
   }, [campaignId, router, segmentId]);
+
+  async function handlePrevalidate() {
+    const token = getStoredToken();
+    if (!token) return;
+
+    setPrevalidating(true);
+    setError(null);
+
+    try {
+      const result = await prevalidateSegment(token, campaignId, segmentId);
+      setPrevalidation(result);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel pre-validar o segmento');
+    } finally {
+      setPrevalidating(false);
+    }
+  }
 
   function toggleTag(tagId: string) {
     setFilters((current) => {
@@ -254,6 +281,127 @@ export default function SegmentDetailPage() {
 
         {error ? <p className="text-sm text-red-700">{error}</p> : null}
         {success ? <p className="text-sm text-[#47624f]">{success}</p> : null}
+
+        <section className="rounded-md border border-[#deddd4] bg-white p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h3 className="font-medium text-[#24382b]">Pre-validacao de disparo</h3>
+              <p className="mt-1 text-sm text-[#65655f]">
+                Analise de elegibilidade e risco. Nao envia mensagens e nao cria fila.
+              </p>
+            </div>
+            <button
+              className="rounded-md border border-[#24382b] px-3 py-2 text-sm font-semibold text-[#24382b] disabled:opacity-60"
+              type="button"
+              disabled={prevalidating}
+              onClick={() => void handlePrevalidate()}
+            >
+              {prevalidating ? 'Analisando...' : 'Atualizar pre-validacao'}
+            </button>
+          </div>
+
+          {prevalidation ? (
+            <div className="mt-4 space-y-4">
+              <dl className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-md bg-[#f7f7f5] px-3 py-2">
+                  <dt className="text-xs uppercase tracking-wide text-[#65655f]">Total bruto</dt>
+                  <dd className="mt-1 text-lg font-semibold text-[#151515]">
+                    {prevalidation.totalGross}
+                  </dd>
+                </div>
+                <div className="rounded-md bg-[#eef2ea] px-3 py-2">
+                  <dt className="text-xs uppercase tracking-wide text-[#65655f]">Elegiveis</dt>
+                  <dd className="mt-1 text-lg font-semibold text-[#24382b]">
+                    {prevalidation.eligible}
+                  </dd>
+                </div>
+                <div className="rounded-md bg-[#f7f7f5] px-3 py-2">
+                  <dt className="text-xs uppercase tracking-wide text-[#65655f]">
+                    Opt-out / BLOCKED
+                  </dt>
+                  <dd className="mt-1 text-lg font-semibold text-[#151515]">
+                    {prevalidation.optOutOrBlocked}
+                  </dd>
+                </div>
+                <div className="rounded-md bg-[#f7f7f5] px-3 py-2">
+                  <dt className="text-xs uppercase tracking-wide text-[#65655f]">DELETED</dt>
+                  <dd className="mt-1 text-lg font-semibold text-[#151515]">
+                    {prevalidation.deleted}
+                  </dd>
+                </div>
+                <div className="rounded-md bg-[#f7f7f5] px-3 py-2">
+                  <dt className="text-xs uppercase tracking-wide text-[#65655f]">
+                    Telefone invalido
+                  </dt>
+                  <dd className="mt-1 text-lg font-semibold text-[#151515]">
+                    {prevalidation.invalidPhone}
+                  </dd>
+                </div>
+                <div className="rounded-md bg-[#f7f7f5] px-3 py-2">
+                  <dt className="text-xs uppercase tracking-wide text-[#65655f]">
+                    Telefones duplicados
+                  </dt>
+                  <dd className="mt-1 text-lg font-semibold text-[#151515]">
+                    {prevalidation.duplicatePhone}
+                  </dd>
+                </div>
+                <div className="rounded-md bg-[#f7f7f5] px-3 py-2">
+                  <dt className="text-xs uppercase tracking-wide text-[#65655f]">
+                    Sem canal compativel
+                  </dt>
+                  <dd className="mt-1 text-lg font-semibold text-[#151515]">
+                    {prevalidation.missingCompatibleChannel}
+                  </dd>
+                </div>
+                <div className="rounded-md bg-[#f7f7f5] px-3 py-2">
+                  <dt className="text-xs uppercase tracking-wide text-[#65655f]">
+                    WhatsApp campanha
+                  </dt>
+                  <dd className="mt-1 text-sm font-semibold text-[#151515]">
+                    {prevalidation.whatsappChannelConnected
+                      ? `Conectado${prevalidation.channelAccount ? ` · ${prevalidation.channelAccount.name}` : ''}`
+                      : 'Nao conectado'}
+                  </dd>
+                </div>
+              </dl>
+
+              <p className="text-sm text-[#65655f]">
+                Limite provisório de volume: {prevalidation.softLimit}. Envios nao estao
+                disponiveis nesta etapa.
+                {prevalidation.truncated ? ' Analise limitada aos primeiros 5000 contatos.' : ''}
+              </p>
+
+              {prevalidation.alerts.length > 0 ? (
+                <ul className="space-y-2">
+                  {prevalidation.alerts.map((alert) => (
+                    <li
+                      key={`${alert.code}-${alert.message}`}
+                      className={`rounded-md border px-3 py-2 text-sm ${
+                        alert.severity === 'critical'
+                          ? 'border-red-300 bg-red-50 text-red-900'
+                          : alert.severity === 'warning'
+                            ? 'border-amber-300 bg-amber-50 text-amber-950'
+                            : 'border-[#d7d6cd] bg-[#f7f7f5] text-[#34342f]'
+                      }`}
+                    >
+                      {alert.message}
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="text-sm text-[#47624f]">Nenhum alerta critico na pre-validacao.</p>
+              )}
+
+              <p className="text-sm font-medium text-[#65655f]">
+                Disparo em massa: indisponivel (somente analise).
+              </p>
+            </div>
+          ) : (
+            <p className="mt-3 text-sm text-[#65655f]">
+              Clique em atualizar para calcular elegibilidade e riscos do publico.
+            </p>
+          )}
+        </section>
 
         {editing && canWrite ? (
           <form

@@ -45,6 +45,15 @@ export class SegmentsController {
     return this.segmentsService.create(user.id, campaignId, dto);
   }
 
+  @Get(':segmentId/prevalidate')
+  prevalidate(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('segmentId') segmentId: string,
+  ) {
+    return this.segmentsService.prevalidate(user.id, campaignId, segmentId);
+  }
+
   @Get(':segmentId')
   getById(
     @CurrentUser() user: AuthUser,
