@@ -4,6 +4,7 @@ import {
   ContactStatus,
   Prisma,
 } from '@prisma/client';
+import { buildDefaultContactStatusFilter } from './contact-removal.util';
 
 export function normalizeTagName(name: string): string {
   return name.trim();
@@ -64,6 +65,8 @@ export function buildContactListAndClauses(
 
   if (parts.status) {
     and.push({ status: parts.status });
+  } else {
+    and.push(buildDefaultContactStatusFilter(undefined));
   }
 
   if (parts.operationalStatus) {

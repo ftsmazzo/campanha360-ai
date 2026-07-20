@@ -71,6 +71,15 @@ export class ContactsController {
     return this.contactsService.update(user.id, campaignId, contactId, dto);
   }
 
+  @Delete(':contactId')
+  remove(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('contactId') contactId: string,
+  ) {
+    return this.contactsService.remove(user.id, campaignId, contactId);
+  }
+
   @Put(':contactId/operations')
   updateOperations(
     @CurrentUser() user: AuthUser,

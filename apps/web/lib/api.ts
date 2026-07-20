@@ -397,6 +397,21 @@ export function updateContact(
   );
 }
 
+export type ContactRemovalResult = {
+  id: string;
+  mode: 'soft' | 'hard';
+  status: string;
+  alreadyRemoved: boolean;
+};
+
+export function removeContact(token: string, campaignId: string, contactId: string) {
+  return request<ContactRemovalResult>(
+    `/campaigns/${campaignId}/contacts/${contactId}`,
+    { method: 'DELETE' },
+    token,
+  );
+}
+
 export function updateContactOperations(
   token: string,
   campaignId: string,

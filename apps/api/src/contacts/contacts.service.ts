@@ -19,6 +19,9 @@ import {
   parseAndValidateImportCsv,
   resolveImportNameUpdate,
 } from './contact-import.util';
+import {
+  resolveContactRemovalMode,
+} from './contact-removal.util';
 import { resolveStatusAfterClearOptOut } from './contact-opt-out.util';
 import {
   buildContactListAndClauses,
@@ -451,6 +454,172 @@ export class ContactsService {
     });
 
     return summary;
+  }
+
+  async remove(userId: string, campaignId: string, contactId: string) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getContactOrThrow(
+      contactId,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    if (existing.status === ContactStatus.DELETED) {
+      return {
+        id: contactId,
+        mode: 'soft' as const,
+        status: ContactStatus.DELETED,
+        alreadyRemoved: true,
+      };
+    }
+
+    const [messageCount, threadCount, optOutCount] = await Promise.all([
+      this.prisma.message.count({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          contactId,
+        },
+      }),
+      this.prisma.conversationThread.count({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          contactId,
+        },
+      }),
+      this.prisma.optOut.count({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          contactId,
+        },
+      }),
+    ]);
+
+    const mode = resolveContactRemovalMode({
+      messageCount,
+      threadCount,
+      optOutCount,
+      status: existing.status,
+    });
+
+    if (mode === 'soft') {
+      await this.prisma.contact.update({
+        where: { id: contactId },
+        data: {
+          status: ContactStatus.DELETED,
+          metadata: this.mergeRemovalMetadata(existing.metadata, {
+            mode: 'soft',
+            preservedOptOuts: optOutCount,
+            preservedMessages: messageCount,
+            preservedThreads: threadCount,
+          }),
+        },
+      });
+
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'CONTACT_SOFT_DELETED',
+        entityType: 'Contact',
+        entityId: contactId,
+        metadata: {
+          mode: 'soft',
+          previousStatus: existing.status,
+          messageCount,
+          threadCount,
+          optOutCount,
+        },
+      });
+
+      return {
+        id: contactId,
+        mode: 'soft' as const,
+        status: ContactStatus.DELETED,
+        alreadyRemoved: false,
+      };
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.contactTag.deleteMany({ where: { contactId } });
+      await tx.contactNote.deleteMany({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          contactId,
+        },
+      });
+      await tx.contactTask.deleteMany({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          contactId,
+        },
+      });
+      await tx.consent.deleteMany({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          contactId,
+        },
+      });
+      await tx.contactChannel.deleteMany({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          contactId,
+        },
+      });
+      await tx.contact.delete({
+        where: { id: contactId },
+      });
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'CONTACT_HARD_DELETED',
+      entityType: 'Contact',
+      entityId: contactId,
+      metadata: {
+        mode: 'hard',
+        previousStatus: existing.status,
+      },
+    });
+
+    return {
+      id: contactId,
+      mode: 'hard' as const,
+      status: ContactStatus.DELETED,
+      alreadyRemoved: false,
+    };
+  }
+
+  private mergeRemovalMetadata(
+    existing: unknown,
+    removal: {
+      mode: 'soft';
+      preservedOptOuts: number;
+      preservedMessages: number;
+      preservedThreads: number;
+    },
+  ): Prisma.InputJsonValue {
+    const base =
+      existing && typeof existing === 'object' && !Array.isArray(existing)
+        ? { ...(existing as Record<string, unknown>) }
+        : {};
+
+    return {
+      ...base,
+      removedAt: new Date().toISOString(),
+      removalMode: removal.mode,
+      preservedOptOuts: removal.preservedOptOuts,
+      preservedMessages: removal.preservedMessages,
+      preservedThreads: removal.preservedThreads,
+    } as Prisma.InputJsonValue;
   }
 
   private mergeImportMetadata(existing: unknown): Prisma.InputJsonValue {

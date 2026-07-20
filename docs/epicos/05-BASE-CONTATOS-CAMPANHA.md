@@ -10,15 +10,15 @@ Já existem:
 
 - CRM operacional (épico 03): cadastro, tags, notas, tarefas, filtros;
 - canais WhatsApp Evolution e inbox (épico 04);
-- listagem operacional (05.1), edição/opt-out (05.2), tags simples (05.3).
+- listagem (05.1), edição/opt-out (05.2), tags (05.3), importação CSV (05.4).
 
 ## 3. Fora de escopo do épico (nesta fase)
 
 - segmentação avançada / listas dinâmicas;
 - disparos em massa;
 - IA;
-- templates;
-- enriquecimento externo avançado;
+- exclusão em massa;
+- restauração de contatos removidos;
 - automações pós-importação.
 
 ## 4. Subetapas
@@ -27,41 +27,44 @@ Já existem:
 2. **05.2 — Edição e organização básica de contatos.**
 3. **05.3 — Tags/listas simples de contatos.**
 4. **05.4 — Importação CSV simples de contatos.**
-5. **05.5 — Segmentação inicial avançada** (posterior).
+5. **05.5 — Remoção segura de contato.**
 
-## 5–7. Subetapas 05.1 a 05.3
+## 5–8. Subetapas 05.1 a 05.4
 
-**Concluídas.** Ver histórico deste arquivo e commits no repositório.
+**Concluídas.**
 
-## 8. Subetapa 05.4 — Importação CSV simples de contatos
+## 9. Subetapa 05.5 — Remoção segura de contato
 
 ### Objetivo
 
-Permitir importar contatos por CSV dentro de uma campanha, com validação, deduplicação básica por telefone e preservação de opt-out — sem disparos e sem segmentação avançada.
+Permitir remover contato criado/importado por engano, sem quebrar histórico, opt-out ou mensagens.
+
+### Estrutura reutilizada
+
+- `ContactStatus.DELETED` já existia — soft delete/arquivamento sem migration.
+- Hard delete apenas quando não há mensagens, threads nem opt-outs.
 
 ### Entregas
 
-- upload/importação na página de Contatos;
-- colunas mínimas: `nome`, `telefone`;
-- opcionais: `observacao`, `tags` (`;` ou `|`);
-- telefone obrigatório e normalizado (`normalizePhone`);
-- cria novos / atualiza existentes pelo telefone na mesma campanha;
-- **nunca** desbloqueia contato com opt-out/BLOCKED;
-- cria/reutiliza tags da campanha e associa;
-- observação vira `ContactNote`;
-- resumo: criados, atualizados, ignorados, erros;
-- auditoria sem telefones completos;
+- ação **Remover contato** no detalhe, com confirmação;
+- `DELETE /campaigns/:campaignId/contacts/:contactId`;
+- listagem/busca padrão exclui `DELETED`;
+- com histórico: status `DELETED`, mensagens/threads/opt-out preservados;
+- sem histórico: hard delete de cadastro auxiliar (canais, tags, notas, tarefas, consents);
+- importação CSV continua sem reativar `DELETED` (não altera status);
+- feedback e redirecionamento para a lista;
 - documentação deste épico.
 
 ### Regras
 
 - tenancy `organizationId` + `campaignId`;
-- sem disparos, segmentação, IA, enriquecimento externo, webhook/Atendimento/opt-out alterados;
-- sem migration (modelo atual suficiente).
+- não apagar mensagens nem opt-out;
+- não exclusão em massa / restauração / segmentação / disparos / IA;
+- Atendimento e webhook não alterados nesta subetapa.
 
 ### Critério de aceite
 
-Operador importa CSV pequeno, vê o resumo, confere lista/busca/tags e contato bloqueado permanece bloqueado.
+Operador remove contato errado; some da lista/busca; com histórico o Atendimento permanece íntegro; opt-out preservado.
 
 ### Status
 
@@ -69,17 +72,10 @@ Operador importa CSV pequeno, vê o resumo, confere lista/busca/tags e contato b
 
 ### Implementado
 
-- `POST /campaigns/:campaignId/contacts/import`;
-- util `contact-import.util` + testes;
-- UI de upload + resumo na lista de Contatos.
+- util `contact-removal.util` + testes;
+- filtro padrão `status != DELETED` em `buildContactListAndClauses`;
+- UI de remoção no detalhe.
 
-### Fora de escopo (mantido)
+## 10. Próximo passo
 
-- disparos;
-- segmentação avançada;
-- preview multi-etapa / worker assíncrono;
-- IA.
-
-## 9. Próximo passo
-
-**05.5 — Segmentação inicial avançada**, apenas quando autorizada explicitamente.
+Épico 05 operacionalmente fechado para base de contatos. Próximos épicos apenas quando autorizados.

@@ -36,7 +36,14 @@ describe('buildContactListAndClauses', () => {
 
     assert.deepEqual(clauses[0], { organizationId: 'org-1' });
     assert.deepEqual(clauses[1], { campaignId: 'camp-1' });
-    assert.deepEqual(clauses[2], buildTagAssociationFilter('tag-1'));
+    assert.ok(
+      clauses.some(
+        (clause) =>
+          'status' in clause &&
+          JSON.stringify(clause).includes('DELETED'),
+      ),
+    );
+    assert.deepEqual(clauses.find((clause) => 'tags' in clause), buildTagAssociationFilter('tag-1'));
   });
 
   it('combina busca por nome/telefone com filtro por tag', () => {
@@ -47,7 +54,7 @@ describe('buildContactListAndClauses', () => {
       tagId: 'tag-1',
     });
 
-    assert.equal(clauses.length, 4);
+    assert.equal(clauses.length, 5);
     assert.ok(clauses.some((clause) => 'OR' in clause));
     assert.ok(
       clauses.some(

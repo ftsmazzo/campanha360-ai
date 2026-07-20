@@ -31,6 +31,7 @@ import {
   fetchMe,
   fetchTags,
   getStoredToken,
+  removeContact,
   removeContactTag,
   updateContact,
   updateContactNote,
@@ -150,6 +151,7 @@ export default function ContactDetailPage() {
   const [savingNote, setSavingNote] = useState(false);
   const [savingTask, setSavingTask] = useState(false);
   const [savingOperations, setSavingOperations] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -331,6 +333,31 @@ export default function ContactDetailPage() {
       setError(err instanceof ApiError ? err.message : 'Nao foi possivel remover opt-out');
     } finally {
       setSavingOptOut(false);
+    }
+  }
+
+  async function handleRemoveContact() {
+    const token = getStoredToken();
+    if (!token) return;
+
+    const confirmed = window.confirm(
+      'Remover este contato da campanha?\n\n' +
+        'Se houver mensagens, threads ou opt-out, o historico sera preservado e o contato apenas arquivado.\n' +
+        'Caso contrario, o cadastro sera excluido.\n\n' +
+        'Esta acao nao apaga mensagens nem registros de opt-out.',
+    );
+    if (!confirmed) return;
+
+    setRemoving(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      await removeContact(token, campaignId, contactId);
+      router.replace(`/dashboard/campaigns/${campaignId}/contacts`);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Nao foi possivel remover o contato');
+      setRemoving(false);
     }
   }
 
@@ -616,6 +643,16 @@ export default function ContactDetailPage() {
               >
                 Ir para campanha
               </Link>
+            ) : null}
+            {canWrite && contact.status !== 'DELETED' ? (
+              <button
+                className="rounded-md border border-red-700 px-3 py-2 text-sm font-semibold text-red-800 disabled:opacity-60"
+                type="button"
+                disabled={removing}
+                onClick={handleRemoveContact}
+              >
+                {removing ? 'Removendo...' : 'Remover contato'}
+              </button>
             ) : null}
           </div>
         </div>
