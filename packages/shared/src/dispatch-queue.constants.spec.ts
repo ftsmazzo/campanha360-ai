@@ -12,10 +12,30 @@ describe('dispatch-queue.constants', () => {
     assert.equal(DISPATCH_SEND_QUEUE_NAME, 'dispatch-send');
   });
 
-  it('buildDispatchSendJobId gera id deterministico', () => {
-    const jobId = buildDispatchSendJobId('dispatch-1', 'item-1');
-    assert.equal(jobId, 'dispatch:dispatch-1:item:item-1');
-    assert.equal(buildDispatchSendJobId('dispatch-1', 'item-1'), jobId);
+  it('buildDispatchSendJobId gera id deterministico sem ":"', () => {
+    assert.equal(
+      buildDispatchSendJobId('dispatch-1', 'item-1'),
+      'dispatch-send-dispatch-1-item-1',
+    );
+    assert.equal(
+      buildDispatchSendJobId('dispatch-1', 'item-1').includes(':'),
+      false,
+    );
+    assert.equal(
+      buildDispatchSendJobId('dispatch-1', 'item-1'),
+      buildDispatchSendJobId('dispatch-1', 'item-1'),
+    );
+  });
+
+  it('buildDispatchSendJobId diferencia items e dispatches', () => {
+    const a = buildDispatchSendJobId('dispatch-1', 'item-1');
+    const b = buildDispatchSendJobId('dispatch-1', 'item-2');
+    const c = buildDispatchSendJobId('dispatch-2', 'item-1');
+    assert.notEqual(a, b);
+    assert.notEqual(a, c);
+    assert.ok(a.includes('dispatch-1'));
+    assert.ok(a.includes('item-1'));
+    assert.equal(a.includes(' '), false);
   });
 
   it('buildDispatchSendJobId exige dispatchId e dispatchItemId', () => {

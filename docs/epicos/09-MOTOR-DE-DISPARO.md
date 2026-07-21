@@ -887,13 +887,15 @@ Não incluir:
 
 ## 9.4 Job ID
 
-Usar identificador determinístico.
+Usar identificador determinístico compatível com BullMQ (sem `:`).
 
-Sugestão:
+Formato oficial:
 
-`dispatch:{dispatchId}:item:{dispatchItemId}`
+`dispatch-send-{dispatchId}-{dispatchItemId}`
 
-Isso ajuda a evitar jobs duplicados.
+Gerado exclusivamente por `buildDispatchSendJobId(...)`.
+
+Isso ajuda a evitar jobs duplicados e respeita a restrição de custom job IDs do BullMQ.
 
 ---
 
@@ -1003,7 +1005,7 @@ Implementação registrada:
 
 - **Fila:** nome final `dispatch-send` (BullMQ + IORedis), definida em `packages/shared/src/dispatch-queue.constants.ts` e reexportada em `apps/api/src/dispatches/dispatch-queue.constants.ts`.
 - **Payload do job:** 4 campos apenas — `dispatchId`, `dispatchItemId`, `organizationId`, `campaignId`. `channelAccountId` **não** trafega no job (o Worker relê o canal do banco a cada execução, permitindo failover sem invalidar jobs já enfileirados); `assertDispatchSendJobPayload` rejeita qualquer chave adicional (destino/conteúdo/token/telefone).
-- **Job ID:** determinístico, `dispatch:{dispatchId}:item:{dispatchItemId}` (`buildDispatchSendJobId`). `DispatchSendProducer.enqueueItem` é idempotente: se o job já existe (não removido), retorna `{ status: 'duplicate' }` sem duplicar.
+- **Job ID:** determinístico e compatível com BullMQ, `dispatch-send-{dispatchId}-{dispatchItemId}` (`buildDispatchSendJobId` em `packages/shared`). **Não** usa `:` (BullMQ rejeita custom IDs com esse caractere). `DispatchSendProducer.enqueueItem` é idempotente: se o job já existe (não removido), retorna `{ status: 'duplicate' }` sem duplicar. Falha de publicação no primeiro job restaura `Dispatch READY` e items `PENDING` quando nenhum job foi criado.
 - **Flags:** `DISPATCH_ENGINE_ENABLED`, `DISPATCH_QUEUE_ENABLED` e `DISPATCH_SEND_ENABLED` (todas com default `false`; `DISPATCH_SEND_ENABLED` nunca deve ter default `true`). `assertDispatchQueueAllowed()` bloqueia o enfileiramento se motor/fila estiverem off.
 - **Serviço de enfileiramento:** `DispatchQueueService` (`apps/api/src/dispatches/dispatch-queue.service.ts`), com `queue()` e `reconcileQueue()`. `queue()` exige OWNER/ADMIN, Dispatch `READY` com `pendingItems > 0`, `requiringRedistribution = false` e `approvalSnapshot` com `protectionPolicy`/`distributionStrategy`/`multiInstance` presentes (aprovação 09.plan). Claim condicional `READY → QUEUED` (`updateMany` com verificação de `count`).
 - **Estados:** `Dispatch READY → QUEUED`; `DispatchItem PENDING → QUEUED` (com `queuedAt`, `queueJobId`, `queueName`, `queueCreatedAt`) **ou** `PENDING → SCHEDULED` quando não há canal elegível no momento (`lastQueueError = 'NO_ELIGIBLE_CHANNEL'`, reagendado para `now + 5min`). O Dispatch permanece `QUEUED` sempre que houver ao menos um job criado ou item `SCHEDULED` pendente de retomada (reconcile); só volta a `READY` no caso defensivo de nada ter progredido.

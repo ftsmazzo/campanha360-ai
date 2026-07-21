@@ -106,8 +106,29 @@ export class DispatchSendProducer implements OnModuleDestroy {
         jobId,
       });
     } catch (error) {
+      const rawMessage =
+        error instanceof Error ? error.message : 'erro desconhecido';
+      this.logger.error(
+        JSON.stringify({
+          action: 'DISPATCH_SEND_ENQUEUE_FAILED',
+          queueName: DISPATCH_SEND_QUEUE_NAME,
+          jobId,
+          dispatchId: validPayload.dispatchId,
+          dispatchItemId: validPayload.dispatchItemId,
+          organizationId: validPayload.organizationId,
+          campaignId: validPayload.campaignId,
+          reason: rawMessage,
+        }),
+      );
+
+      if (/custom id cannot contain/i.test(rawMessage)) {
+        throw new ServiceUnavailableException(
+          `Falha ao publicar job na fila: jobId invalido para BullMQ (nao pode conter ":"). jobId=${jobId}`,
+        );
+      }
+
       throw new ServiceUnavailableException(
-        `Falha ao enfileirar item de disparo: ${(error as Error).message}`,
+        `Falha ao publicar job na fila operacional de disparo. Verifique Redis e tente novamente. Detalhe tecnico: ${rawMessage}`,
       );
     }
 

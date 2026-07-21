@@ -36,9 +36,10 @@ describe('dispatch-send job contract (apps/api)', () => {
     assert.equal(DISPATCH_SEND_JOB_OPTIONS.attempts, 3);
   });
 
-  it('buildDispatchSendJobId gera jobId deterministico', () => {
+  it('buildDispatchSendJobId gera jobId deterministico sem colon', () => {
     const jobId = buildDispatchSendJobId('dispatch-1', 'item-1');
-    assert.equal(jobId, 'dispatch:dispatch-1:item:item-1');
+    assert.equal(jobId, 'dispatch-send-dispatch-1-item-1');
+    assert.equal(jobId.includes(':'), false);
     assert.equal(buildDispatchSendJobId('dispatch-1', 'item-1'), jobId);
   });
 

@@ -383,6 +383,9 @@ export class DispatchQueueService {
         queueName: DISPATCH_SEND_QUEUE_NAME,
       };
     } catch (error) {
+      const technicalMessage =
+        error instanceof Error ? error.message : 'ERRO_DESCONHECIDO';
+
       try {
         const queuedNow = await this.prisma.dispatchItem.count({
           where: {
@@ -392,10 +395,43 @@ export class DispatchQueueService {
             status: DispatchItemStatus.QUEUED,
           },
         });
-        if (queuedNow === 0) {
+
+        // Nenhum job persistido: restaura READY e limpa estados parciais.
+        if (queuedNow === 0 && jobsCreated === 0) {
+          await this.prisma.dispatchItem.updateMany({
+            where: {
+              dispatchId: dispatch.id,
+              organizationId: campaign.organizationId,
+              campaignId,
+              status: {
+                in: [
+                  DispatchItemStatus.SCHEDULED,
+                  DispatchItemStatus.PROCESSING,
+                  DispatchItemStatus.QUEUED,
+                ],
+              },
+            },
+            data: {
+              status: DispatchItemStatus.PENDING,
+              scheduledAt: null,
+              queuedAt: null,
+              queueJobId: null,
+              queueName: null,
+              queueCreatedAt: null,
+              lockedAt: null,
+              lockToken: null,
+              lockExpiresAt: null,
+              lastQueueError: technicalMessage.slice(0, 500),
+            },
+          });
+
           await this.prisma.dispatch.updateMany({
             where: { id: dispatch.id, status: DispatchStatus.QUEUED },
-            data: { status: DispatchStatus.READY, queuedAt: null },
+            data: {
+              status: DispatchStatus.READY,
+              queuedAt: null,
+              queuedItems: 0,
+            },
           });
         }
       } catch {
@@ -414,11 +450,21 @@ export class DispatchQueueService {
           jobsCreated,
           itemsReassigned,
           itemsDeferred,
-          errorMessage: error instanceof Error ? error.message : 'ERRO_DESCONHECIDO',
+          errorMessage: technicalMessage,
+          restoredToReady: jobsCreated === 0,
         },
       });
 
-      throw error;
+      if (
+        error instanceof BadRequestException ||
+        error instanceof ConflictException
+      ) {
+        throw error;
+      }
+
+      throw new BadRequestException(
+        `Nao foi possivel enfileirar o disparo. Nenhum envio foi iniciado. ${technicalMessage}`,
+      );
     }
   }
 

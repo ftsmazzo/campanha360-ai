@@ -3,13 +3,20 @@
  * (BullMQ, subetapa 09.3). O payload deve permanecer minimo: apenas
  * identificadores. Dados sensiveis (destino, conteudo, tokens) NUNCA
  * devem trafegar no job — sempre re-lidos do banco pelo worker.
+ *
+ * Importante: BullMQ nao permite ":" em custom job IDs.
  */
 
 export const DISPATCH_SEND_QUEUE_NAME = 'dispatch-send';
 
-export const DISPATCH_SEND_JOB_ID_PREFIX = 'dispatch';
+/** Prefixo do jobId customizado — alinhado ao nome da fila, sem ":". */
+export const DISPATCH_SEND_JOB_ID_PREFIX = DISPATCH_SEND_QUEUE_NAME;
 
-/** Formato: dispatch:{dispatchId}:item:{dispatchItemId} */
+/**
+ * JobId deterministico compativel com BullMQ.
+ * Formato: dispatch-send-{dispatchId}-{dispatchItemId}
+ * Nao usa ":" (rejeitado pelo BullMQ em custom IDs).
+ */
 export function buildDispatchSendJobId(
   dispatchId: string,
   dispatchItemId: string,
@@ -20,7 +27,16 @@ export function buildDispatchSendJobId(
   if (!dispatchItemId || !dispatchItemId.trim()) {
     throw new Error('dispatchItemId obrigatorio para montar jobId');
   }
-  return `${DISPATCH_SEND_JOB_ID_PREFIX}:${dispatchId}:item:${dispatchItemId}`;
+
+  const safeDispatchId = dispatchId.trim();
+  const safeItemId = dispatchItemId.trim();
+  const jobId = `${DISPATCH_SEND_JOB_ID_PREFIX}-${safeDispatchId}-${safeItemId}`;
+
+  if (jobId.includes(':') || jobId.includes(' ')) {
+    throw new Error('jobId de disparo invalido: nao pode conter ":" ou espacos');
+  }
+
+  return jobId;
 }
 
 export type DispatchSendJobPayload = {

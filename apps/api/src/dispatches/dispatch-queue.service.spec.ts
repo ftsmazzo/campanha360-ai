@@ -175,9 +175,40 @@ function createHarness(options: {
         );
         return items.find((item) => item.id === args.where.id)!;
       },
+      updateMany: async (args: {
+        where: Record<string, unknown>;
+        data: Record<string, unknown>;
+      }) => {
+        const statusFilter = args.where.status as
+          | string
+          | { in?: string[] }
+          | undefined;
+        let matched = 0;
+        items = items.map((item) => {
+          let matches = true;
+          if (statusFilter) {
+            if (typeof statusFilter === 'string') {
+              matches = item.status === statusFilter;
+            } else if (Array.isArray(statusFilter.in)) {
+              matches = statusFilter.in.includes(String(item.status));
+            }
+          }
+          if (!matches) return item;
+          matched += 1;
+          return { ...item, ...args.data };
+        });
+        return { count: matched };
+      },
       count: async (args: { where: Record<string, unknown> }) => {
         const status = args.where.status;
-        return items.filter((item) => item.status === status).length;
+        if (typeof status === 'string') {
+          return items.filter((item) => item.status === status).length;
+        }
+        if (status && typeof status === 'object' && Array.isArray((status as { in?: string[] }).in)) {
+          const allowed = (status as { in: string[] }).in;
+          return items.filter((item) => allowed.includes(String(item.status))).length;
+        }
+        return items.length;
       },
     },
   };
@@ -206,7 +237,7 @@ function createHarness(options: {
       }
       return {
         status: 'enqueued' as const,
-        jobId: `dispatch:${input.dispatchId}:item:${input.dispatchItemId}`,
+        jobId: `dispatch-send-${input.dispatchId}-${input.dispatchItemId}`,
       };
     },
   };
@@ -421,12 +452,42 @@ describe('DispatchQueueService 09.3', () => {
       items: [itemRow({ id: 'item-1' })],
       totalItems: 1,
       pendingItems: 1,
-      enqueueResult: () => ({ status: 'duplicate' as const, jobId: 'dispatch:dispatch-1:item:item-1' }),
+      enqueueResult: () => ({
+        status: 'duplicate' as const,
+        jobId: 'dispatch-send-dispatch-1-item-1',
+      }),
     });
 
     const result = await harness.service.queue('user-1', 'campaign-1', 'dispatch-1');
     assert.equal(result.jobsCreated, 1);
     assert.equal(harness.getItems()[0]?.status, DispatchItemStatus.QUEUED);
+  });
+
+  it('falha no primeiro job restaura Dispatch READY e items PENDING', async () => {
+    enableQueueFlags();
+    const harness = createHarness({
+      items: [itemRow({ id: 'item-1' }), itemRow({ id: 'item-2' })],
+      totalItems: 2,
+      pendingItems: 2,
+      enqueueResult: () => {
+        throw new Error('Custom Id cannot contain :');
+      },
+    });
+
+    await assert.rejects(
+      () => harness.service.queue('user-1', 'campaign-1', 'dispatch-1'),
+      /Nao foi possivel enfileirar/,
+    );
+
+    assert.equal(harness.getDispatch().status, DispatchStatus.READY);
+    assert.equal(harness.getDispatch().queuedAt, null);
+    for (const item of harness.getItems()) {
+      assert.equal(item.status, DispatchItemStatus.PENDING);
+      assert.equal(item.queueJobId ?? null, null);
+    }
+    assert.ok(
+      harness.auditEvents.some((event) => event.action === 'DISPATCH_QUEUE_FAILED'),
+    );
   });
 
   it('contadores do Dispatch sao atualizados apos o enfileiramento', async () => {
