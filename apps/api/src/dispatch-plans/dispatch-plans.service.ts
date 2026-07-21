@@ -29,8 +29,16 @@ import {
   resolveValidationFinalStatus,
   ValidationSnapshot,
 } from './dispatch-plan-validation.util';
+import {
+  buildSimulationSnapshot,
+  canSimulateDispatchPlan,
+  isSimulationCurrent,
+  normalizeSimulationConfig,
+  DISPATCH_SIMULATION_DEFAULT_TIMEZONE,
+} from './dispatch-plan-simulation.util';
 import { CreateDispatchPlanDto } from './dto/create-dispatch-plan.dto';
 import { ListDispatchPlanRecipientsQueryDto } from './dto/list-dispatch-plan-recipients-query.dto';
+import { SimulateDispatchPlanDto } from './dto/simulate-dispatch-plan.dto';
 import { UpdateDispatchPlanDto } from './dto/update-dispatch-plan.dto';
 import {
   buildDispatchPlanAuditMetadata,
@@ -69,6 +77,9 @@ const dispatchPlanSelect = {
   validationSnapshot: true,
   validatedAt: true,
   validatedVersion: true,
+  simulationSnapshot: true,
+  simulatedAt: true,
+  simulatedVersion: true,
   createdByUserId: true,
   createdAt: true,
   updatedAt: true,
@@ -147,11 +158,30 @@ export class DispatchPlansService {
       validatedVersion: plan.validatedVersion,
       planVersion: plan.version,
     });
+    const canSimulate =
+      canWrite &&
+      canSimulateDispatchPlan({
+        status: plan.status,
+        snapshotCreatedAt: plan.snapshotCreatedAt,
+        totalEligible: plan.totalEligible,
+        validationSnapshot: plan.validationSnapshot,
+        validatedVersion: plan.validatedVersion,
+        planVersion: plan.version,
+      });
+    const simulationIsCurrent = isSimulationCurrent({
+      simulationSnapshot: plan.simulationSnapshot,
+      simulatedVersion: plan.simulatedVersion,
+      validatedVersion: plan.validatedVersion,
+      planVersion: plan.version,
+      status: plan.status,
+      validationIsCurrent,
+    });
 
     return {
       ...plan,
       byEligibilityStatus: this.buildEligibilityStatusCounts(grouped),
       validationIsCurrent,
+      simulationIsCurrent,
       allowedActions: {
         canEdit: canWrite && isDispatchPlanEditable(plan.status),
         canCancel: canWrite && canCancelDispatchPlan(plan.status),
@@ -162,6 +192,8 @@ export class DispatchPlansService {
           canValidateDispatchPlan(plan.status) &&
           Boolean(plan.snapshotCreatedAt),
         canReopen: canWrite && canReopenDispatchPlan(plan.status),
+        canSimulate,
+        canRecalculateSimulation: canSimulate && Boolean(plan.simulationSnapshot),
       },
     };
   }
@@ -312,6 +344,9 @@ export class DispatchPlansService {
           validationSnapshot: Prisma.DbNull,
           validatedAt: null,
           validatedVersion: null,
+          simulationSnapshot: Prisma.DbNull,
+          simulatedAt: null,
+          simulatedVersion: null,
           version: { increment: 1 },
         },
       });
@@ -594,7 +629,10 @@ export class DispatchPlansService {
       bumpVersion ||
       existing.validationSnapshot !== null ||
       existing.validatedAt !== null ||
-      existing.validatedVersion !== null;
+      existing.validatedVersion !== null ||
+      existing.simulationSnapshot !== null ||
+      existing.simulatedAt !== null ||
+      existing.simulatedVersion !== null;
 
     const plan = await this.prisma.dispatchPlan.update({
       where: { id: existing.id },
@@ -615,6 +653,9 @@ export class DispatchPlansService {
               validationSnapshot: Prisma.DbNull,
               validatedAt: null,
               validatedVersion: null,
+              simulationSnapshot: Prisma.DbNull,
+              simulatedAt: null,
+              simulatedVersion: null,
             }
           : {}),
       },
@@ -726,6 +767,9 @@ export class DispatchPlansService {
             validationSnapshot as unknown as Prisma.InputJsonValue,
           validatedAt: checkedAt,
           validatedVersion: existing.version,
+          simulationSnapshot: Prisma.DbNull,
+          simulatedAt: null,
+          simulatedVersion: null,
         },
       });
 
@@ -799,6 +843,9 @@ export class DispatchPlansService {
         validationSnapshot: Prisma.DbNull,
         validatedAt: null,
         validatedVersion: null,
+        simulationSnapshot: Prisma.DbNull,
+        simulatedAt: null,
+        simulatedVersion: null,
       },
     });
 
@@ -829,6 +876,156 @@ export class DispatchPlansService {
       campaign.organizationId,
       campaignId,
     );
+  }
+
+  async simulate(
+    userId: string,
+    campaignId: string,
+    dispatchPlanId: string,
+    dto: SimulateDispatchPlanDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getDispatchPlanOrThrow(
+      dispatchPlanId,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    if (existing.status !== DispatchPlanStatus.VALIDATED) {
+      throw new BadRequestException(
+        'Somente planos VALIDATED podem gerar simulacao',
+      );
+    }
+
+    if (
+      !canSimulateDispatchPlan({
+        status: existing.status,
+        snapshotCreatedAt: existing.snapshotCreatedAt,
+        totalEligible: existing.totalEligible,
+        validationSnapshot: existing.validationSnapshot,
+        validatedVersion: existing.validatedVersion,
+        planVersion: existing.version,
+      })
+    ) {
+      throw new BadRequestException(
+        'O Plano nao possui validacao atual elegivel para simulacao',
+      );
+    }
+
+    const channelAccount = await this.prisma.channelAccount.findFirst({
+      where: {
+        id: existing.channelAccountId,
+        organizationId: campaign.organizationId,
+        campaignId,
+      },
+      select: { id: true },
+    });
+
+    if (!channelAccount) {
+      throw new BadRequestException(
+        'Canal invalido ou nao pertence a esta campanha',
+      );
+    }
+
+    let config;
+    try {
+      config = normalizeSimulationConfig(
+        {
+          messagesPerMinute: dto.messagesPerMinute,
+          minDelaySeconds: dto.minDelaySeconds,
+          maxDelaySeconds: dto.maxDelaySeconds,
+          batchSize: dto.batchSize,
+          pauseBetweenBatchesSeconds: dto.pauseBetweenBatchesSeconds,
+          timezone: dto.timezone,
+          allowedStartTime: dto.allowedStartTime,
+          allowedEndTime: dto.allowedEndTime,
+          allowedDays: dto.allowedDays,
+          plannedStartAt: dto.plannedStartAt,
+        },
+        DISPATCH_SIMULATION_DEFAULT_TIMEZONE,
+      );
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error
+          ? error.message
+          : 'Configuracao de simulacao invalida',
+      );
+    }
+
+    const isRecalculation = existing.simulationSnapshot !== null;
+    const simulatedAt = new Date();
+    const simulationSnapshot = buildSimulationSnapshot({
+      simulatedAt,
+      version: existing.version,
+      totalEligible: existing.totalEligible,
+      config,
+      now: simulatedAt,
+    });
+
+    const persisted = await this.prisma.dispatchPlan.updateMany({
+      where: {
+        id: existing.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: DispatchPlanStatus.VALIDATED,
+        version: existing.version,
+        validatedVersion: existing.version,
+      },
+      data: {
+        simulationSnapshot:
+          simulationSnapshot as unknown as Prisma.InputJsonValue,
+        simulatedAt,
+        simulatedVersion: existing.version,
+      },
+    });
+
+    if (persisted.count !== 1) {
+      throw new ConflictException(
+        'O plano foi alterado durante a simulacao; resultado nao foi persistido',
+      );
+    }
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: isRecalculation
+        ? 'DISPATCH_PLAN_SIMULATION_RECALCULATED'
+        : 'DISPATCH_PLAN_SIMULATED',
+      entityType: 'DispatchPlan',
+      entityId: existing.id,
+      metadata: {
+        dispatchPlanId: existing.id,
+        version: existing.version,
+        totalEligible: existing.totalEligible,
+        requestedMessagesPerMinute:
+          simulationSnapshot.configuration.requestedMessagesPerMinute,
+        effectiveMessagesPerMinute:
+          simulationSnapshot.estimates.effectiveMessagesPerMinute,
+        batchSize: simulationSnapshot.configuration.batchSize,
+        totalBatches: simulationSnapshot.estimates.totalBatches,
+        estimatedActiveDurationSeconds:
+          simulationSnapshot.estimates.estimatedActiveDurationSeconds,
+        estimatedCalendarDurationSeconds:
+          simulationSnapshot.estimates.estimatedCalendarDurationSeconds,
+        estimatedStartAt: simulationSnapshot.estimates.estimatedStartAt,
+        estimatedEndAt: simulationSnapshot.estimates.estimatedEndAt,
+        timezone: simulationSnapshot.configuration.timezone,
+      },
+    });
+
+    const plan = await this.getDispatchPlanOrThrow(
+      existing.id,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    return {
+      ...plan,
+      simulationSnapshot,
+      simulationIsCurrent: true,
+      recalculated: isRecalculation,
+    };
   }
 
   async cancel(userId: string, campaignId: string, dispatchPlanId: string) {

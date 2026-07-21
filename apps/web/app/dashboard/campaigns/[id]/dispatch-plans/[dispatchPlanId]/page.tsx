@@ -31,6 +31,7 @@ import {
 import { canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
 import { DispatchPlanAudience } from './dispatch-plan-audience';
 import { DispatchPlanValidation } from './dispatch-plan-validation';
+import { DispatchPlanSimulation } from './dispatch-plan-simulation';
 
 export default function DispatchPlanDetailPage() {
   const router = useRouter();
@@ -211,6 +212,10 @@ export default function DispatchPlanDetailPage() {
             validatedAt: null,
             validatedVersion: null,
             validationIsCurrent: false,
+            simulationSnapshot: null,
+            simulatedAt: null,
+            simulatedVersion: null,
+            simulationIsCurrent: false,
             status: 'DRAFT',
           }
         : current,
@@ -273,8 +278,8 @@ export default function DispatchPlanDetailPage() {
         </div>
 
         <p className="mt-4 rounded-md border border-[#e6d9a8] bg-[#fff8e1] px-3 py-2 text-sm text-[#6b5a1e]">
-          Nada sera enviado a partir desta tela. Simulacao, aprovacao e execucao
-          permanecem fora desta subetapa.
+          Nada sera enviado a partir desta tela. Aprovacao e execucao permanecem
+          fora desta subetapa.
         </p>
 
         {loading ? (
@@ -400,6 +405,12 @@ export default function DispatchPlanDetailPage() {
             onSnapshotGenerated={onSnapshotGenerated}
           />
           <DispatchPlanValidation
+            campaignId={campaignId}
+            plan={plan}
+            canWrite={canWrite}
+            onPlanUpdated={onPlanUpdated}
+          />
+          <DispatchPlanSimulation
             campaignId={campaignId}
             plan={plan}
             canWrite={canWrite}

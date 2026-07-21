@@ -40,6 +40,9 @@ function plan(overrides: Record<string, unknown> = {}) {
     validationSnapshot: null,
     validatedAt: null,
     validatedVersion: null,
+    simulationSnapshot: null,
+    simulatedAt: null,
+    simulatedVersion: null,
     createdByUserId: 'user-1',
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -899,5 +902,373 @@ describe('DispatchPlansService validation 08.3', () => {
     assert.equal(updated.validatedAt, null);
     assert.equal(updated.validatedVersion, null);
     assert.equal(updated.version, 3);
+  });
+});
+
+function validatedPlan(overrides: Record<string, unknown> = {}) {
+  return plan({
+    status: DispatchPlanStatus.VALIDATED,
+    version: 3,
+    snapshotCreatedAt: new Date('2026-07-21T10:00:00.000Z'),
+    totalEvaluated: 40,
+    totalEligible: 40,
+    totalExcluded: 0,
+    validationSnapshot: { passed: true, summary: { errors: 0 } },
+    validatedAt: new Date('2026-07-21T11:00:00.000Z'),
+    validatedVersion: 3,
+    simulationSnapshot: null,
+    simulatedAt: null,
+    simulatedVersion: null,
+    ...overrides,
+  });
+}
+
+function createSimulationHarness(options: {
+  existingPlan?: ReturnType<typeof plan> | null;
+  denyWrite?: boolean;
+  persistCount?: number;
+  channelMissing?: boolean;
+} = {}) {
+  const currentPlan =
+    options.existingPlan === undefined ? validatedPlan() : options.existingPlan;
+
+  let status = (currentPlan?.status as DispatchPlanStatus) ?? DispatchPlanStatus.VALIDATED;
+  let version = currentPlan?.version ?? 3;
+  let simulationSnapshot: unknown = currentPlan?.simulationSnapshot ?? null;
+  let simulatedAt: Date | null =
+    (currentPlan?.simulatedAt as Date | null | undefined) ?? null;
+  let simulatedVersion: number | null =
+    (currentPlan?.simulatedVersion as number | null | undefined) ?? null;
+  let validationSnapshot: unknown = currentPlan?.validationSnapshot ?? null;
+  let validatedAt: Date | null =
+    (currentPlan?.validatedAt as Date | null | undefined) ?? null;
+  let validatedVersion: number | null =
+    (currentPlan?.validatedVersion as number | null | undefined) ?? null;
+
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const prisma = {
+    campaign: {
+      findUnique: async () => ({
+        id: 'campaign-1',
+        organizationId: 'org-1',
+        status: CampaignStatus.ACTIVE,
+      }),
+    },
+    dispatchPlan: {
+      findFirst: async () => {
+        if (!currentPlan) return null;
+        return {
+          ...currentPlan,
+          status,
+          version,
+          simulationSnapshot,
+          simulatedAt,
+          simulatedVersion,
+          validationSnapshot,
+          validatedAt,
+          validatedVersion,
+        };
+      },
+      updateMany: async (args: {
+        where: Record<string, unknown>;
+        data: Record<string, unknown>;
+      }) => {
+        if (args.data.status === DispatchPlanStatus.DRAFT) {
+          status = DispatchPlanStatus.DRAFT;
+          validationSnapshot = null;
+          validatedAt = null;
+          validatedVersion = null;
+          simulationSnapshot = null;
+          simulatedAt = null;
+          simulatedVersion = null;
+          return { count: 1 };
+        }
+
+        const count = options.persistCount ?? 1;
+        if (count === 1) {
+          simulationSnapshot = args.data.simulationSnapshot;
+          simulatedAt = (args.data.simulatedAt as Date) ?? null;
+          simulatedVersion =
+            (args.data.simulatedVersion as number | null) ?? null;
+        }
+        return { count };
+      },
+      update: async (args: { data: Record<string, unknown> }) => {
+        if (args.data.status) status = args.data.status as DispatchPlanStatus;
+        if ('simulationSnapshot' in args.data) {
+          simulationSnapshot = null;
+          simulatedAt = null;
+          simulatedVersion = null;
+        }
+        if ('validationSnapshot' in args.data) {
+          validationSnapshot = null;
+          validatedAt = null;
+          validatedVersion = null;
+        }
+        if (typeof args.data.version === 'number') version = args.data.version;
+        if (typeof args.data.content === 'string' && currentPlan) {
+          currentPlan.content = args.data.content;
+        }
+        return {
+          ...currentPlan,
+          status,
+          version,
+          simulationSnapshot,
+          simulatedAt,
+          simulatedVersion,
+          validationSnapshot,
+          validatedAt,
+          validatedVersion,
+          content: currentPlan?.content,
+        };
+      },
+    },
+    channelAccount: {
+      findFirst: async () =>
+        options.channelMissing
+          ? null
+          : {
+              id: 'channel-1',
+              campaignId: 'campaign-1',
+              provider: ChannelProvider.WHATSAPP_EVOLUTION,
+              status: ChannelAccountStatus.CONNECTED,
+            },
+    },
+    segment: {
+      findFirst: async () => ({ id: 'segment-1', campaignId: 'campaign-1' }),
+    },
+    dispatchPlanRecipient: {
+      count: async () => 0,
+      groupBy: async () => [],
+    },
+  };
+
+  const access = {
+    requireWriteAccess: async () => {
+      if (options.denyWrite) {
+        throw new ForbiddenException('Permissao insuficiente');
+      }
+      return { role: 'MANAGER' };
+    },
+    requireMembership: async () => ({ role: 'MANAGER' }),
+  };
+
+  const audit = {
+    log: async (event: Record<string, unknown>) => {
+      auditEvents.push(event);
+    },
+  };
+
+  return {
+    service: new DispatchPlansService(
+      prisma as never,
+      access as never,
+      audit as never,
+    ),
+    auditEvents,
+    getSimulationSnapshot: () => simulationSnapshot,
+    getSimulatedVersion: () => simulatedVersion,
+    getVersion: () => version,
+    getStatus: () => status,
+  };
+}
+
+describe('DispatchPlansService simulation 08.4', () => {
+  it('VALIDATED gera simulacao sem incrementar version', async () => {
+    const harness = createSimulationHarness();
+    const result = await harness.service.simulate(
+      'user-1',
+      'campaign-1',
+      'plan-1',
+      { messagesPerMinute: 4 },
+    );
+
+    assert.equal(result.version, 3);
+    assert.equal(result.simulatedVersion, 3);
+    assert.equal(result.recalculated, false);
+    assert.ok(result.simulationSnapshot);
+    assert.equal(
+      harness.auditEvents[0]?.action,
+      'DISPATCH_PLAN_SIMULATED',
+    );
+  });
+
+  it('DRAFT, BLOCKED e CANCELED nao geram simulacao', async () => {
+    await assert.rejects(
+      createSimulationHarness({
+        existingPlan: validatedPlan({ status: DispatchPlanStatus.DRAFT }),
+      }).service.simulate('user-1', 'campaign-1', 'plan-1', {}),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createSimulationHarness({
+        existingPlan: validatedPlan({ status: DispatchPlanStatus.BLOCKED }),
+      }).service.simulate('user-1', 'campaign-1', 'plan-1', {}),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createSimulationHarness({
+        existingPlan: validatedPlan({ status: DispatchPlanStatus.CANCELED }),
+      }).service.simulate('user-1', 'campaign-1', 'plan-1', {}),
+      BadRequestException,
+    );
+  });
+
+  it('validacao desatualizada, snapshot ausente e elegivel zero nao geram', async () => {
+    await assert.rejects(
+      createSimulationHarness({
+        existingPlan: validatedPlan({ validatedVersion: 2 }),
+      }).service.simulate('user-1', 'campaign-1', 'plan-1', {}),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createSimulationHarness({
+        existingPlan: validatedPlan({ snapshotCreatedAt: null }),
+      }).service.simulate('user-1', 'campaign-1', 'plan-1', {}),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createSimulationHarness({
+        existingPlan: validatedPlan({ totalEligible: 0 }),
+      }).service.simulate('user-1', 'campaign-1', 'plan-1', {}),
+      BadRequestException,
+    );
+  });
+
+  it('VIEWER nao gera e plano de outra campanha e rejeitado', async () => {
+    await assert.rejects(
+      createSimulationHarness({ denyWrite: true }).service.simulate(
+        'viewer-1',
+        'campaign-1',
+        'plan-1',
+        {},
+      ),
+      ForbiddenException,
+    );
+    await assert.rejects(
+      createSimulationHarness({ existingPlan: null }).service.simulate(
+        'user-1',
+        'campaign-1',
+        'missing',
+        {},
+      ),
+      NotFoundException,
+    );
+  });
+
+  it('configuracao invalida e velocidade acima do maximo sao rejeitadas', async () => {
+    await assert.rejects(
+      createSimulationHarness().service.simulate('user-1', 'campaign-1', 'plan-1', {
+        messagesPerMinute: 100,
+      }),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createSimulationHarness().service.simulate('user-1', 'campaign-1', 'plan-1', {
+        minDelaySeconds: 30,
+        maxDelaySeconds: 10,
+      }),
+      BadRequestException,
+    );
+  });
+
+  it('recalcular substitui snapshot e registra evento especifico', async () => {
+    const harness = createSimulationHarness({
+      existingPlan: validatedPlan({
+        simulationSnapshot: { version: 3, audience: { totalEligible: 40 } },
+        simulatedAt: new Date('2026-07-20T00:00:00.000Z'),
+        simulatedVersion: 3,
+      }),
+    });
+
+    const result = await harness.service.simulate(
+      'user-1',
+      'campaign-1',
+      'plan-1',
+      { batchSize: 10 },
+    );
+
+    assert.equal(result.recalculated, true);
+    assert.equal(result.version, 3);
+    assert.equal(
+      harness.auditEvents[0]?.action,
+      'DISPATCH_PLAN_SIMULATION_RECALCULATED',
+    );
+    assert.equal(
+      (harness.getSimulationSnapshot() as { estimates: { totalBatches: number } })
+        .estimates.totalBatches,
+      4,
+    );
+  });
+
+  it('mudanca concorrente impede persistencia', async () => {
+    await assert.rejects(
+      createSimulationHarness({ persistCount: 0 }).service.simulate(
+        'user-1',
+        'campaign-1',
+        'plan-1',
+        {},
+      ),
+      ConflictException,
+    );
+  });
+
+  it('reopen e edicao limpam simulacao', async () => {
+    const reopenHarness = createSimulationHarness({
+      existingPlan: validatedPlan({
+        simulationSnapshot: { version: 3 },
+        simulatedAt: new Date(),
+        simulatedVersion: 3,
+      }),
+    });
+    const reopened = await reopenHarness.service.reopen(
+      'user-1',
+      'campaign-1',
+      'plan-1',
+    );
+    assert.equal(reopened.status, DispatchPlanStatus.DRAFT);
+    assert.equal(reopened.simulationSnapshot, null);
+    assert.equal(reopened.simulatedVersion, null);
+
+    const editHarness = createSimulationHarness({
+      existingPlan: validatedPlan({
+        status: DispatchPlanStatus.BLOCKED,
+        simulationSnapshot: { version: 3 },
+        simulatedAt: new Date(),
+        simulatedVersion: 3,
+        validationSnapshot: { passed: false },
+        validatedVersion: 3,
+      }),
+    });
+    const updated = await editHarness.service.update(
+      'user-1',
+      'campaign-1',
+      'plan-1',
+      { content: 'Alterado' },
+    );
+    assert.equal(updated.simulationSnapshot, null);
+    assert.equal(updated.simulatedVersion, null);
+  });
+
+  it('metadata de audit nao contem conteudo ou telefones', async () => {
+    const harness = createSimulationHarness();
+    await harness.service.simulate('user-1', 'campaign-1', 'plan-1', {});
+    const metadata = harness.auditEvents[0]?.metadata as Record<string, unknown>;
+    assert.equal('content' in metadata, false);
+    assert.equal('phoneNumber' in metadata, false);
+    assert.equal(typeof metadata.estimatedActiveDurationSeconds, 'number');
+  });
+
+  it('nao depende de Evolution, BullMQ, Dispatch ou envio', async () => {
+    const harness = createSimulationHarness();
+    const result = await harness.service.simulate(
+      'user-1',
+      'campaign-1',
+      'plan-1',
+      {},
+    );
+    assert.equal(result.simulationIsCurrent, true);
+    assert.equal(result.status, DispatchPlanStatus.VALIDATED);
   });
 });

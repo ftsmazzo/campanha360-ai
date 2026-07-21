@@ -708,6 +708,59 @@ export type DispatchPlanAllowedActions = {
   canGenerateSnapshot: boolean;
   canValidate: boolean;
   canReopen: boolean;
+  canSimulate?: boolean;
+  canRecalculateSimulation?: boolean;
+};
+
+export type DispatchPlanSimulationWarning = {
+  code: string;
+  message: string;
+};
+
+export type DispatchPlanSimulationSnapshot = {
+  simulatedAt: string;
+  version: number;
+  audience: {
+    totalEligible: number;
+  };
+  configuration: {
+    requestedMessagesPerMinute: number;
+    minDelaySeconds: number;
+    maxDelaySeconds: number;
+    batchSize: number;
+    pauseBetweenBatchesSeconds: number;
+    timezone: string;
+    allowedStartTime: string;
+    allowedEndTime: string;
+    allowedDays: number[];
+    plannedStartAt: string | null;
+  };
+  estimates: {
+    effectiveMessagesPerMinute: number;
+    limitingFactor: 'RATE_LIMIT' | 'DELAY' | 'BOTH';
+    totalBatches: number;
+    totalBatchPauses: number;
+    lastBatchSize?: number;
+    estimatedActiveDurationSeconds: number;
+    estimatedCalendarDurationSeconds: number;
+    estimatedMessagesPerHour: number;
+    estimatedStartAt: string;
+    estimatedEndAt: string;
+  };
+  warnings: DispatchPlanSimulationWarning[];
+};
+
+export type SimulateDispatchPlanPayload = {
+  messagesPerMinute?: number;
+  minDelaySeconds?: number;
+  maxDelaySeconds?: number;
+  batchSize?: number;
+  pauseBetweenBatchesSeconds?: number;
+  timezone?: string;
+  allowedStartTime?: string;
+  allowedEndTime?: string;
+  allowedDays?: number[];
+  plannedStartAt?: string;
 };
 
 export type DispatchPlanItem = {
@@ -731,7 +784,12 @@ export type DispatchPlanItem = {
   validatedAt?: string | null;
   validatedVersion?: number | null;
   validationIsCurrent?: boolean;
+  simulationSnapshot?: DispatchPlanSimulationSnapshot | null;
+  simulatedAt?: string | null;
+  simulatedVersion?: number | null;
+  simulationIsCurrent?: boolean;
   allowedActions?: DispatchPlanAllowedActions;
+  recalculated?: boolean;
   byEligibilityStatus?: Record<
     DispatchPlanRecipientEligibilityStatus,
     number
@@ -855,6 +913,19 @@ export function reopenDispatchPlan(
   return request<DispatchPlanItem>(
     `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/reopen`,
     { method: 'POST' },
+    token,
+  );
+}
+
+export function simulateDispatchPlan(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+  payload: SimulateDispatchPlanPayload = {},
+) {
+  return request<DispatchPlanItem>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/simulate`,
+    { method: 'POST', body: JSON.stringify(payload) },
     token,
   );
 }

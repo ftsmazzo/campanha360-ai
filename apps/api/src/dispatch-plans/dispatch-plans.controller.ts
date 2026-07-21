@@ -12,6 +12,7 @@ import { AuthUser, CurrentUser } from '../auth/decorators/current-user.decorator
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateDispatchPlanDto } from './dto/create-dispatch-plan.dto';
 import { ListDispatchPlanRecipientsQueryDto } from './dto/list-dispatch-plan-recipients-query.dto';
+import { SimulateDispatchPlanDto } from './dto/simulate-dispatch-plan.dto';
 import { UpdateDispatchPlanDto } from './dto/update-dispatch-plan.dto';
 import { DispatchPlansService } from './dispatch-plans.service';
 
@@ -98,6 +99,21 @@ export class DispatchPlansController {
       user.id,
       campaignId,
       dispatchPlanId,
+    );
+  }
+
+  @Post(':dispatchPlanId/simulate')
+  simulate(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchPlanId') dispatchPlanId: string,
+    @Body() dto: SimulateDispatchPlanDto,
+  ) {
+    return this.dispatchPlansService.simulate(
+      user.id,
+      campaignId,
+      dispatchPlanId,
+      dto,
     );
   }
 

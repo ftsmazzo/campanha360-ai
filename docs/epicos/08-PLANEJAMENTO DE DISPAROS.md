@@ -1425,8 +1425,39 @@ Fora desta subetapa (intencional):
 - `Dispatch` / `DispatchItem`;
 - BullMQ, Worker, Evolution send, retry, pausa ou execucao.
 
+## Estado da 08.4
+
+**Concluida no codigo (simulacao de disparo).**
+
+Entregue:
+
+- campos `simulationSnapshot`, `simulatedAt` e `simulatedVersion`;
+- migration `20260721153000_dispatch_plan_simulation`;
+- defaults e limites centralizados em `dispatch-plan-simulation.constants.ts`;
+- defaults: 4 msg/min, delay 10-20s, lote 20, pausa 120s, janela 08:00-20:00,
+  dias seg-sab, timezone fallback `America/Sao_Paulo`;
+- velocidade efetiva = min(messagesPerMinute, 60 / intervaloMedio);
+- limitingFactor: `RATE_LIMIT` | `DELAY` | `BOTH`;
+- lotes: `ceil(totalEligible / batchSize)`, pausas = lotes - 1;
+- duracao ativa (delays + pausas) e de calendario (com janela/timezone);
+- `POST /campaigns/:campaignId/dispatch-plans/:dispatchPlanId/simulate`;
+- detalhe com `simulationIsCurrent`, `canSimulate`,
+  `canRecalculateSimulation`;
+- invalidacao em reopen, edicao relevante, regeneracao de snapshot e nova
+  validacao;
+- etapa Simulacao na Web (`dispatch-plan-simulation.tsx`);
+- audit `DISPATCH_PLAN_SIMULATED` e
+  `DISPATCH_PLAN_SIMULATION_RECALCULATED`;
+- testes de calculo e de servico da 08.4.
+
+Fora desta subetapa (intencional):
+
+- aprovacao 08.5;
+- `Dispatch` / `DispatchItem`;
+- BullMQ, Worker, Evolution send, agendamento real, retry, pausa ou execucao.
+
 ## Proxima subetapa
 
 Implementar apenas:
 
-**08.4 — Simulacao de Disparo**
+**08.5 — Aprovacao e Imutabilidade**

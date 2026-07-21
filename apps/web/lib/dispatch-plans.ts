@@ -46,6 +46,70 @@ export function getValidationSeverityLabel(severity: string): string {
   }
 }
 
+export function getWeekdayLabel(day: number): string {
+  switch (day) {
+    case 1:
+      return 'Segunda';
+    case 2:
+      return 'Terca';
+    case 3:
+      return 'Quarta';
+    case 4:
+      return 'Quinta';
+    case 5:
+      return 'Sexta';
+    case 6:
+      return 'Sabado';
+    case 7:
+      return 'Domingo';
+    default:
+      return String(day);
+  }
+}
+
+export function getLimitingFactorLabel(factor: string): string {
+  switch (factor) {
+    case 'RATE_LIMIT':
+      return 'Limite de taxa';
+    case 'DELAY':
+      return 'Intervalo medio';
+    case 'BOTH':
+      return 'Taxa e intervalo';
+    default:
+      return factor;
+  }
+}
+
+export function formatDurationSeconds(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.round(totalSeconds));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const rest = seconds % 60;
+  if (hours > 0) {
+    return `${hours}h ${minutes}min`;
+  }
+  if (minutes > 0) {
+    return `${minutes}min ${rest}s`;
+  }
+  return `${rest}s`;
+}
+
+export function formatZonedDateTime(
+  iso: string | null | undefined,
+  timeZone: string,
+): string {
+  if (!iso) return '—';
+  try {
+    return new Intl.DateTimeFormat('pt-BR', {
+      timeZone,
+      dateStyle: 'short',
+      timeStyle: 'short',
+    }).format(new Date(iso));
+  } catch {
+    return new Date(iso).toLocaleString('pt-BR');
+  }
+}
+
 export function getDispatchPlanStatusBadgeClass(status: string): string {
   switch (status) {
     case 'DRAFT':
