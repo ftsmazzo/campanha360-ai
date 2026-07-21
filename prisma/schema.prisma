@@ -445,6 +445,8 @@ model DispatchPlan {
   snapshotCreatedAt DateTime?
   filtersSnapshot  Json?
   validationSnapshot Json?
+  validatedAt      DateTime?
+  validatedVersion Int?
   createdByUserId  String
   organization     Organization       @relation(fields: [organizationId], references: [id])
   campaign         Campaign           @relation(fields: [campaignId], references: [id])

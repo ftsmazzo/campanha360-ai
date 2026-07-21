@@ -24,11 +24,13 @@ import {
 } from '../../../../../../lib/api';
 import {
   canCancelDispatchPlanStatus,
+  getDispatchPlanStatusBadgeClass,
   getDispatchPlanStatusLabel,
-  isDispatchPlanDraft,
+  isDispatchPlanEditableStatus,
 } from '../../../../../../lib/dispatch-plans';
 import { canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
 import { DispatchPlanAudience } from './dispatch-plan-audience';
+import { DispatchPlanValidation } from './dispatch-plan-validation';
 
 export default function DispatchPlanDetailPage() {
   const router = useRouter();
@@ -56,7 +58,11 @@ export default function DispatchPlanDetailPage() {
     ? canWriteRole(getOrganizationRole(user?.memberships, campaign.organizationId))
     : false;
 
-  const editable = plan ? isDispatchPlanDraft(plan.status) && canWrite : false;
+  const editable = plan
+    ? isDispatchPlanEditableStatus(plan.status) &&
+      canWrite &&
+      plan.status !== 'VALIDATING'
+    : false;
   const cancelable =
     plan && canWrite ? canCancelDispatchPlanStatus(plan.status) : false;
 
@@ -202,9 +208,22 @@ export default function DispatchPlanDetailPage() {
             totalExcluded: summary.totalExcluded,
             byEligibilityStatus: summary.byEligibilityStatus,
             validationSnapshot: null,
+            validatedAt: null,
+            validatedVersion: null,
+            validationIsCurrent: false,
+            status: 'DRAFT',
           }
         : current,
     );
+  }
+
+  function onPlanUpdated(updated: DispatchPlanItem) {
+    setPlan(updated);
+    setName(updated.name);
+    setDescription(updated.description ?? '');
+    setSegmentId(updated.segmentId);
+    setChannelAccountId(updated.channelAccountId);
+    setContent(updated.content);
   }
 
   return (
@@ -223,8 +242,13 @@ export default function DispatchPlanDetailPage() {
             ) : null}
             {plan ? (
               <p className="mt-2 text-sm text-[#65655f]">
-                Status: {getDispatchPlanStatusLabel(plan.status)} · versao {plan.version} ·
-                criado por {plan.createdBy.name}
+                Status:{' '}
+                <span
+                  className={`inline-flex rounded-md border px-2 py-0.5 text-xs font-medium ${getDispatchPlanStatusBadgeClass(plan.status)}`}
+                >
+                  {getDispatchPlanStatusLabel(plan.status)}
+                </span>{' '}
+                · versao {plan.version} · criado por {plan.createdBy.name}
               </p>
             ) : null}
           </div>
@@ -249,7 +273,7 @@ export default function DispatchPlanDetailPage() {
         </div>
 
         <p className="mt-4 rounded-md border border-[#e6d9a8] bg-[#fff8e1] px-3 py-2 text-sm text-[#6b5a1e]">
-          Nada sera enviado a partir desta tela. Validacao, simulacao e aprovacao
+          Nada sera enviado a partir desta tela. Simulacao, aprovacao e execucao
           permanecem fora desta subetapa.
         </p>
 
@@ -360,7 +384,11 @@ export default function DispatchPlanDetailPage() {
             ) : (
               <p className="text-sm text-[#65655f]">
                 {canWrite
-                  ? 'Este plano nao esta em rascunho e nao pode ser editado.'
+                  ? plan.status === 'VALIDATED'
+                    ? 'Plano validado. Use Reabrir para edicao antes de alterar.'
+                    : plan.status === 'VALIDATING'
+                      ? 'Validacao em andamento. Aguarde a conclusao.'
+                      : 'Este plano nao pode ser editado no status atual.'
                   : 'Voce possui acesso somente leitura a este plano.'}
               </p>
             )}
@@ -370,6 +398,12 @@ export default function DispatchPlanDetailPage() {
             plan={plan}
             canWrite={canWrite}
             onSnapshotGenerated={onSnapshotGenerated}
+          />
+          <DispatchPlanValidation
+            campaignId={campaignId}
+            plan={plan}
+            canWrite={canWrite}
+            onPlanUpdated={onPlanUpdated}
           />
           </>
         ) : null}

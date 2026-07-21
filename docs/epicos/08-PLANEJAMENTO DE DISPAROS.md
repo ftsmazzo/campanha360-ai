@@ -1376,8 +1376,57 @@ Fora desta subetapa (intencional):
 - `Dispatch` e `DispatchItem`;
 - BullMQ, Worker, Evolution send, retry, pausa ou execucao.
 
+## Estado da 08.3
+
+**Concluida no codigo (blindagens avancadas / validacao explicita).**
+
+Entregue:
+
+- campos `validatedAt` e `validatedVersion` no `DispatchPlan`;
+- migration `20260721143000_dispatch_plan_validation`;
+- persistencia estruturada em `validationSnapshot` (checks com `code`,
+  `severity`, `passed`, `title`, `message`);
+- fluxo `DRAFT -> VALIDATING -> VALIDATED|BLOCKED`, com retorno a `DRAFT` em
+  falha tecnica;
+- `POST /campaigns/:campaignId/dispatch-plans/:dispatchPlanId/validate`;
+- `POST /campaigns/:campaignId/dispatch-plans/:dispatchPlanId/reopen`
+  (apenas `VALIDATED` e `BLOCKED`);
+- detalhe do Plano com `validationIsCurrent` e `allowedActions`;
+- edicao de `BLOCKED` (e invalidacao) voltando para `DRAFT` e limpando
+  validacao; `VALIDATED` so edita apos reopen;
+- regeneracao de snapshot continua so em `DRAFT` e invalida validacao;
+- constantes centrais:
+  - `DISPATCH_PLAN_INITIAL_ELIGIBLE_LIMIT = 100` (ERROR acima);
+  - `DISPATCH_PLAN_CONTENT_MAX_LENGTH = 4000`;
+- blindagens implementadas (ERROR / WARNING / INFO), entre outras:
+  - `PLAN_IS_DRAFT`, `SNAPSHOT_EXISTS`, `AUDIENCE_NOT_EMPTY`,
+    `ELIGIBLE_AUDIENCE_NOT_EMPTY`, `SNAPSHOT_TOTALS_CONSISTENT`;
+  - `SEGMENT_EXISTS`, `SEGMENT_BELONGS_TO_CAMPAIGN`;
+  - `CHANNEL_EXISTS`, `CHANNEL_BELONGS_TO_CAMPAIGN`,
+    `CHANNEL_PROVIDER_SUPPORTED`, `CHANNEL_NOT_ARCHIVED`,
+    `CHANNEL_CONNECTED`;
+  - `CONTENT_NOT_EMPTY`, `CONTENT_LENGTH_VALID`, `CONTENT_NEAR_LIMIT`;
+  - `RECIPIENTS_EXIST`, `NO_ELIGIBLE_OPT_OUT`, `NO_ELIGIBLE_BLOCKED`,
+    `NO_ELIGIBLE_DELETED`, `NO_ELIGIBLE_INVALID_DESTINATION`,
+    `ELIGIBLE_DESTINATIONS_UNIQUE`, `RECIPIENT_TOTALS_MATCH_PLAN`;
+  - `CAMPAIGN_EXISTS`, `CAMPAIGN_AVAILABLE`, `USER_CAN_VALIDATE`;
+  - `VOLUME_WITHIN_INITIAL_LIMIT`, `HIGH_EXCLUSION_RATIO`,
+    `MANY_UNNAMED_CONTACTS`, infos de publico/canal/versao;
+- audit: `DISPATCH_PLAN_VALIDATION_STARTED`, `DISPATCH_PLAN_VALIDATED`,
+  `DISPATCH_PLAN_BLOCKED`, `DISPATCH_PLAN_REOPENED` (metadata sem conteudo,
+  telefones ou credenciais);
+- etapa Blindagens na Web (`dispatch-plan-validation.tsx`);
+- testes de utilitarios e servico da 08.3.
+
+Fora desta subetapa (intencional):
+
+- simulacao 08.4;
+- aprovacao 08.5;
+- `Dispatch` / `DispatchItem`;
+- BullMQ, Worker, Evolution send, retry, pausa ou execucao.
+
 ## Proxima subetapa
 
 Implementar apenas:
 
-**08.3 — Blindagens Avancadas**
+**08.4 — Simulacao de Disparo**

@@ -25,8 +25,42 @@ export function isDispatchPlanDraft(status: string): boolean {
   return status === 'DRAFT';
 }
 
+export function isDispatchPlanEditableStatus(status: string): boolean {
+  return status === 'DRAFT' || status === 'BLOCKED';
+}
+
 export function canCancelDispatchPlanStatus(status: string): boolean {
   return status === 'DRAFT' || status === 'BLOCKED' || status === 'VALIDATED';
+}
+
+export function getValidationSeverityLabel(severity: string): string {
+  switch (severity) {
+    case 'ERROR':
+      return 'Erro';
+    case 'WARNING':
+      return 'Aviso';
+    case 'INFO':
+      return 'Info';
+    default:
+      return severity;
+  }
+}
+
+export function getDispatchPlanStatusBadgeClass(status: string): string {
+  switch (status) {
+    case 'DRAFT':
+      return 'border-[#c9c8c0] bg-[#eee] text-[#24382b]';
+    case 'VALIDATING':
+      return 'border-[#c9d7ee] bg-[#eef4fc] text-[#1e3a5f]';
+    case 'VALIDATED':
+      return 'border-green-200 bg-green-50 text-green-800';
+    case 'BLOCKED':
+      return 'border-red-200 bg-red-50 text-red-800';
+    case 'CANCELED':
+      return 'border-[#ddd] bg-[#f5f5f5] text-[#65655f]';
+    default:
+      return 'border-[#c9c8c0] bg-white text-[#24382b]';
+  }
 }
 
 export function getRecipientEligibilityLabel(status: string): string {

@@ -9,6 +9,7 @@ import {
 import {
   buildDispatchPlanAuditMetadata,
   canCancelDispatchPlan,
+  canValidateDispatchPlan,
   isAllowedDispatchProvider,
   isArchivedChannelAccount,
   isDispatchPlanEditable,
@@ -17,10 +18,18 @@ import {
 } from './dispatch-plan.util';
 
 describe('dispatch-plan.util', () => {
-  it('permite editar apenas DRAFT', () => {
+  it('permite editar DRAFT e BLOCKED', () => {
     assert.equal(isDispatchPlanEditable(DispatchPlanStatus.DRAFT), true);
+    assert.equal(isDispatchPlanEditable(DispatchPlanStatus.BLOCKED), true);
     assert.equal(isDispatchPlanEditable(DispatchPlanStatus.VALIDATED), false);
     assert.equal(isDispatchPlanEditable(DispatchPlanStatus.CANCELED), false);
+  });
+
+  it('permite validar apenas DRAFT', () => {
+    assert.equal(canValidateDispatchPlan(DispatchPlanStatus.DRAFT), true);
+    assert.equal(canValidateDispatchPlan(DispatchPlanStatus.BLOCKED), false);
+    assert.equal(canValidateDispatchPlan(DispatchPlanStatus.VALIDATED), false);
+    assert.equal(canValidateDispatchPlan(DispatchPlanStatus.CANCELED), false);
   });
 
   it('permite cancelar DRAFT, BLOCKED e VALIDATED', () => {

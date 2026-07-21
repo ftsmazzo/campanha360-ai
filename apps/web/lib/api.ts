@@ -671,6 +671,45 @@ export type DispatchPlanRecipientEligibilityStatus =
   | 'EXCLUDED_POLICY'
   | 'EXCLUDED_OTHER';
 
+export type DispatchPlanValidationCheck = {
+  code: string;
+  severity: 'ERROR' | 'WARNING' | 'INFO';
+  passed: boolean;
+  title: string;
+  message: string;
+  details?: Record<string, unknown>;
+};
+
+export type DispatchPlanValidationSnapshot = {
+  checkedAt: string;
+  version: number;
+  passed: boolean;
+  summary: {
+    errors: number;
+    warnings: number;
+    infos: number;
+  };
+  audience: {
+    totalEvaluated: number;
+    totalEligible: number;
+    totalExcluded: number;
+  };
+  channel: {
+    channelAccountId: string | null;
+    provider: string | null;
+    status: string | null;
+  };
+  checks: DispatchPlanValidationCheck[];
+};
+
+export type DispatchPlanAllowedActions = {
+  canEdit: boolean;
+  canCancel: boolean;
+  canGenerateSnapshot: boolean;
+  canValidate: boolean;
+  canReopen: boolean;
+};
+
 export type DispatchPlanItem = {
   id: string;
   organizationId: string;
@@ -688,7 +727,11 @@ export type DispatchPlanItem = {
   totalExcluded: number;
   snapshotCreatedAt: string | null;
   filtersSnapshot: SegmentFilters | null;
-  validationSnapshot: Record<string, unknown> | null;
+  validationSnapshot: DispatchPlanValidationSnapshot | null;
+  validatedAt?: string | null;
+  validatedVersion?: number | null;
+  validationIsCurrent?: boolean;
+  allowedActions?: DispatchPlanAllowedActions;
   byEligibilityStatus?: Record<
     DispatchPlanRecipientEligibilityStatus,
     number
@@ -710,6 +753,12 @@ export type DispatchPlanItem = {
     id: string;
     name: string;
     email: string;
+  };
+  passed?: boolean;
+  summary?: {
+    errors: number;
+    warnings: number;
+    infos: number;
   };
 };
 
@@ -781,6 +830,30 @@ export function cancelDispatchPlan(
 ) {
   return request<DispatchPlanItem>(
     `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/cancel`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function validateDispatchPlan(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+) {
+  return request<DispatchPlanItem>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/validate`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function reopenDispatchPlan(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+) {
+  return request<DispatchPlanItem>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/reopen`,
     { method: 'POST' },
     token,
   );

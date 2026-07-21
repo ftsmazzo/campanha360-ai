@@ -12,6 +12,17 @@ export const DISPATCH_PLAN_CANCELABLE_STATUSES: DispatchPlanStatus[] = [
 ];
 
 export function isDispatchPlanEditable(status: DispatchPlanStatus | string): boolean {
+  return (
+    status === DispatchPlanStatus.DRAFT ||
+    status === 'DRAFT' ||
+    status === DispatchPlanStatus.BLOCKED ||
+    status === 'BLOCKED'
+  );
+}
+
+export function canValidateDispatchPlan(
+  status: DispatchPlanStatus | string,
+): boolean {
   return status === DispatchPlanStatus.DRAFT || status === 'DRAFT';
 }
 

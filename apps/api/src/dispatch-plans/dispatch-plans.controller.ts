@@ -75,6 +75,32 @@ export class DispatchPlansController {
     );
   }
 
+  @Post(':dispatchPlanId/validate')
+  validate(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchPlanId') dispatchPlanId: string,
+  ) {
+    return this.dispatchPlansService.validate(
+      user.id,
+      campaignId,
+      dispatchPlanId,
+    );
+  }
+
+  @Post(':dispatchPlanId/reopen')
+  reopen(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchPlanId') dispatchPlanId: string,
+  ) {
+    return this.dispatchPlansService.reopen(
+      user.id,
+      campaignId,
+      dispatchPlanId,
+    );
+  }
+
   @Put(':dispatchPlanId')
   update(
     @CurrentUser() user: AuthUser,
