@@ -811,26 +811,48 @@ describe('DispatchesService 09.2 prepare', () => {
     assert.equal('destination' in listed.items[0]!, false);
     assert.equal('body' in listed.items[0]!, false);
 
+    process.env.DISPATCH_ENGINE_ENABLED = 'true';
+    process.env.DISPATCH_QUEUE_ENABLED = 'true';
+    try {
+      const detail = await harness.service.getById(
+        'user-1',
+        'campaign-1',
+        'dispatch-1',
+      );
+      assert.equal(detail.allowedActions.canPrepare, false);
+      assert.equal(detail.itemSummary.PENDING, 2);
+      assert.equal(detail.allowedActions.canQueue, true);
+
+      const legacy = createPrepareHarness({
+        status: DispatchStatus.READY,
+        totalItems: 2,
+        requiringRedistribution: true,
+      });
+      const legacyDetail = await legacy.service.getById(
+        'user-1',
+        'campaign-1',
+        'dispatch-1',
+      );
+      assert.equal(legacyDetail.allowedActions.canQueue, false);
+    } finally {
+      delete process.env.DISPATCH_ENGINE_ENABLED;
+      delete process.env.DISPATCH_QUEUE_ENABLED;
+    }
+  });
+
+  it('canQueue exige flags de motor/fila habilitadas', async () => {
+    delete process.env.DISPATCH_ENGINE_ENABLED;
+    delete process.env.DISPATCH_QUEUE_ENABLED;
+    const harness = createPrepareHarness({
+      status: DispatchStatus.READY,
+      totalItems: 2,
+    });
     const detail = await harness.service.getById(
       'user-1',
       'campaign-1',
       'dispatch-1',
     );
-    assert.equal(detail.allowedActions.canPrepare, false);
-    assert.equal(detail.itemSummary.PENDING, 2);
-    assert.equal(detail.allowedActions.canQueue, true);
-
-    const legacy = createPrepareHarness({
-      status: DispatchStatus.READY,
-      totalItems: 2,
-      requiringRedistribution: true,
-    });
-    const legacyDetail = await legacy.service.getById(
-      'user-1',
-      'campaign-1',
-      'dispatch-1',
-    );
-    assert.equal(legacyDetail.allowedActions.canQueue, false);
+    assert.equal(detail.allowedActions.canQueue, false);
   });
 
   it('requiringRedistribution bloqueia canQueue', async () => {

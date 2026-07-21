@@ -142,6 +142,7 @@ describe('dispatch-prepare.util', () => {
       }),
       false,
     );
+    // canQueue (09.3) tambem exige DISPATCH_ENGINE_ENABLED/DISPATCH_QUEUE_ENABLED.
     assert.equal(
       buildDispatchAllowedActionsForPrepare({
         role: MembershipRole.OWNER,
@@ -149,17 +150,49 @@ describe('dispatch-prepare.util', () => {
         totalItems: 10,
         requiringRedistribution: false,
       }).canQueue,
-      true,
-    );
-    assert.equal(
-      buildDispatchAllowedActionsForPrepare({
-        role: MembershipRole.OWNER,
-        status: DispatchStatus.READY,
-        totalItems: 10,
-        requiringRedistribution: true,
-      }).canQueue,
       false,
     );
+    process.env.DISPATCH_ENGINE_ENABLED = 'true';
+    process.env.DISPATCH_QUEUE_ENABLED = 'true';
+    try {
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.OWNER,
+          status: DispatchStatus.READY,
+          totalItems: 10,
+          requiringRedistribution: false,
+        }).canQueue,
+        true,
+      );
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.OWNER,
+          status: DispatchStatus.READY,
+          totalItems: 10,
+          requiringRedistribution: true,
+        }).canQueue,
+        false,
+      );
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.OWNER,
+          status: DispatchStatus.QUEUED,
+          totalItems: 10,
+        }).canReconcile,
+        true,
+      );
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.MANAGER,
+          status: DispatchStatus.QUEUED,
+          totalItems: 10,
+        }).canReconcile,
+        false,
+      );
+    } finally {
+      delete process.env.DISPATCH_ENGINE_ENABLED;
+      delete process.env.DISPATCH_QUEUE_ENABLED;
+    }
   });
 
   it('rejeita plano nao APPROVED indiretamente via contagem divergente', () => {

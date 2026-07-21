@@ -1,5 +1,69 @@
-async function bootstrap() {
-  console.log('Campanha360 worker ready');
+import { Worker } from 'bullmq';
+import {
+  DISPATCH_SEND_QUEUE_NAME,
+  isDispatchEngineEnabled,
+  isDispatchQueueEnabled,
+} from '@campanha360/shared';
+import { createRedisConnection } from './redis';
+import { prisma } from './prisma';
+import {
+  processDispatchSendJob,
+  type DispatchSendProcessResult,
+} from './dispatch-send.processor';
+
+async function bootstrap(): Promise<void> {
+  console.log('Campanha360 worker iniciando...');
+
+  if (!isDispatchEngineEnabled() || !isDispatchQueueEnabled()) {
+    console.log(
+      '[worker] DISPATCH_ENGINE_ENABLED/DISPATCH_QUEUE_ENABLED desabilitados; worker tecnico permanece ocioso (nao consome a fila dispatch-send).',
+    );
+    return;
+  }
+
+  const connection = createRedisConnection();
+
+  const worker = new Worker(
+    DISPATCH_SEND_QUEUE_NAME,
+    async (job) => processDispatchSendJob(job, { prisma }),
+    {
+      connection,
+      concurrency: 5,
+    },
+  );
+
+  worker.on('ready', () => {
+    console.log(`[worker] pronto para consumir a fila "${DISPATCH_SEND_QUEUE_NAME}" (modo tecnico 09.3, sem envio)`);
+  });
+
+  worker.on('completed', (job, result: DispatchSendProcessResult) => {
+    console.log(
+      `[worker] job concluido id=${job.id} action=${result?.action ?? 'desconhecida'}`,
+    );
+  });
+
+  worker.on('failed', (job, error) => {
+    console.error(`[worker] job falhou id=${job?.id ?? 'desconhecido'} erro=${error.message}`);
+  });
+
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[worker] sinal ${signal} recebido, encerrando graciosamente...`);
+    try {
+      await worker.close();
+    } finally {
+      await Promise.allSettled([prisma.$disconnect(), connection.quit()]);
+      process.exit(0);
+    }
+  };
+
+  process.on('SIGTERM', () => void shutdown('SIGTERM'));
+  process.on('SIGINT', () => void shutdown('SIGINT'));
 }
 
-bootstrap();
+bootstrap().catch((error) => {
+  console.error('[worker] falha fatal ao iniciar', error);
+  process.exit(1);
+});

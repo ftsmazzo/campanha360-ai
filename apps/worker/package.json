@@ -6,9 +6,12 @@
     "dev": "tsx watch src/main.ts",
     "build": "tsc",
     "start": "node dist/main.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:dispatch-send-processor": "npx --yes tsx --test src/dispatch-send.processor.spec.ts"
   },
   "dependencies": {
+    "@campanha360/shared": "*",
+    "@prisma/client": "^6.0.0",
     "bullmq": "^5.30.0",
     "ioredis": "^5.4.0"
   },

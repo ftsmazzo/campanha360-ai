@@ -7,6 +7,7 @@ import {
   DispatchStatus,
   MembershipRole,
 } from '@prisma/client';
+import { isDispatchEngineEnabled, isDispatchQueueEnabled } from '@campanha360/shared';
 import {
   isAllowedDispatchProvider,
   isArchivedChannelAccount,
@@ -264,10 +265,27 @@ export function buildDispatchAllowedActionsForPrepare(input: {
   totalItems: number;
   requiringRedistribution?: boolean;
 }) {
+  const canApprove =
+    input.role === MembershipRole.OWNER ||
+    input.role === MembershipRole.ADMIN ||
+    input.role === 'OWNER' ||
+    input.role === 'ADMIN';
+
+  // 09.3: enfileirar exige OWNER/ADMIN, Dispatch READY com items PENDING,
+  // sem pendencia de redistribuicao e as flags de motor/fila habilitadas
+  // (DISPATCH_ENGINE_ENABLED e DISPATCH_QUEUE_ENABLED). DISPATCH_SEND_ENABLED
+  // nao afeta canQueue: enfileirar tecnicamente nao envia mensagens.
   const canQueue =
+    canApprove &&
     (input.status === DispatchStatus.READY || input.status === 'READY') &&
     input.totalItems > 0 &&
-    !input.requiringRedistribution;
+    !input.requiringRedistribution &&
+    isDispatchEngineEnabled() &&
+    isDispatchQueueEnabled();
+
+  const canReconcile =
+    canApprove &&
+    (input.status === DispatchStatus.QUEUED || input.status === 'QUEUED');
 
   return {
     canView: true,
@@ -279,7 +297,7 @@ export function buildDispatchAllowedActionsForPrepare(input: {
     canResume: false,
     canCancel: false,
     canEmergencyStop: false,
-    canReconcile: false,
+    canReconcile,
     canRetryFailedItems: false,
   };
 }

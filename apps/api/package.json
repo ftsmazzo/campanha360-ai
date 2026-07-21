@@ -17,10 +17,12 @@
     "test:contact-removal": "npx --yes tsx --test src/contacts/contact-removal.util.spec.ts",
     "test:segments": "npx --yes tsx --test src/segments/segment-filters.util.spec.ts",
     "test:segment-prevalidate": "npx --yes tsx --test src/segments/segment-prevalidate.util.spec.ts",
-    "test:dispatches": "npx --yes tsx --test src/dispatches/dispatch.util.spec.ts src/dispatches/dispatch-prepare.util.spec.ts src/dispatches/dispatch-channel-selection.util.spec.ts src/dispatches/dispatches.service.spec.ts",
-    "test:dispatch-plans": "npx --yes tsx --test src/dispatch-plans/dispatch-plan.util.spec.ts src/dispatch-plans/dispatch-plan-snapshot.util.spec.ts src/dispatch-plans/dispatch-plan-validation.util.spec.ts src/dispatch-plans/dispatch-plan-simulation.util.spec.ts src/dispatch-plans/dispatch-plan-approval.util.spec.ts src/dispatch-plans/dispatch-plan-protection.constants.spec.ts src/dispatch-plans/dispatch-plan-multi-instance.util.spec.ts src/dispatch-plans/dispatch-plans.service.spec.ts"
+    "test:dispatches": "npx --yes tsx --test src/dispatches/dispatch.util.spec.ts src/dispatches/dispatch-prepare.util.spec.ts src/dispatches/dispatch-channel-selection.util.spec.ts src/dispatches/dispatches.service.spec.ts src/dispatches/dispatch-queue.util.spec.ts src/dispatches/dispatch-queue.service.spec.ts",
+    "test:dispatch-plans": "npx --yes tsx --test src/dispatch-plans/dispatch-plan.util.spec.ts src/dispatch-plans/dispatch-plan-snapshot.util.spec.ts src/dispatch-plans/dispatch-plan-validation.util.spec.ts src/dispatch-plans/dispatch-plan-simulation.util.spec.ts src/dispatch-plans/dispatch-plan-approval.util.spec.ts src/dispatch-plans/dispatch-plan-protection.constants.spec.ts src/dispatch-plans/dispatch-plan-multi-instance.util.spec.ts src/dispatch-plans/dispatch-plans.service.spec.ts",
+    "test:dispatch-send-job": "npx --yes tsx --test src/dispatches/dispatch-send.job.spec.ts"
   },
   "dependencies": {
+    "@campanha360/shared": "*",
     "@nestjs/common": "^10.4.0",
     "@nestjs/config": "^3.3.0",
     "@nestjs/core": "^10.4.0",
@@ -29,8 +31,10 @@
     "@nestjs/platform-express": "^10.4.0",
     "@prisma/client": "^6.0.0",
     "bcryptjs": "^2.4.3",
+    "bullmq": "^5.80.9",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "ioredis": "^5.11.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "reflect-metadata": "^0.2.2",

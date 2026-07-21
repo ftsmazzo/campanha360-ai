@@ -13,11 +13,15 @@ import { CreateDispatchDto } from './dto/create-dispatch.dto';
 import { ListDispatchItemsQueryDto } from './dto/list-dispatch-items-query.dto';
 import { ListDispatchesQueryDto } from './dto/list-dispatches-query.dto';
 import { DispatchesService } from './dispatches.service';
+import { DispatchQueueService } from './dispatch-queue.service';
 
 @Controller('campaigns/:campaignId/dispatches')
 @UseGuards(JwtAuthGuard)
 export class DispatchesController {
-  constructor(private readonly dispatchesService: DispatchesService) {}
+  constructor(
+    private readonly dispatchesService: DispatchesService,
+    private readonly dispatchQueueService: DispatchQueueService,
+  ) {}
 
   @Get()
   list(
@@ -57,6 +61,28 @@ export class DispatchesController {
     @Param('dispatchId') dispatchId: string,
   ) {
     return this.dispatchesService.prepare(user.id, campaignId, dispatchId);
+  }
+
+  @Post(':dispatchId/queue')
+  queue(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+  ) {
+    return this.dispatchQueueService.queue(user.id, campaignId, dispatchId);
+  }
+
+  @Post(':dispatchId/reconcile-queue')
+  reconcileQueue(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+  ) {
+    return this.dispatchQueueService.reconcileQueue(
+      user.id,
+      campaignId,
+      dispatchId,
+    );
   }
 
   @Get(':dispatchId/items')

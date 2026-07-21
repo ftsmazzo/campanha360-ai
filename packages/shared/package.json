@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "npx --yes tsx --test src/dispatch-queue.constants.spec.ts src/dispatch-feature-flags.spec.ts src/dispatch-channel-selection.spec.ts src/dispatch-window.util.spec.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.0"

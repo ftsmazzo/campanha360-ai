@@ -997,6 +997,27 @@ A subetapa estará concluída quando:
 - estados são consistentes;
 - testes de Redis/BullMQ passam.
 
+### Status da 09.3 — CONCLUÍDA
+
+Implementação registrada:
+
+- **Fila:** nome final `dispatch-send` (BullMQ + IORedis), definida em `packages/shared/src/dispatch-queue.constants.ts` e reexportada em `apps/api/src/dispatches/dispatch-queue.constants.ts`.
+- **Payload do job:** 4 campos apenas — `dispatchId`, `dispatchItemId`, `organizationId`, `campaignId`. `channelAccountId` **não** trafega no job (o Worker relê o canal do banco a cada execução, permitindo failover sem invalidar jobs já enfileirados); `assertDispatchSendJobPayload` rejeita qualquer chave adicional (destino/conteúdo/token/telefone).
+- **Job ID:** determinístico, `dispatch:{dispatchId}:item:{dispatchItemId}` (`buildDispatchSendJobId`). `DispatchSendProducer.enqueueItem` é idempotente: se o job já existe (não removido), retorna `{ status: 'duplicate' }` sem duplicar.
+- **Flags:** `DISPATCH_ENGINE_ENABLED`, `DISPATCH_QUEUE_ENABLED` e `DISPATCH_SEND_ENABLED` (todas com default `false`; `DISPATCH_SEND_ENABLED` nunca deve ter default `true`). `assertDispatchQueueAllowed()` bloqueia o enfileiramento se motor/fila estiverem off.
+- **Serviço de enfileiramento:** `DispatchQueueService` (`apps/api/src/dispatches/dispatch-queue.service.ts`), com `queue()` e `reconcileQueue()`. `queue()` exige OWNER/ADMIN, Dispatch `READY` com `pendingItems > 0`, `requiringRedistribution = false` e `approvalSnapshot` com `protectionPolicy`/`distributionStrategy`/`multiInstance` presentes (aprovação 09.plan). Claim condicional `READY → QUEUED` (`updateMany` com verificação de `count`).
+- **Estados:** `Dispatch READY → QUEUED`; `DispatchItem PENDING → QUEUED` (com `queuedAt`, `queueJobId`, `queueName`, `queueCreatedAt`) **ou** `PENDING → SCHEDULED` quando não há canal elegível no momento (`lastQueueError = 'NO_ELIGIBLE_CHANNEL'`, reagendado para `now + 5min`). O Dispatch permanece `QUEUED` sempre que houver ao menos um job criado ou item `SCHEDULED` pendente de retomada (reconcile); só volta a `READY` no caso defensivo de nada ter progredido.
+- **Failover no enfileiramento:** antes de cada item, valida se o `DispatchChannel` atribuído está apto (enabled, não arquivado, `ChannelAccount.status = CONNECTED`, `operationalStatus = READY`, fora de cooldown, com capacidade). Se não estiver apto (inclui items sem `dispatchChannelId`), tenta `selectNextEligibleDispatchChannel` + `buildReassignmentUpdate` (shared) antes de enfileirar; se nenhum canal elegível existir, o item é diferido (não bloqueia o restante do lote).
+- **Paginação:** cursor por `id`, lotes de 100 items `PENDING` por vez, processados até esgotar.
+- **Worker técnico (`apps/worker`):** `dispatch-send.processor.ts` consome o job, valida tenancy/estado do Dispatch (aborta silenciosamente em status terminal: `PAUSING/PAUSED/CANCELED/EMERGENCY_STOPPED/FAILED/COMPLETED/COMPLETED_WITH_ERRORS`), aplica lock atômico (`PROCESSING`, `lockToken`, `lockExpiresAt = now+30s`), revalida/faz failover de canal, valida a janela operacional (`isWithinOperationalWindow`/`resolveNextOperationalWindowStart`, shared) e — se tudo OK — marca `technicalValidatedAt = now` e devolve o item para `QUEUED` (aguardando 09.4). **Nunca** chama a Evolution, nunca seta `providerMessageId`/`sentAt`/`SENT`. Se `DISPATCH_SEND_ENABLED=true`, apenas loga aviso e segue no caminho técnico (envio real só em 09.4).
+- **Reconciliação:** `POST /campaigns/:campaignId/dispatches/:dispatchId/reconcile-queue` (`DispatchQueueService.reconcileQueue`) — reenfileira `QUEUED` sem `queueJobId` e libera/reenfileira `PROCESSING` com `lockExpiresAt` expirado. Não chama a Evolution.
+- **Rotas:** `POST .../dispatches/:dispatchId/queue` e `POST .../dispatches/:dispatchId/reconcile-queue` (ambas OWNER/ADMIN via `requireApproveAccess`).
+- **Permissões/ações:** `buildDispatchAllowedActionsForPrepare` — `canQueue` exige OWNER/ADMIN, `READY`, `totalItems > 0`, `!requiringRedistribution`, `DISPATCH_ENGINE_ENABLED` e `DISPATCH_QUEUE_ENABLED`; `canReconcile` exige OWNER/ADMIN e status `QUEUED`.
+- **Exposição de dados (API):** `listItems`/`getItemById` passaram a expor `dispatchChannelId`, `originalDispatchChannelId`, `reassignmentCount`, `scheduledAt`, `queuedAt`, `technicalValidatedAt`, `queueJobId` (sem destino em texto puro — mantém `destinationMasked`).
+- **Audit log:** `DISPATCH_QUEUE_REQUESTED`, `DISPATCH_QUEUED`, `DISPATCH_QUEUE_FAILED`, `DISPATCH_QUEUE_RECONCILED` (metadata sem conteúdo/destino).
+- **Testes:** `dispatch-queue.util.spec.ts`, `dispatch-queue.service.spec.ts` (API) e `dispatch-send.processor.spec.ts` (Worker) cobrindo OWNER/MANAGER, `requiringRedistribution`, `DRAFT`, failover, ausência de canal, job duplicado, contadores, audit e o caminho `DISPATCH_SEND_ENABLED=false`.
+- **Fora de escopo (mantido para 09.4):** chamada à Evolution, `providerMessageId`, `sentAt`, status `SENT`.
+
 ---
 
 # 10. Subetapa 09.4 — Worker de Envio
@@ -2718,10 +2739,10 @@ O Épico 10 não deve alterar as garantias do Motor de Disparo.
 
 ## 45. Próxima ação prática
 
-A **09.1 — Entidade Dispatch** e a **09.2 — Materialização dos DispatchItems** estão concluídas.
+A **09.1 — Entidade Dispatch**, a **09.2 — Materialização dos DispatchItems** e a **09.3 — Preparação e Enfileiramento** estão concluídas.
 
 A próxima implementação deve ser apenas:
 
-**09.3 — Fila BullMQ e enfileiramento**
+**09.4 — Worker de Envio**
 
-Sem chamar Evolution para envio em massa.
+Ativar o envio real via adapter Evolution (usando `DISPATCH_SEND_ENABLED`), reaproveitando o Worker técnico da 09.3 (lock, failover, janela operacional) e substituindo a validação técnica pelo envio efetivo (`providerMessageId`, `sentAt`, `SENT`).

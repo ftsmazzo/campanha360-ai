@@ -1049,6 +1049,7 @@ export type DispatchAllowedActions = {
   canView: boolean;
   canPrepare: boolean;
   canQueue: boolean;
+  canRedistribute?: boolean;
   canStart: boolean;
   canPause: boolean;
   canResume: boolean;
@@ -1203,16 +1204,34 @@ export type DispatchItemListEntry = {
   status: DispatchItemStatus;
   attemptCount: number;
   maxAttempts: number;
+  dispatchChannelId?: string | null;
+  originalDispatchChannelId?: string | null;
+  reassignmentCount?: number;
   scheduledAt: string | null;
   queuedAt: string | null;
   startedAt: string | null;
   sentAt: string | null;
   failedAt: string | null;
   skippedAt: string | null;
+  technicalValidatedAt?: string | null;
+  queueJobId?: string | null;
   errorCategory: string | null;
   errorCode: string | null;
   contentHash: string | null;
   createdAt: string;
+};
+
+export type QueueDispatchResponse = {
+  dispatchId: string;
+  status: DispatchStatus;
+  totalItems: number;
+  jobsCreated: number;
+  itemsReassigned: number;
+  itemsDeferred: number;
+  itemsBlocked: number;
+  totalQueued: number;
+  queuedAt: string;
+  queueName: string;
 };
 
 export type ListDispatchItemsResponse = {
@@ -1337,6 +1356,36 @@ export function redistributeDispatch(
 ) {
   return request<DispatchDetail>(
     `/campaigns/${campaignId}/dispatches/${dispatchId}/redistribute`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function queueDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<QueueDispatchResponse>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/queue`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function reconcileDispatchQueue(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<{
+    dispatchId: string;
+    itemsRequeued: number;
+    itemsUnlocked: number;
+    candidatesWithoutJob: number;
+    candidatesStaleLock: number;
+  }>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/reconcile-queue`,
     { method: 'POST' },
     token,
   );

@@ -10,6 +10,7 @@ import {
   CampaignItem,
   DispatchDetail,
   DispatchItemListEntry,
+  QueueDispatchResponse,
   clearStoredToken,
   fetchCampaign,
   fetchDispatch,
@@ -17,6 +18,7 @@ import {
   fetchMe,
   getStoredToken,
   prepareDispatch,
+  queueDispatch,
   redistributeDispatch,
 } from '../../../../../../lib/api';
 import {
@@ -49,7 +51,12 @@ export default function DispatchDetailPage() {
   const [loading, setLoading] = useState(true);
   const [preparing, setPreparing] = useState(false);
   const [redistributing, setRedistributing] = useState(false);
+  const [queuing, setQueuing] = useState(false);
   const [showPrepareConfirm, setShowPrepareConfirm] = useState(false);
+  const [showQueueConfirm, setShowQueueConfirm] = useState(false);
+  const [queueResult, setQueueResult] = useState<QueueDispatchResponse | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
@@ -184,6 +191,37 @@ export default function DispatchDetailPage() {
     }
   }
 
+  async function onQueue() {
+    const token = getStoredToken();
+    if (!token) return;
+    setQueuing(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await queueDispatch(token, campaignId, dispatchId);
+      setQueueResult(result);
+      setShowQueueConfirm(false);
+      setSuccess(
+        `Fila criada: ${result.jobsCreated} job(s), ${result.itemsReassigned} realocado(s), ${result.itemsDeferred} adiado(s).`,
+      );
+      await reload();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setError(err.message || 'Enfileiramento ja em andamento ou concluido.');
+        setShowQueueConfirm(false);
+        await reload();
+      } else {
+        setError(
+          err instanceof ApiError
+            ? err.message
+            : 'Nao foi possivel enfileirar os destinatarios',
+        );
+      }
+    } finally {
+      setQueuing(false);
+    }
+  }
+
   const configuration = dispatch?.configurationSnapshot;
   const content = dispatch?.contentSnapshot;
   const timezone = configuration?.timezone ?? 'America/Sao_Paulo';
@@ -192,6 +230,8 @@ export default function DispatchDetailPage() {
     : [];
   const canPrepareAction =
     canApprove && (dispatch?.allowedActions?.canPrepare ?? false);
+  const canQueueAction =
+    canApprove && (dispatch?.allowedActions?.canQueue ?? false);
 
   return (
     <DashboardShell userName={user?.name}>
@@ -199,7 +239,7 @@ export default function DispatchDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-sm font-medium uppercase tracking-wide text-[#65655f]">
-              Etapa 09.2 — materializacao de items
+              Etapa 09.3 — fila operacional tecnica
             </p>
             <h2 className="mt-2 text-2xl font-semibold text-[#151515]">
               {dispatch?.name ?? 'Disparo'}
@@ -327,8 +367,7 @@ export default function DispatchDetailPage() {
 
             {dispatch.status === 'READY' ? (
               <div className="rounded-md border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900">
-                Os destinatarios estao preparados. O enfileiramento sera
-                implementado na subetapa 09.3.
+                Os destinatarios estao preparados e prontos para a fila operacional.
                 <p className="mt-2">
                   Publico aprovado: {dispatch.approvedAudience.totalEligible} ·
                   Items preparados: {dispatch.totalItems} · Pendentes:{' '}
@@ -337,6 +376,31 @@ export default function DispatchDetailPage() {
                     ? ` · Preparado em ${new Date(dispatch.preparedAt).toLocaleString('pt-BR')}`
                     : ''}
                 </p>
+              </div>
+            ) : null}
+
+            {dispatch.status === 'QUEUED' ? (
+              <div className="rounded-md border border-[#c9d7ee] bg-[#eef4fc] px-4 py-3 text-sm text-[#1e3a5f]">
+                <p className="font-semibold">Fila operacional criada</p>
+                <p className="mt-1">
+                  A fila foi criada em modo tecnico. O envio real sera
+                  implementado na subetapa 09.4.
+                </p>
+                <p className="mt-2">
+                  Enfileirados: {dispatch.queuedItems} · Pendentes:{' '}
+                  {dispatch.pendingItems}
+                  {dispatch.queuedAt
+                    ? ` · Enfileirado em ${new Date(dispatch.queuedAt).toLocaleString('pt-BR')}`
+                    : ''}
+                </p>
+                {queueResult ? (
+                  <p className="mt-2 text-xs">
+                    Jobs: {queueResult.jobsCreated} · Realocados:{' '}
+                    {queueResult.itemsReassigned} · Adiados:{' '}
+                    {queueResult.itemsDeferred} · Bloqueados:{' '}
+                    {queueResult.itemsBlocked} · Fila: {queueResult.queueName}
+                  </p>
+                ) : null}
               </div>
             ) : null}
 
@@ -349,6 +413,19 @@ export default function DispatchDetailPage() {
                   onClick={() => setShowPrepareConfirm(true)}
                 >
                   Preparar destinatarios
+                </button>
+              </div>
+            ) : null}
+
+            {canQueueAction ? (
+              <div>
+                <button
+                  type="button"
+                  className="rounded-md bg-[#1e3a5f] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  disabled={queuing}
+                  onClick={() => setShowQueueConfirm(true)}
+                >
+                  {queuing ? 'Enfileirando...' : 'Enfileirar destinatarios'}
                 </button>
               </div>
             ) : null}
@@ -377,6 +454,36 @@ export default function DispatchDetailPage() {
                     className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm"
                     disabled={preparing}
                     onClick={() => setShowPrepareConfirm(false)}
+                  >
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {showQueueConfirm ? (
+              <div className="rounded-md border border-[#1e3a5f] bg-white p-4">
+                <h4 className="font-semibold text-[#151515]">
+                  Confirmar enfileiramento
+                </h4>
+                <p className="mt-2 text-sm text-[#24382b]">
+                  Os destinatarios preparados serao adicionados a fila
+                  operacional. Nesta etapa nenhuma mensagem sera enviada.
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md bg-[#1e3a5f] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    disabled={queuing}
+                    onClick={onQueue}
+                  >
+                    {queuing ? 'Enfileirando...' : 'Confirmar enfileiramento'}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm"
+                    disabled={queuing}
+                    onClick={() => setShowQueueConfirm(false)}
                   >
                     Voltar
                   </button>
@@ -553,8 +660,11 @@ export default function DispatchDetailPage() {
                         <th className="px-2 py-2 font-medium">Contato</th>
                         <th className="px-2 py-2 font-medium">Destino</th>
                         <th className="px-2 py-2 font-medium">Status</th>
-                        <th className="px-2 py-2 font-medium">Tentativas</th>
-                        <th className="px-2 py-2 font-medium">Criacao</th>
+                        <th className="px-2 py-2 font-medium">Instancia</th>
+                        <th className="px-2 py-2 font-medium">Realocacoes</th>
+                        <th className="px-2 py-2 font-medium">Agendado</th>
+                        <th className="px-2 py-2 font-medium">Fila</th>
+                        <th className="px-2 py-2 font-medium">Tecnico</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -572,11 +682,35 @@ export default function DispatchDetailPage() {
                           <td className="px-2 py-2">
                             {getDispatchItemStatusLabel(item.status)}
                           </td>
+                          <td className="px-2 py-2 font-mono text-xs">
+                            {item.dispatchChannelId
+                              ? `${item.dispatchChannelId.slice(0, 8)}…`
+                              : '—'}
+                            {item.originalDispatchChannelId &&
+                            item.originalDispatchChannelId !==
+                              item.dispatchChannelId
+                              ? ` (orig. ${item.originalDispatchChannelId.slice(0, 8)}…)`
+                              : ''}
+                          </td>
                           <td className="px-2 py-2">
-                            {item.attemptCount}/{item.maxAttempts}
+                            {item.reassignmentCount ?? 0}
                           </td>
                           <td className="px-2 py-2 text-xs">
-                            {new Date(item.createdAt).toLocaleString('pt-BR')}
+                            {item.scheduledAt
+                              ? new Date(item.scheduledAt).toLocaleString('pt-BR')
+                              : '—'}
+                          </td>
+                          <td className="px-2 py-2 text-xs">
+                            {item.queuedAt
+                              ? new Date(item.queuedAt).toLocaleString('pt-BR')
+                              : '—'}
+                          </td>
+                          <td className="px-2 py-2 text-xs">
+                            {item.technicalValidatedAt
+                              ? new Date(
+                                  item.technicalValidatedAt,
+                                ).toLocaleString('pt-BR')
+                              : '—'}
                           </td>
                         </tr>
                       ))}
@@ -621,21 +755,9 @@ export default function DispatchDetailPage() {
             <section className="rounded-md border border-[#deddd4] bg-white p-4">
               <h3 className="font-semibold text-[#151515]">Proximas etapas</h3>
               <p className="mt-2 text-sm text-[#65655f]">
-                Enfileirar e iniciar permanecem indisponiveis ate a subetapa
-                09.3+.
+                O envio real (Worker Evolution) permanece na subetapa 09.4.
+                Nesta etapa nao ha botao &quot;Iniciar envio&quot;.
               </p>
-              <button
-                type="button"
-                className="mt-3 rounded-md border border-[#c9c8c0] px-4 py-2 text-sm text-[#65655f]"
-                disabled={dispatch.requiringRedistribution === true}
-                title={
-                  dispatch.requiringRedistribution
-                    ? 'Redistribua antes de enfileirar'
-                    : undefined
-                }
-              >
-                Enfileirar (indisponivel)
-              </button>
             </section>
           </div>
         ) : null}
