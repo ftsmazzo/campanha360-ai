@@ -5,11 +5,13 @@ import {
   Param,
   Post,
   Put,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AuthUser, CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateDispatchPlanDto } from './dto/create-dispatch-plan.dto';
+import { ListDispatchPlanRecipientsQueryDto } from './dto/list-dispatch-plan-recipients-query.dto';
 import { UpdateDispatchPlanDto } from './dto/update-dispatch-plan.dto';
 import { DispatchPlansService } from './dispatch-plans.service';
 
@@ -39,6 +41,34 @@ export class DispatchPlansController {
     @Param('dispatchPlanId') dispatchPlanId: string,
   ) {
     return this.dispatchPlansService.getById(
+      user.id,
+      campaignId,
+      dispatchPlanId,
+    );
+  }
+
+  @Get(':dispatchPlanId/recipients')
+  listRecipients(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchPlanId') dispatchPlanId: string,
+    @Query() query: ListDispatchPlanRecipientsQueryDto,
+  ) {
+    return this.dispatchPlansService.listRecipients(
+      user.id,
+      campaignId,
+      dispatchPlanId,
+      query,
+    );
+  }
+
+  @Post(':dispatchPlanId/snapshot')
+  generateSnapshot(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchPlanId') dispatchPlanId: string,
+  ) {
+    return this.dispatchPlansService.generateSnapshot(
       user.id,
       campaignId,
       dispatchPlanId,

@@ -75,7 +75,7 @@ export default function CampaignDispatchPlansPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-sm font-medium uppercase tracking-wide text-[#65655f]">
-              Etapa 08.1 — rascunho
+              Etapa 08.2 — snapshot do público
             </p>
             <h2 className="mt-2 text-2xl font-semibold text-[#151515]">
               Planos de disparo
@@ -84,8 +84,8 @@ export default function CampaignDispatchPlansPage() {
               <p className="mt-1 text-sm text-[#65655f]">{campaign.name}</p>
             ) : null}
             <p className="mt-2 max-w-2xl text-sm text-[#65655f]">
-              Crie rascunhos vinculados a segmento e canal. Nada sera enviado nesta etapa —
-              sem snapshot, fila, Worker ou envio real.
+              Crie rascunhos e congele explicitamente o público do segmento. Nada sera
+              enviado nesta etapa — sem fila, Worker ou envio real.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">

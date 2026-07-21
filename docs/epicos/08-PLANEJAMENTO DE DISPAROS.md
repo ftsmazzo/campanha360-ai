@@ -1329,15 +1329,55 @@ Fora desta subetapa (intencional):
 - aprovacao;
 - fila / Worker / envio.
 
+## Estado da 08.2
+
+**Concluida no codigo (snapshot persistido do publico).**
+
+Entregue:
+
+- enum `DispatchPlanRecipientEligibilityStatus`;
+- modelo `DispatchPlanRecipient`, com tenancy, snapshots JSON, indices e
+  restricao unica por Plano/contato/destino;
+- campos agregados e snapshots reservados no `DispatchPlan`;
+- migration `20260721133000_dispatch_plan_recipients`;
+- `POST /campaigns/:campaignId/dispatch-plans/:dispatchPlanId/snapshot`;
+- `GET /campaigns/:campaignId/dispatch-plans/:dispatchPlanId/recipients`,
+  paginada e filtravel;
+- resolucao estrutural pelos mesmos filtros usados na pre-validacao 07.1;
+- classificacao de elegiveis, opt-out, bloqueados, removidos, destinos
+  invalidos, duplicados e contatos sem canal WhatsApp ativo;
+- `contactSnapshot`, `consentSnapshot` e `optOutSnapshot` apenas com dados
+  reais e necessarios;
+- regeneracao atomica em `DRAFT`, com substituicao integral dos recipients,
+  incremento de versao e limpeza de `validationSnapshot`;
+- audit `DISPATCH_PLAN_SNAPSHOT_CREATED` e
+  `DISPATCH_PLAN_SNAPSHOT_REGENERATED`, sem contatos, telefones, conteudo ou
+  filtros completos no metadata;
+- etapa Publico na pagina de detalhe, com resumo, distribuicao, busca,
+  filtros e tabela paginada;
+- testes unitarios e de servico da geracao, elegibilidade, tenancy,
+  regeneracao e paginacao.
+
+Limitacoes atuais:
+
+- snapshot disponivel somente para Planos em `DRAFT`;
+- limite tecnico atual de 5.000 contatos avaliados por geracao, alinhado ao
+  teto ja usado pela pre-validacao 07.1;
+- somente destino WhatsApp em canal `WHATSAPP_EVOLUTION`;
+- `validationSnapshot` permanece reservado e sempre e limpo na regeneracao;
+- a elegibilidade congelada nao substitui a revalidacao de ultima milha
+  prevista para o futuro Worker.
+
+Fora desta subetapa (intencional):
+
+- blindagens e estados da 08.3;
+- simulacao;
+- aprovacao ou rejeicao;
+- `Dispatch` e `DispatchItem`;
+- BullMQ, Worker, Evolution send, retry, pausa ou execucao.
+
 ## Proxima subetapa
 
 Implementar apenas:
 
-**08.2 — Snapshot do Publico**
-
-O Cursor deve:
-
-- criar `DispatchPlanRecipient`;
-- gerar snapshot por acao explicita;
-- registrar elegiveis e excluidos;
-- nao validar, simular, aprovar nem enviar.
+**08.3 — Blindagens Avancadas**

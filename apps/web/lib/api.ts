@@ -660,6 +660,17 @@ export type DispatchPlanStatus =
   | 'EXPIRED'
   | 'CANCELED';
 
+export type DispatchPlanRecipientEligibilityStatus =
+  | 'ELIGIBLE'
+  | 'EXCLUDED_OPT_OUT'
+  | 'EXCLUDED_BLOCKED'
+  | 'EXCLUDED_DELETED'
+  | 'EXCLUDED_INVALID_DESTINATION'
+  | 'EXCLUDED_DUPLICATE'
+  | 'EXCLUDED_NO_CHANNEL'
+  | 'EXCLUDED_POLICY'
+  | 'EXCLUDED_OTHER';
+
 export type DispatchPlanItem = {
   id: string;
   organizationId: string;
@@ -672,6 +683,16 @@ export type DispatchPlanItem = {
   content: string;
   status: DispatchPlanStatus;
   version: number;
+  totalEvaluated: number;
+  totalEligible: number;
+  totalExcluded: number;
+  snapshotCreatedAt: string | null;
+  filtersSnapshot: SegmentFilters | null;
+  validationSnapshot: Record<string, unknown> | null;
+  byEligibilityStatus?: Record<
+    DispatchPlanRecipientEligibilityStatus,
+    number
+  >;
   createdByUserId: string;
   createdAt: string;
   updatedAt: string;
@@ -761,6 +782,110 @@ export function cancelDispatchPlan(
   return request<DispatchPlanItem>(
     `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/cancel`,
     { method: 'POST' },
+    token,
+  );
+}
+
+export type DispatchPlanSnapshotSummary = {
+  dispatchPlanId: string;
+  version: number;
+  snapshotCreatedAt: string;
+  totalEvaluated: number;
+  totalEligible: number;
+  totalExcluded: number;
+  byEligibilityStatus: Record<
+    DispatchPlanRecipientEligibilityStatus,
+    number
+  >;
+  regenerated: boolean;
+};
+
+export type DispatchPlanRecipientItem = {
+  id: string;
+  contactId: string;
+  destination: string;
+  normalizedDestination: string;
+  eligibilityStatus: DispatchPlanRecipientEligibilityStatus;
+  exclusionReason: string | null;
+  contactSnapshot: {
+    name: string | null;
+    originalPhone: string | null;
+    normalizedPhone: string | null;
+    city: string | null;
+    neighborhood: string | null;
+    operationalStatus: string;
+    source: string | null;
+    tags: Array<{ id: string; name: string; color: string | null }>;
+    assignedTo: { id: string; name: string } | null;
+  };
+  consentSnapshot: Record<string, unknown> | null;
+  optOutSnapshot: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type DispatchPlanRecipientsResponse = {
+  recipients: DispatchPlanRecipientItem[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+  totals: {
+    totalEvaluated: number;
+    totalEligible: number;
+    totalExcluded: number;
+    byEligibilityStatus: Record<
+      DispatchPlanRecipientEligibilityStatus,
+      number
+    >;
+  };
+  filters: {
+    eligibilityStatus:
+      | DispatchPlanRecipientEligibilityStatus
+      | 'EXCLUDED'
+      | null;
+    search: string | null;
+  };
+};
+
+export function generateDispatchPlanSnapshot(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+) {
+  return request<DispatchPlanSnapshotSummary>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/snapshot`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function fetchDispatchPlanRecipients(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+  filters: {
+    page?: number;
+    limit?: number;
+    eligibilityStatus?:
+      | DispatchPlanRecipientEligibilityStatus
+      | 'EXCLUDED';
+    search?: string;
+  } = {},
+) {
+  const params = new URLSearchParams();
+  if (filters.page) params.set('page', String(filters.page));
+  if (filters.limit) params.set('limit', String(filters.limit));
+  if (filters.eligibilityStatus) {
+    params.set('eligibilityStatus', filters.eligibilityStatus);
+  }
+  if (filters.search?.trim()) params.set('search', filters.search.trim());
+  const query = params.toString();
+
+  return request<DispatchPlanRecipientsResponse>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/recipients${query ? `?${query}` : ''}`,
+    {},
     token,
   );
 }

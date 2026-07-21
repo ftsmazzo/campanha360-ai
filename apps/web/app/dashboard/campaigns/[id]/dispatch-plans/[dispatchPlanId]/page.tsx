@@ -10,6 +10,7 @@ import {
   CampaignItem,
   ChannelAccountItem,
   DispatchPlanItem,
+  DispatchPlanSnapshotSummary,
   SegmentItem,
   cancelDispatchPlan,
   clearStoredToken,
@@ -27,6 +28,7 @@ import {
   isDispatchPlanDraft,
 } from '../../../../../../lib/dispatch-plans';
 import { canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
+import { DispatchPlanAudience } from './dispatch-plan-audience';
 
 export default function DispatchPlanDetailPage() {
   const router = useRouter();
@@ -188,6 +190,23 @@ export default function DispatchPlanDetailPage() {
     }
   }
 
+  function onSnapshotGenerated(summary: DispatchPlanSnapshotSummary) {
+    setPlan((current) =>
+      current
+        ? {
+            ...current,
+            version: summary.version,
+            snapshotCreatedAt: summary.snapshotCreatedAt,
+            totalEvaluated: summary.totalEvaluated,
+            totalEligible: summary.totalEligible,
+            totalExcluded: summary.totalExcluded,
+            byEligibilityStatus: summary.byEligibilityStatus,
+            validationSnapshot: null,
+          }
+        : current,
+    );
+  }
+
   return (
     <DashboardShell userName={user?.name}>
       <div className="rounded-md border border-[#deddd4] bg-[#f7f6f1] p-6">
@@ -230,8 +249,8 @@ export default function DispatchPlanDetailPage() {
         </div>
 
         <p className="mt-4 rounded-md border border-[#e6d9a8] bg-[#fff8e1] px-3 py-2 text-sm text-[#6b5a1e]">
-          Nada sera enviado a partir desta tela. Snapshot, validacao, simulacao e aprovacao
-          virao nas proximas subetapas.
+          Nada sera enviado a partir desta tela. Validacao, simulacao e aprovacao
+          permanecem fora desta subetapa.
         </p>
 
         {loading ? (
@@ -249,6 +268,7 @@ export default function DispatchPlanDetailPage() {
         ) : null}
 
         {!loading && plan ? (
+          <>
           <form className="mt-6 space-y-4" onSubmit={onSubmit}>
             <label className="block text-sm text-[#24382b]">
               Nome
@@ -345,6 +365,13 @@ export default function DispatchPlanDetailPage() {
               </p>
             )}
           </form>
+          <DispatchPlanAudience
+            campaignId={campaignId}
+            plan={plan}
+            canWrite={canWrite}
+            onSnapshotGenerated={onSnapshotGenerated}
+          />
+          </>
         ) : null}
       </div>
     </DashboardShell>
