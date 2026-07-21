@@ -30,7 +30,9 @@ import {
   getDistributionStrategyLabel,
   getPlanChannelStageLabel,
   getProtectionProfileLabel,
+  hasMultiInstanceCapacityDeficit,
   isDispatchPlanEditableStatus,
+  resolveMultiInstanceConsolidated,
 } from '../../../../../../lib/dispatch-plans';
 import { canApproveRole, canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
 import { DispatchPlanAudience } from './dispatch-plan-audience';
@@ -298,21 +300,11 @@ export default function DispatchPlanDetailPage() {
   const policy = plan?.protectionPolicySnapshot;
   const multiInstanceConsolidated = useMemo((): MultiInstanceConsolidated | null => {
     if (!plan) return null;
-    const approvalCapacity = plan.approvalSnapshot?.multiInstance?.capacity;
-    if (approvalCapacity) return approvalCapacity;
-    const simulationMulti = plan.simulationSnapshot?.multiInstance;
-    if (simulationMulti) return simulationMulti;
-    const capacityCheck = plan.validationSnapshot?.checks.find(
-      (check) => check.code === 'MULTI_INSTANCE_CAPACITY',
-    );
-    if (capacityCheck?.details) {
-      const details = capacityCheck.details as Record<string, unknown>;
-      if (typeof details.totalCapacity === 'number') {
-        return details as unknown as MultiInstanceConsolidated;
-      }
-    }
-    return null;
+    return resolveMultiInstanceConsolidated(plan) as MultiInstanceConsolidated | null;
   }, [plan]);
+  const showCapacityDeficitAlert = hasMultiInstanceCapacityDeficit(
+    multiInstanceConsolidated?.capacityDeficit,
+  );
 
   return (
     <DashboardShell userName={user?.name}>
@@ -622,27 +614,50 @@ export default function DispatchPlanDetailPage() {
                 <div>
                   <dt className="text-[#65655f]">Instancias elegiveis</dt>
                   <dd>
-                    {multiInstanceConsolidated.eligibleInstances} /{' '}
-                    {multiInstanceConsolidated.selectedInstances}
+                    {typeof multiInstanceConsolidated.eligibleInstances ===
+                    'number'
+                      ? multiInstanceConsolidated.eligibleInstances
+                      : '—'}{' '}
+                    /{' '}
+                    {typeof multiInstanceConsolidated.selectedInstances ===
+                    'number'
+                      ? multiInstanceConsolidated.selectedInstances
+                      : '—'}
                   </dd>
                 </div>
                 <div>
                   <dt className="text-[#65655f]">Capacidade total</dt>
-                  <dd>{multiInstanceConsolidated.totalCapacity}</dd>
+                  <dd>
+                    {typeof multiInstanceConsolidated.totalCapacity === 'number'
+                      ? multiInstanceConsolidated.totalCapacity
+                      : '—'}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-[#65655f]">Publico elegivel</dt>
-                  <dd>{multiInstanceConsolidated.totalEligibleAudience}</dd>
+                  <dd>
+                    {typeof multiInstanceConsolidated.totalEligibleAudience ===
+                    'number'
+                      ? multiInstanceConsolidated.totalEligibleAudience
+                      : '—'}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-[#65655f]">Deficit / nao atribuidos</dt>
                   <dd>
-                    {multiInstanceConsolidated.capacityDeficit} /{' '}
-                    {multiInstanceConsolidated.unassignedRecipients}
+                    {typeof multiInstanceConsolidated.capacityDeficit ===
+                    'number'
+                      ? multiInstanceConsolidated.capacityDeficit
+                      : '—'}{' '}
+                    /{' '}
+                    {typeof multiInstanceConsolidated.unassignedRecipients ===
+                    'number'
+                      ? multiInstanceConsolidated.unassignedRecipients
+                      : '—'}
                   </dd>
                 </div>
               </dl>
-              {!multiInstanceConsolidated.passed ? (
+              {showCapacityDeficitAlert ? (
                 <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                   Capacidade insuficiente para o publico elegivel.
                 </p>

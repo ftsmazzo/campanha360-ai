@@ -813,6 +813,20 @@ export type DispatchPlanValidationSnapshot = {
     status: string | null;
   };
   checks: DispatchPlanValidationCheck[];
+  /** Consolidado de capacidade multi-instancia (08/09). Shape de validacao. */
+  multiInstance?: MultiInstanceConsolidated | null;
+};
+
+export type MultiInstanceSimulationConsolidated = {
+  totalAudience: number;
+  totalCapacity: number;
+  totalAssigned: number;
+  totalUnassigned: number;
+  combinedThroughput: number;
+  estimatedOverallEndAt: string | null;
+  activeInstances: number;
+  blockedInstances: number;
+  channels?: Array<Record<string, unknown>>;
 };
 
 export type DispatchPlanAllowedActions = {
@@ -914,7 +928,8 @@ export type DispatchPlanSimulationSnapshot = {
     estimatedEndAt: string;
   };
   warnings: DispatchPlanSimulationWarning[];
-  multiInstance?: MultiInstanceConsolidated | null;
+  /** Shape de simulacao (diferente do consolidado de validacao). */
+  multiInstance?: MultiInstanceSimulationConsolidated | null;
 };
 
 export type SimulateDispatchPlanPayload = {
