@@ -10,6 +10,7 @@ import {
 import { AuthUser, CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CreateDispatchDto } from './dto/create-dispatch.dto';
+import { ListDispatchItemsQueryDto } from './dto/list-dispatch-items-query.dto';
 import { ListDispatchesQueryDto } from './dto/list-dispatches-query.dto';
 import { DispatchesService } from './dispatches.service';
 
@@ -34,6 +35,45 @@ export class DispatchesController {
     @Body() dto: CreateDispatchDto,
   ) {
     return this.dispatchesService.create(user.id, campaignId, dto);
+  }
+
+  @Post(':dispatchId/prepare')
+  prepare(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+  ) {
+    return this.dispatchesService.prepare(user.id, campaignId, dispatchId);
+  }
+
+  @Get(':dispatchId/items')
+  listItems(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Query() query: ListDispatchItemsQueryDto,
+  ) {
+    return this.dispatchesService.listItems(
+      user.id,
+      campaignId,
+      dispatchId,
+      query,
+    );
+  }
+
+  @Get(':dispatchId/items/:dispatchItemId')
+  getItemById(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Param('dispatchItemId') dispatchItemId: string,
+  ) {
+    return this.dispatchesService.getItemById(
+      user.id,
+      campaignId,
+      dispatchId,
+      dispatchItemId,
+    );
   }
 
   @Get(':dispatchId')

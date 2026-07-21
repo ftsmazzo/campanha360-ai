@@ -218,6 +218,12 @@ function createHarness(options: {
               status: ChannelAccountStatus.CONNECTED,
             },
     },
+    dispatchItem: {
+      groupBy: async () => [],
+      findMany: async () => [],
+      count: async () => 0,
+      findFirst: async () => null,
+    },
   };
 
   const access = {
@@ -351,7 +357,7 @@ describe('DispatchesService 09.1', () => {
       'campaign-1',
       'dispatch-1',
     );
-    assert.equal(detail.allowedActions.canPrepare, false);
+    assert.equal(detail.allowedActions.canPrepare, true);
     assert.equal(detail.allowedActions.canView, true);
   });
 
@@ -362,5 +368,397 @@ describe('DispatchesService 09.1', () => {
       }),
       NotFoundException,
     );
+  });
+});
+
+function eligibleRecipients(count = 2) {
+  return Array.from({ length: count }, (_, index) => ({
+    id: `recipient-${index + 1}`,
+    organizationId: 'org-1',
+    campaignId: 'campaign-1',
+    dispatchPlanId: 'plan-1',
+    contactId: `contact-${index + 1}`,
+    destination: `1199999000${index + 1}`,
+    normalizedDestination: `551199999000${index + 1}`,
+    eligibilityStatus: 'ELIGIBLE',
+    contactSnapshot: {
+      name: `Contato ${index + 1}`,
+      originalPhone: `1199999000${index + 1}`,
+      normalizedPhone: `551199999000${index + 1}`,
+      city: 'SP',
+      neighborhood: null,
+      operationalStatus: 'NEW',
+      source: 'import',
+      tags: [],
+      assignedTo: null,
+    },
+  }));
+}
+
+function createPrepareHarness(options: {
+  status?: DispatchStatus;
+  totalItems?: number;
+  denyApprove?: boolean;
+  channelStatus?: ChannelAccountStatus;
+  channelCampaignId?: string;
+  planStatus?: DispatchPlanStatus;
+  totalEligible?: number;
+  recipients?: ReturnType<typeof eligibleRecipients>;
+  failCreateMany?: boolean;
+  claimFails?: boolean;
+} = {}) {
+  const body = 'Mensagem aprovada';
+  const hash = hashDispatchPlanContent(body);
+  const totalEligible = options.totalEligible ?? 2;
+  const recipients = options.recipients ?? eligibleRecipients(totalEligible);
+  const auditEvents: Array<Record<string, unknown>> = [];
+  let status = options.status ?? DispatchStatus.DRAFT;
+  let totalItems = options.totalItems ?? 0;
+  let pendingItems = 0;
+  let preparedAt: Date | null = null;
+  let items: Array<Record<string, unknown>> = [];
+
+  const dispatchRow = () => ({
+    id: 'dispatch-1',
+    organizationId: 'org-1',
+    campaignId: 'campaign-1',
+    dispatchPlanId: 'plan-1',
+    channelAccountId: 'channel-1',
+    name: 'Disparo',
+    description: null,
+    channelType: ChannelType.WHATSAPP,
+    contentSnapshot: {
+      type: 'TEXT',
+      body,
+      hash,
+      length: body.length,
+      approvedVersion: 5,
+    },
+    configurationSnapshot: {},
+    approvalSnapshot: approvalSnapshot(body),
+    status,
+    totalItems,
+    pendingItems,
+    queuedItems: 0,
+    processingItems: 0,
+    sentItems: 0,
+    deliveredItems: 0,
+    readItems: 0,
+    failedItems: 0,
+    skippedItems: 0,
+    canceledItems: 0,
+    createdByUserId: 'user-1',
+    preparedAt,
+    queuedAt: null,
+    startedAt: null,
+    pausingAt: null,
+    pausedAt: null,
+    resumedAt: null,
+    completedAt: null,
+    failedAt: null,
+    canceledAt: null,
+    emergencyStoppedAt: null,
+    lastProgressAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    dispatchPlan: {
+      id: 'plan-1',
+      name: 'Plano',
+      status: options.planStatus ?? DispatchPlanStatus.APPROVED,
+      version: 5,
+      totalEligible,
+      totalEvaluated: 10,
+      totalExcluded: 8,
+    },
+    channelAccount: {
+      id: 'channel-1',
+      name: 'Evolution',
+      provider: ChannelProvider.WHATSAPP_EVOLUTION,
+      status: options.channelStatus ?? ChannelAccountStatus.CONNECTED,
+    },
+    createdBy: { id: 'user-1', name: 'Usuario' },
+  });
+
+  const prisma: Record<string, unknown> = {
+    campaign: {
+      findUnique: async () => ({ id: 'campaign-1', organizationId: 'org-1' }),
+    },
+    dispatch: {
+      findFirst: async () => dispatchRow(),
+      updateMany: async (args: {
+        where: Record<string, unknown>;
+        data: Record<string, unknown>;
+      }) => {
+        if (options.claimFails && args.data.status === DispatchStatus.PREPARING) {
+          return { count: 0 };
+        }
+        if (
+          args.where.status === DispatchStatus.DRAFT &&
+          args.data.status === DispatchStatus.PREPARING
+        ) {
+          if (status !== DispatchStatus.DRAFT || totalItems > 0) {
+            return { count: 0 };
+          }
+          status = DispatchStatus.PREPARING;
+          return { count: 1 };
+        }
+        if (
+          args.where.status === DispatchStatus.PREPARING &&
+          args.data.status === DispatchStatus.READY
+        ) {
+          status = DispatchStatus.READY;
+          totalItems = args.data.totalItems as number;
+          pendingItems = args.data.pendingItems as number;
+          preparedAt = args.data.preparedAt as Date;
+          return { count: 1 };
+        }
+        if (
+          args.where.status === DispatchStatus.PREPARING &&
+          args.data.status === DispatchStatus.DRAFT
+        ) {
+          status = DispatchStatus.DRAFT;
+          return { count: 1 };
+        }
+        return { count: 0 };
+      },
+    },
+    dispatchPlan: {
+      findFirst: async () => ({
+        id: 'plan-1',
+        status: options.planStatus ?? DispatchPlanStatus.APPROVED,
+        totalEligible,
+        approvalSnapshot: approvalSnapshot(body),
+        channelAccountId: 'channel-1',
+      }),
+    },
+    channelAccount: {
+      findFirst: async () => ({
+        id: 'channel-1',
+        campaignId: options.channelCampaignId ?? 'campaign-1',
+        provider: ChannelProvider.WHATSAPP_EVOLUTION,
+        status: options.channelStatus ?? ChannelAccountStatus.CONNECTED,
+      }),
+    },
+    dispatchPlanRecipient: {
+      findMany: async () => recipients,
+    },
+    dispatchItem: {
+      count: async () => items.length,
+      createMany: async (args: { data: Array<Record<string, unknown>> }) => {
+        if (options.failCreateMany) {
+          throw new Error('createMany falhou');
+        }
+        items = args.data.map((row, index) => ({
+          id: `item-${index + 1}`,
+          ...row,
+        }));
+        return { count: items.length };
+      },
+      findMany: async () =>
+        items.map((item) => ({
+          id: item.id,
+          contactId: item.contactId,
+          destination: item.destination,
+          contactSnapshot: item.contactSnapshot,
+          contentSnapshot: item.contentSnapshot,
+          status: item.status,
+          attemptCount: item.attemptCount,
+          maxAttempts: item.maxAttempts,
+          scheduledAt: null,
+          queuedAt: null,
+          startedAt: null,
+          sentAt: null,
+          failedAt: null,
+          skippedAt: null,
+          errorCategory: null,
+          errorCode: null,
+          createdAt: new Date(),
+        })),
+      findFirst: async () =>
+        items[0]
+          ? {
+              ...items[0],
+              organizationId: 'org-1',
+              campaignId: 'campaign-1',
+              dispatchId: 'dispatch-1',
+              lockedAt: null,
+              deliveredAt: null,
+              readAt: null,
+              canceledAt: null,
+              providerMessageId: null,
+              providerStatus: null,
+              errorMessage: null,
+              lastAttemptAt: null,
+              nextRetryAt: null,
+              updatedAt: new Date(),
+              createdAt: new Date(),
+              dispatchPlanRecipient: {
+                id: items[0].dispatchPlanRecipientId,
+                eligibilityStatus: 'ELIGIBLE',
+              },
+            }
+          : null,
+      groupBy: async () =>
+        items.length
+          ? [{ status: 'PENDING', _count: { _all: items.length } }]
+          : [],
+    },
+    $transaction: async (
+      callback: (tx: Record<string, unknown>) => Promise<void>,
+    ) => {
+      await callback(prisma);
+    },
+  };
+
+  const access = {
+    requireApproveAccess: async () => {
+      if (options.denyApprove) {
+        throw new ForbiddenException('Permissao insuficiente');
+      }
+      return { role: MembershipRole.OWNER };
+    },
+    requireMembership: async () => ({ role: MembershipRole.OWNER }),
+  };
+
+  const audit = {
+    log: async (event: Record<string, unknown>) => {
+      auditEvents.push(event);
+    },
+  };
+
+  return {
+    service: new DispatchesService(
+      prisma as never,
+      access as never,
+      audit as never,
+    ),
+    auditEvents,
+    getStatus: () => status,
+    getTotalItems: () => totalItems,
+    getItems: () => items,
+  };
+}
+
+describe('DispatchesService 09.2 prepare', () => {
+  it('OWNER prepara Dispatch DRAFT e chega a READY', async () => {
+    const harness = createPrepareHarness();
+    const result = await harness.service.prepare(
+      'user-1',
+      'campaign-1',
+      'dispatch-1',
+    );
+    assert.equal(result.status, DispatchStatus.READY);
+    assert.equal(result.totalCreated, 2);
+    assert.equal(result.pendingItems, 2);
+    assert.equal(harness.getStatus(), DispatchStatus.READY);
+    assert.equal(harness.getTotalItems(), 2);
+    assert.equal(harness.getItems()[0]?.status, 'PENDING');
+    assert.equal(
+      harness.auditEvents.some((e) => e.action === 'DISPATCH_PREPARATION_STARTED'),
+      true,
+    );
+    assert.equal(
+      harness.auditEvents.some((e) => e.action === 'DISPATCH_PREPARED'),
+      true,
+    );
+    const prepared = harness.auditEvents.find(
+      (e) => e.action === 'DISPATCH_PREPARED',
+    )?.metadata as Record<string, unknown>;
+    assert.equal('destination' in prepared, false);
+    assert.equal('content' in prepared, false);
+  });
+
+  it('MANAGER nao prepara e READY nao prepara novamente', async () => {
+    await assert.rejects(
+      createPrepareHarness({ denyApprove: true }).service.prepare(
+        'manager-1',
+        'campaign-1',
+        'dispatch-1',
+      ),
+      ForbiddenException,
+    );
+    await assert.rejects(
+      createPrepareHarness({
+        status: DispatchStatus.READY,
+        totalItems: 2,
+      }).service.prepare('user-1', 'campaign-1', 'dispatch-1'),
+      ConflictException,
+    );
+    await assert.rejects(
+      createPrepareHarness({ status: DispatchStatus.PREPARING }).service.prepare(
+        'user-1',
+        'campaign-1',
+        'dispatch-1',
+      ),
+      ConflictException,
+    );
+  });
+
+  it('canal desconectado e plano nao APPROVED bloqueiam', async () => {
+    await assert.rejects(
+      createPrepareHarness({
+        channelStatus: ChannelAccountStatus.DISCONNECTED,
+      }).service.prepare('user-1', 'campaign-1', 'dispatch-1'),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createPrepareHarness({
+        planStatus: DispatchPlanStatus.VALIDATED,
+      }).service.prepare('user-1', 'campaign-1', 'dispatch-1'),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createPrepareHarness({
+        channelCampaignId: 'other-campaign',
+      }).service.prepare('user-1', 'campaign-1', 'dispatch-1'),
+      BadRequestException,
+    );
+  });
+
+  it('contagem divergente e falha voltam para DRAFT sem items', async () => {
+    await assert.rejects(
+      createPrepareHarness({
+        totalEligible: 3,
+        recipients: eligibleRecipients(2),
+      }).service.prepare('user-1', 'campaign-1', 'dispatch-1'),
+      BadRequestException,
+    );
+
+    const failing = createPrepareHarness({ failCreateMany: true });
+    await assert.rejects(
+      failing.service.prepare('user-1', 'campaign-1', 'dispatch-1'),
+      Error,
+    );
+    assert.equal(failing.getStatus(), DispatchStatus.DRAFT);
+    assert.equal(failing.getItems().length, 0);
+    assert.equal(
+      failing.auditEvents.some(
+        (e) => e.action === 'DISPATCH_PREPARATION_FAILED',
+      ),
+      true,
+    );
+  });
+
+  it('lista items com destination mascarado e sem body', async () => {
+    const harness = createPrepareHarness();
+    await harness.service.prepare('user-1', 'campaign-1', 'dispatch-1');
+    const listed = await harness.service.listItems(
+      'user-1',
+      'campaign-1',
+      'dispatch-1',
+      { page: 1, limit: 20 },
+    );
+    assert.equal(listed.items.length, 2);
+    assert.match(listed.items[0]?.destinationMasked ?? '', /\*/);
+    assert.equal('destination' in listed.items[0]!, false);
+    assert.equal('body' in listed.items[0]!, false);
+
+    const detail = await harness.service.getById(
+      'user-1',
+      'campaign-1',
+      'dispatch-1',
+    );
+    assert.equal(detail.allowedActions.canPrepare, false);
+    assert.equal(detail.itemSummary.PENDING, 2);
   });
 });

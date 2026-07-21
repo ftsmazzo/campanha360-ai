@@ -4,10 +4,25 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { DispatchStatus, Prisma } from '@prisma/client';
+import {
+  DispatchPlanRecipientEligibilityStatus,
+  DispatchStatus,
+  Prisma,
+} from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  assertChannelReadyForPrepare,
+  assertDispatchContentSnapshotValid,
+  assertEligibleRecipientsReadyForPrepare,
+  assertPlanApprovedForPrepare,
+  buildDispatchAllowedActionsForPrepare,
+  buildItemStatusSummary,
+  buildPreparedDispatchItems,
+  extractContactName,
+  maskDestination,
+} from './dispatch-prepare.util';
 import {
   assertChannelReadyForDispatchCreation,
   buildDispatchAllowedActions,
@@ -16,6 +31,7 @@ import {
   canCreateDispatchFromPlan,
 } from './dispatch.util';
 import { CreateDispatchDto } from './dto/create-dispatch.dto';
+import { ListDispatchItemsQueryDto } from './dto/list-dispatch-items-query.dto';
 import { ListDispatchesQueryDto } from './dto/list-dispatches-query.dto';
 
 const listSelect = {
@@ -25,8 +41,10 @@ const listSelect = {
   dispatchPlanId: true,
   channelType: true,
   totalItems: true,
+  pendingItems: true,
   sentItems: true,
   failedItems: true,
+  preparedAt: true,
   approvalSnapshot: true,
   createdAt: true,
   dispatchPlan: {
@@ -264,10 +282,20 @@ export class DispatchesService {
       },
     });
 
+    const membership = await this.organizationAccess.requireMembership(
+      userId,
+      campaign.organizationId,
+    );
+
     return {
       ...created,
-      allowedActions: buildDispatchAllowedActions(),
+      allowedActions: buildDispatchAllowedActions({
+        role: membership.role,
+        status: created.status,
+        totalItems: created.totalItems,
+      }),
       approvedAudience: this.extractApprovedAudience(created.approvalSnapshot),
+      itemSummary: buildItemStatusSummary([]),
     };
   }
 
@@ -318,8 +346,10 @@ export class DispatchesService {
         channelAccount: item.channelAccount,
         channelType: item.channelType,
         totalItems: item.totalItems,
+        pendingItems: item.pendingItems,
         sentItems: item.sentItems,
         failedItems: item.failedItems,
+        preparedAt: item.preparedAt,
         approvedAudience: this.extractApprovedAudience(item.approvalSnapshot),
         createdAt: item.createdAt,
         createdBy: item.createdBy,
@@ -339,6 +369,10 @@ export class DispatchesService {
 
   async getById(userId: string, campaignId: string, dispatchId: string) {
     const campaign = await this.getCampaignContext(userId, campaignId);
+    const membership = await this.organizationAccess.requireMembership(
+      userId,
+      campaign.organizationId,
+    );
     const dispatch = await this.prisma.dispatch.findFirst({
       where: {
         id: dispatchId,
@@ -352,11 +386,584 @@ export class DispatchesService {
       throw new NotFoundException('Dispatch nao encontrado');
     }
 
+    const grouped = await this.prisma.dispatchItem.groupBy({
+      by: ['status'],
+      where: {
+        organizationId: campaign.organizationId,
+        campaignId,
+        dispatchId: dispatch.id,
+      },
+      _count: { _all: true },
+    });
+
     return {
       ...dispatch,
-      allowedActions: buildDispatchAllowedActions(),
+      allowedActions: buildDispatchAllowedActionsForPrepare({
+        role: membership.role,
+        status: dispatch.status,
+        totalItems: dispatch.totalItems,
+      }),
       approvedAudience: this.extractApprovedAudience(dispatch.approvalSnapshot),
+      itemSummary: buildItemStatusSummary(grouped),
     };
+  }
+
+  async prepare(userId: string, campaignId: string, dispatchId: string) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    await this.organizationAccess.requireApproveAccess(
+      userId,
+      campaign.organizationId,
+    );
+
+    const dispatch = await this.prisma.dispatch.findFirst({
+      where: {
+        id: dispatchId,
+        organizationId: campaign.organizationId,
+        campaignId,
+      },
+    });
+
+    if (!dispatch) {
+      throw new NotFoundException('Dispatch nao encontrado');
+    }
+
+    if (dispatch.status === DispatchStatus.READY || dispatch.totalItems > 0) {
+      throw new ConflictException(
+        'Dispatch ja preparado; nao e permitido preparar novamente',
+      );
+    }
+
+    if (dispatch.status === DispatchStatus.PREPARING) {
+      throw new ConflictException('Preparacao ja em andamento');
+    }
+
+    if (dispatch.status !== DispatchStatus.DRAFT) {
+      throw new BadRequestException(
+        'Somente Dispatch em DRAFT pode ser preparado',
+      );
+    }
+
+    const claim = await this.prisma.dispatch.updateMany({
+      where: {
+        id: dispatch.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: DispatchStatus.DRAFT,
+        totalItems: 0,
+      },
+      data: {
+        status: DispatchStatus.PREPARING,
+      },
+    });
+
+    if (claim.count !== 1) {
+      throw new ConflictException(
+        'Nao foi possivel iniciar a preparacao (conflito de concorrencia)',
+      );
+    }
+
+    const startedAt = new Date();
+    let totalExpected = 0;
+
+    try {
+      const plan = await this.prisma.dispatchPlan.findFirst({
+        where: {
+          id: dispatch.dispatchPlanId,
+          organizationId: campaign.organizationId,
+          campaignId,
+        },
+        select: {
+          id: true,
+          status: true,
+          totalEligible: true,
+          approvalSnapshot: true,
+          channelAccountId: true,
+        },
+      });
+
+      try {
+        assertPlanApprovedForPrepare({
+          planExists: Boolean(plan),
+          status: plan?.status ?? null,
+          approvalSnapshot: plan?.approvalSnapshot ?? null,
+        });
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error ? error.message : 'Plano invalido',
+        );
+      }
+
+      const channelAccount = await this.prisma.channelAccount.findFirst({
+        where: {
+          id: dispatch.channelAccountId,
+          organizationId: campaign.organizationId,
+        },
+        select: {
+          id: true,
+          campaignId: true,
+          provider: true,
+          status: true,
+        },
+      });
+
+      try {
+        assertChannelReadyForPrepare({
+          channelExists: Boolean(channelAccount),
+          channelBelongsToCampaign: Boolean(
+            channelAccount && channelAccount.campaignId === campaignId,
+          ),
+          channelMatchesDispatch: Boolean(
+            channelAccount && channelAccount.id === dispatch.channelAccountId,
+          ),
+          provider: channelAccount?.provider ?? null,
+          status: channelAccount?.status ?? null,
+        });
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error ? error.message : 'Canal invalido',
+        );
+      }
+
+      let contentSnapshot;
+      try {
+        contentSnapshot = assertDispatchContentSnapshotValid(
+          dispatch.contentSnapshot,
+          dispatch.approvalSnapshot,
+        );
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error ? error.message : 'contentSnapshot invalido',
+        );
+      }
+
+      const recipients = await this.prisma.dispatchPlanRecipient.findMany({
+        where: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          dispatchPlanId: dispatch.dispatchPlanId,
+          eligibilityStatus: DispatchPlanRecipientEligibilityStatus.ELIGIBLE,
+        },
+        select: {
+          id: true,
+          organizationId: true,
+          campaignId: true,
+          dispatchPlanId: true,
+          contactId: true,
+          destination: true,
+          normalizedDestination: true,
+          eligibilityStatus: true,
+          contactSnapshot: true,
+        },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
+
+      totalExpected = plan!.totalEligible;
+
+      try {
+        assertEligibleRecipientsReadyForPrepare({
+          recipients,
+          organizationId: campaign.organizationId,
+          campaignId,
+          dispatchPlanId: dispatch.dispatchPlanId,
+          expectedEligible: totalExpected,
+        });
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error ? error.message : 'Recipients invalidos',
+        );
+      }
+
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'DISPATCH_PREPARATION_STARTED',
+        entityType: 'Dispatch',
+        entityId: dispatch.id,
+        metadata: {
+          dispatchId: dispatch.id,
+          dispatchPlanId: dispatch.dispatchPlanId,
+          totalExpected,
+          status: DispatchStatus.PREPARING,
+          startedAt: startedAt.toISOString(),
+        },
+      });
+
+      const existingItems = await this.prisma.dispatchItem.count({
+        where: { dispatchId: dispatch.id },
+      });
+      if (existingItems > 0) {
+        throw new ConflictException(
+          'Dispatch ja possui items materializados',
+        );
+      }
+
+      const items = buildPreparedDispatchItems({
+        recipients,
+        dispatchId: dispatch.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+        dispatchPlanId: dispatch.dispatchPlanId,
+        channelAccountId: dispatch.channelAccountId,
+        contentSnapshot,
+      });
+
+      const preparedAt = new Date();
+
+      await this.prisma.$transaction(async (tx) => {
+        await tx.dispatchItem.createMany({
+          data: items.map((item) => ({
+            ...item,
+            contactSnapshot: item.contactSnapshot as Prisma.InputJsonValue,
+            contentSnapshot:
+              item.contentSnapshot as unknown as Prisma.InputJsonValue,
+          })),
+        });
+
+        const createdCount = await tx.dispatchItem.count({
+          where: { dispatchId: dispatch.id },
+        });
+        if (createdCount !== items.length) {
+          throw new Error(
+            `Quantidade criada (${createdCount}) diverge do esperado (${items.length})`,
+          );
+        }
+
+        const updated = await tx.dispatch.updateMany({
+          where: {
+            id: dispatch.id,
+            status: DispatchStatus.PREPARING,
+            totalItems: 0,
+          },
+          data: {
+            status: DispatchStatus.READY,
+            totalItems: createdCount,
+            pendingItems: createdCount,
+            queuedItems: 0,
+            processingItems: 0,
+            sentItems: 0,
+            deliveredItems: 0,
+            readItems: 0,
+            failedItems: 0,
+            skippedItems: 0,
+            canceledItems: 0,
+            preparedAt,
+            lastProgressAt: preparedAt,
+          },
+        });
+
+        if (updated.count !== 1) {
+          throw new ConflictException(
+            'Falha ao concluir preparacao (conflito de estado)',
+          );
+        }
+      });
+
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'DISPATCH_PREPARED',
+        entityType: 'Dispatch',
+        entityId: dispatch.id,
+        metadata: {
+          dispatchId: dispatch.id,
+          totalExpected,
+          totalCreated: items.length,
+          pendingItems: items.length,
+          preparedAt: preparedAt.toISOString(),
+          finalStatus: DispatchStatus.READY,
+        },
+      });
+
+      return {
+        dispatchId: dispatch.id,
+        status: DispatchStatus.READY,
+        totalExpected,
+        totalCreated: items.length,
+        pendingItems: items.length,
+        preparedAt,
+      };
+    } catch (error) {
+      const itemCount = await this.prisma.dispatchItem.count({
+        where: { dispatchId: dispatch.id },
+      });
+
+      // Preferencia 09.2: sem items materializados, volta para DRAFT.
+      if (itemCount === 0) {
+        await this.prisma.dispatch.updateMany({
+          where: {
+            id: dispatch.id,
+            status: DispatchStatus.PREPARING,
+          },
+          data: {
+            status: DispatchStatus.DRAFT,
+          },
+        });
+      }
+
+      const errorCode =
+        error instanceof ConflictException
+          ? 'CONFLICT'
+          : error instanceof BadRequestException
+            ? 'BAD_REQUEST'
+            : error instanceof Prisma.PrismaClientKnownRequestError
+              ? error.code
+              : 'PREPARE_FAILED';
+
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'DISPATCH_PREPARATION_FAILED',
+        entityType: 'Dispatch',
+        entityId: dispatch.id,
+        metadata: {
+          dispatchId: dispatch.id,
+          stage: 'prepare',
+          errorCode,
+          finalStatus: itemCount === 0 ? DispatchStatus.DRAFT : DispatchStatus.PREPARING,
+        },
+      });
+
+      throw error;
+    }
+  }
+
+  async listItems(
+    userId: string,
+    campaignId: string,
+    dispatchId: string,
+    query: ListDispatchItemsQueryDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    const dispatch = await this.requireDispatch(
+      campaign.organizationId,
+      campaignId,
+      dispatchId,
+    );
+
+    const page = query.page ?? 1;
+    const limit = query.limit ?? 20;
+    const search = query.search?.trim();
+
+    const where: Prisma.DispatchItemWhereInput = {
+      organizationId: campaign.organizationId,
+      campaignId,
+      dispatchId: dispatch.id,
+    };
+
+    if (query.status) {
+      where.status = query.status;
+    }
+
+    if (search) {
+      where.OR = [
+        { destination: { contains: search, mode: 'insensitive' } },
+        {
+          normalizedDestination: {
+            contains: search,
+            mode: 'insensitive',
+          },
+        },
+        {
+          contactSnapshot: {
+            path: ['name'],
+            string_contains: search,
+          },
+        },
+      ];
+    }
+
+    const [items, total] = await Promise.all([
+      this.prisma.dispatchItem.findMany({
+        where,
+        select: {
+          id: true,
+          contactId: true,
+          destination: true,
+          contactSnapshot: true,
+          contentSnapshot: true,
+          status: true,
+          attemptCount: true,
+          maxAttempts: true,
+          scheduledAt: true,
+          queuedAt: true,
+          startedAt: true,
+          sentAt: true,
+          failedAt: true,
+          skippedAt: true,
+          errorCategory: true,
+          errorCode: true,
+          createdAt: true,
+        },
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+      }),
+      this.prisma.dispatchItem.count({ where }),
+    ]);
+
+    return {
+      items: items.map((item) => {
+        const content = item.contentSnapshot as { hash?: string } | null;
+        return {
+          id: item.id,
+          contactId: item.contactId,
+          contactName: extractContactName(item.contactSnapshot),
+          destinationMasked: maskDestination(item.destination),
+          status: item.status,
+          attemptCount: item.attemptCount,
+          maxAttempts: item.maxAttempts,
+          scheduledAt: item.scheduledAt,
+          queuedAt: item.queuedAt,
+          startedAt: item.startedAt,
+          sentAt: item.sentAt,
+          failedAt: item.failedAt,
+          skippedAt: item.skippedAt,
+          errorCategory: item.errorCategory,
+          errorCode: item.errorCode,
+          contentHash:
+            typeof content?.hash === 'string' ? content.hash : null,
+          createdAt: item.createdAt,
+        };
+      }),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+      filters: {
+        status: query.status ?? null,
+        search: search ?? null,
+      },
+    };
+  }
+
+  async getItemById(
+    userId: string,
+    campaignId: string,
+    dispatchId: string,
+    dispatchItemId: string,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    await this.requireDispatch(
+      campaign.organizationId,
+      campaignId,
+      dispatchId,
+    );
+
+    const item = await this.prisma.dispatchItem.findFirst({
+      where: {
+        id: dispatchItemId,
+        organizationId: campaign.organizationId,
+        campaignId,
+        dispatchId,
+      },
+      select: {
+        id: true,
+        organizationId: true,
+        campaignId: true,
+        dispatchId: true,
+        dispatchPlanId: true,
+        dispatchPlanRecipientId: true,
+        contactId: true,
+        channelAccountId: true,
+        destination: true,
+        contactSnapshot: true,
+        contentSnapshot: true,
+        status: true,
+        attemptCount: true,
+        maxAttempts: true,
+        scheduledAt: true,
+        queuedAt: true,
+        lockedAt: true,
+        startedAt: true,
+        sentAt: true,
+        deliveredAt: true,
+        readAt: true,
+        failedAt: true,
+        skippedAt: true,
+        canceledAt: true,
+        providerMessageId: true,
+        providerStatus: true,
+        errorCategory: true,
+        errorCode: true,
+        errorMessage: true,
+        lastAttemptAt: true,
+        nextRetryAt: true,
+        createdAt: true,
+        updatedAt: true,
+        dispatchPlanRecipient: {
+          select: {
+            id: true,
+            eligibilityStatus: true,
+          },
+        },
+      },
+    });
+
+    if (!item) {
+      throw new NotFoundException('DispatchItem nao encontrado');
+    }
+
+    return {
+      id: item.id,
+      organizationId: item.organizationId,
+      campaignId: item.campaignId,
+      dispatchId: item.dispatchId,
+      dispatchPlanId: item.dispatchPlanId,
+      dispatchPlanRecipientId: item.dispatchPlanRecipientId,
+      contactId: item.contactId,
+      channelAccountId: item.channelAccountId,
+      contactName: extractContactName(item.contactSnapshot),
+      contactSnapshot: item.contactSnapshot,
+      destinationMasked: maskDestination(item.destination),
+      contentSnapshot: item.contentSnapshot,
+      status: item.status,
+      attemptCount: item.attemptCount,
+      maxAttempts: item.maxAttempts,
+      scheduledAt: item.scheduledAt,
+      queuedAt: item.queuedAt,
+      lockedAt: item.lockedAt,
+      startedAt: item.startedAt,
+      sentAt: item.sentAt,
+      deliveredAt: item.deliveredAt,
+      readAt: item.readAt,
+      failedAt: item.failedAt,
+      skippedAt: item.skippedAt,
+      canceledAt: item.canceledAt,
+      providerMessageId: item.providerMessageId,
+      providerStatus: item.providerStatus,
+      errorCategory: item.errorCategory,
+      errorCode: item.errorCode,
+      errorMessage: item.errorMessage,
+      lastAttemptAt: item.lastAttemptAt,
+      nextRetryAt: item.nextRetryAt,
+      createdAt: item.createdAt,
+      updatedAt: item.updatedAt,
+      dispatchPlanRecipient: item.dispatchPlanRecipient,
+    };
+  }
+
+  private async requireDispatch(
+    organizationId: string,
+    campaignId: string,
+    dispatchId: string,
+  ) {
+    const dispatch = await this.prisma.dispatch.findFirst({
+      where: {
+        id: dispatchId,
+        organizationId,
+        campaignId,
+      },
+      select: { id: true, status: true, totalItems: true },
+    });
+    if (!dispatch) {
+      throw new NotFoundException('Dispatch nao encontrado');
+    }
+    return dispatch;
   }
 
   private extractApprovedAudience(approvalSnapshot: unknown) {

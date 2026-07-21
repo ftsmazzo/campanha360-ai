@@ -1029,6 +1029,64 @@ export type DispatchDetail = {
   };
   allowedActions: DispatchAllowedActions;
   approvedAudience: DispatchApprovedAudience;
+  itemSummary?: Record<string, number>;
+};
+
+export type DispatchItemStatus =
+  | 'PENDING'
+  | 'SCHEDULED'
+  | 'QUEUED'
+  | 'PROCESSING'
+  | 'SENT'
+  | 'DELIVERED'
+  | 'READ'
+  | 'RETRY_SCHEDULED'
+  | 'FAILED'
+  | 'SKIPPED'
+  | 'CANCELED'
+  | 'UNKNOWN_PROVIDER_STATE';
+
+export type DispatchItemListEntry = {
+  id: string;
+  contactId: string;
+  contactName: string | null;
+  destinationMasked: string;
+  status: DispatchItemStatus;
+  attemptCount: number;
+  maxAttempts: number;
+  scheduledAt: string | null;
+  queuedAt: string | null;
+  startedAt: string | null;
+  sentAt: string | null;
+  failedAt: string | null;
+  skippedAt: string | null;
+  errorCategory: string | null;
+  errorCode: string | null;
+  contentHash: string | null;
+  createdAt: string;
+};
+
+export type ListDispatchItemsResponse = {
+  items: DispatchItemListEntry[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+  filters: {
+    status: DispatchItemStatus | null;
+    search: string | null;
+  };
+};
+
+export type PrepareDispatchResponse = {
+  dispatchId: string;
+  status: DispatchStatus;
+  totalExpected: number;
+  totalCreated: number;
+  pendingItems: number;
+  preparedAt: string;
 };
 
 export type ListDispatchesResponse = {
@@ -1102,6 +1160,37 @@ export function createDispatch(
       method: 'POST',
       body: JSON.stringify({ dispatchPlanId }),
     },
+    token,
+  );
+}
+
+export function prepareDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<PrepareDispatchResponse>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/prepare`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function fetchDispatchItems(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  params?: { page?: number; limit?: number; status?: string; search?: string },
+) {
+  const query = new URLSearchParams();
+  if (params?.page) query.set('page', String(params.page));
+  if (params?.limit) query.set('limit', String(params.limit));
+  if (params?.status) query.set('status', params.status);
+  if (params?.search) query.set('search', params.search);
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request<ListDispatchItemsResponse>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/items${suffix}`,
+    {},
     token,
   );
 }

@@ -63,3 +63,81 @@ export function getDispatchStatusBadgeClass(status: string): string {
       return 'border-[#c9c8c0] bg-white text-[#24382b]';
   }
 }
+
+export function getDispatchItemStatusLabel(status: string): string {
+  switch (status) {
+    case 'PENDING':
+      return 'Pendente';
+    case 'SCHEDULED':
+      return 'Agendado';
+    case 'QUEUED':
+      return 'Enfileirado';
+    case 'PROCESSING':
+      return 'Processando';
+    case 'SENT':
+      return 'Enviado';
+    case 'DELIVERED':
+      return 'Entregue';
+    case 'READ':
+      return 'Lido';
+    case 'RETRY_SCHEDULED':
+      return 'Retry agendado';
+    case 'FAILED':
+      return 'Falhou';
+    case 'SKIPPED':
+      return 'Ignorado';
+    case 'CANCELED':
+      return 'Cancelado';
+    case 'UNKNOWN_PROVIDER_STATE':
+      return 'Estado desconhecido';
+    default:
+      return status;
+  }
+}
+
+export type DispatchProgressStep = {
+  id: 'creation' | 'preparation' | 'queue' | 'execution' | 'completion';
+  label: string;
+  state: 'done' | 'current' | 'pending';
+};
+
+export function getDispatchProgressSteps(
+  status: string,
+): DispatchProgressStep[] {
+  const creationDone = true;
+  const preparationDone = status === 'READY' || [
+    'QUEUED',
+    'RUNNING',
+    'PAUSING',
+    'PAUSED',
+    'COMPLETED',
+    'COMPLETED_WITH_ERRORS',
+    'FAILED',
+    'CANCELED',
+    'EMERGENCY_STOPPED',
+  ].includes(status);
+  const preparationCurrent = status === 'PREPARING';
+  const preparationPending = status === 'DRAFT';
+
+  return [
+    {
+      id: 'creation',
+      label: 'Criacao',
+      state: creationDone ? 'done' : 'pending',
+    },
+    {
+      id: 'preparation',
+      label: 'Preparacao',
+      state: preparationDone
+        ? 'done'
+        : preparationCurrent
+          ? 'current'
+          : preparationPending
+            ? 'pending'
+            : 'pending',
+    },
+    { id: 'queue', label: 'Fila', state: 'pending' },
+    { id: 'execution', label: 'Execucao', state: 'pending' },
+    { id: 'completion', label: 'Conclusao', state: 'pending' },
+  ];
+}

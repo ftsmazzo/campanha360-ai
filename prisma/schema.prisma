@@ -135,6 +135,40 @@ enum DispatchStatus {
   EMERGENCY_STOPPED
 }
 
+enum DispatchItemStatus {
+  PENDING
+  SCHEDULED
+  QUEUED
+  PROCESSING
+  SENT
+  DELIVERED
+  READ
+  RETRY_SCHEDULED
+  FAILED
+  SKIPPED
+  CANCELED
+  UNKNOWN_PROVIDER_STATE
+}
+
+enum DispatchItemErrorCategory {
+  TRANSIENT_NETWORK
+  PROVIDER_RATE_LIMIT
+  PROVIDER_UNAVAILABLE
+  PROVIDER_TIMEOUT
+  CHANNEL_DISCONNECTED
+  AUTHENTICATION_ERROR
+  INVALID_DESTINATION
+  CONTENT_REJECTED
+  CONTACT_OPT_OUT
+  CONTACT_BLOCKED
+  CONTACT_DELETED
+  DISPATCH_PAUSED
+  DISPATCH_CANCELED
+  OUTSIDE_WINDOW
+  DUPLICATE_PREVENTED
+  UNKNOWN
+}
+
 enum MessageDirection {
   INBOUND
   OUTBOUND
@@ -177,6 +211,7 @@ model Organization {
   dispatchPlans DispatchPlan[]
   dispatchPlanRecipients DispatchPlanRecipient[]
   dispatches Dispatch[]
+  dispatchItems DispatchItem[]
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 }
@@ -209,6 +244,7 @@ model Campaign {
   dispatchPlans  DispatchPlan[]
   dispatchPlanRecipients DispatchPlanRecipient[]
   dispatches     Dispatch[]
+  dispatchItems  DispatchItem[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
@@ -251,6 +287,7 @@ model Contact {
   notes          ContactNote[]
   tasks          ContactTask[]
   dispatchPlanRecipients DispatchPlanRecipient[]
+  dispatchItems  DispatchItem[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
 
@@ -376,6 +413,7 @@ model ChannelAccount {
   config            Json?
   dispatchPlans     DispatchPlan[]
   dispatches        Dispatch[]
+  dispatchItems     DispatchItem[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
@@ -492,6 +530,7 @@ model DispatchPlan {
   canceledBy       User?              @relation("DispatchPlanCanceledBy", fields: [canceledByUserId], references: [id])
   recipients       DispatchPlanRecipient[]
   dispatches       Dispatch[]
+  dispatchItems    DispatchItem[]
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
@@ -521,6 +560,7 @@ model DispatchPlanRecipient {
   campaign              Campaign                                @relation(fields: [campaignId], references: [id])
   dispatchPlan          DispatchPlan                            @relation(fields: [dispatchPlanId], references: [id], onDelete: Cascade)
   contact               Contact                                 @relation(fields: [contactId], references: [id])
+  dispatchItems         DispatchItem[]
   createdAt             DateTime                                @default(now())
 
   @@unique([dispatchPlanId, contactId, normalizedDestination])
@@ -571,6 +611,7 @@ model Dispatch {
   dispatchPlan          DispatchPlan   @relation(fields: [dispatchPlanId], references: [id])
   channelAccount        ChannelAccount @relation(fields: [channelAccountId], references: [id])
   createdBy             User           @relation("DispatchCreatedBy", fields: [createdByUserId], references: [id])
+  items                 DispatchItem[]
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
 
@@ -579,4 +620,64 @@ model Dispatch {
   @@index([dispatchPlanId])
   @@index([channelAccountId])
   @@index([status, createdAt])
+}
+
+model DispatchItem {
+  id                      String                     @id @default(cuid())
+  organizationId          String
+  campaignId              String
+  dispatchId              String
+  dispatchPlanId          String
+  dispatchPlanRecipientId String
+  contactId               String
+  channelAccountId        String
+  destination             String
+  normalizedDestination   String
+  contactSnapshot         Json
+  contentSnapshot         Json
+  status                  DispatchItemStatus         @default(PENDING)
+  attemptCount            Int                        @default(0)
+  maxAttempts             Int                        @default(3)
+  scheduledAt             DateTime?
+  queuedAt                DateTime?
+  lockedAt                DateTime?
+  lockToken               String?
+  lockExpiresAt           DateTime?
+  startedAt               DateTime?
+  sentAt                  DateTime?
+  deliveredAt             DateTime?
+  readAt                  DateTime?
+  failedAt                DateTime?
+  skippedAt               DateTime?
+  canceledAt              DateTime?
+  providerMessageId       String?
+  providerStatus          String?
+  errorCategory           DispatchItemErrorCategory?
+  errorCode               String?
+  errorMessage            String?
+  lastAttemptAt           DateTime?
+  nextRetryAt             DateTime?
+  metadata                Json?
+  organization            Organization               @relation(fields: [organizationId], references: [id])
+  campaign                Campaign                   @relation(fields: [campaignId], references: [id])
+  dispatch                Dispatch                   @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  dispatchPlan            DispatchPlan               @relation(fields: [dispatchPlanId], references: [id])
+  dispatchPlanRecipient   DispatchPlanRecipient      @relation(fields: [dispatchPlanRecipientId], references: [id])
+  contact                 Contact                    @relation(fields: [contactId], references: [id])
+  channelAccount          ChannelAccount             @relation(fields: [channelAccountId], references: [id])
+  createdAt               DateTime                   @default(now())
+  updatedAt               DateTime                   @updatedAt
+
+  @@unique([dispatchId, dispatchPlanRecipientId])
+  @@unique([dispatchId, normalizedDestination])
+  @@index([dispatchId])
+  @@index([dispatchId, status])
+  @@index([organizationId, campaignId])
+  @@index([channelAccountId, status])
+  @@index([contactId])
+  @@index([normalizedDestination])
+  @@index([providerMessageId])
+  @@index([nextRetryAt])
+  @@index([lockedAt])
+  @@index([createdAt])
 }

@@ -213,10 +213,23 @@ function numberOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-export function buildDispatchAllowedActions() {
+export function buildDispatchAllowedActions(input?: {
+  role?: string | null;
+  status?: string;
+  totalItems?: number;
+}) {
+  const canApprove =
+    input?.role === 'OWNER' || input?.role === 'ADMIN';
+  const canPrepare =
+    Boolean(canApprove) &&
+    (input?.status === 'DRAFT' || !input?.status) &&
+    (input?.totalItems ?? 0) === 0 &&
+    Boolean(input);
+
+  // Sem input (create response): canPrepare permanece false ate GET/prepare.
   return {
     canView: true,
-    canPrepare: false,
+    canPrepare: input ? canPrepare : false,
     canQueue: false,
     canStart: false,
     canPause: false,

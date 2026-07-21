@@ -761,6 +761,26 @@ A subetapa estará concluída quando:
 - operação é idempotente;
 - testes passam.
 
+### Status da 09.2 — CONCLUÍDA
+
+Implementação registrada:
+
+- **Modelagem:** enums `DispatchItemStatus` e `DispatchItemErrorCategory`; modelo `DispatchItem` com snapshots, unicidade `(dispatchId, dispatchPlanRecipientId)` e `(dispatchId, normalizedDestination)`; `providerMessageId` indexado (sem unique global).
+- **Status operacional:** items nascem `PENDING`; Dispatch passa `DRAFT → PREPARING → READY`.
+- **Fonte:** apenas `DispatchPlanRecipient` com `eligibilityStatus = ELIGIBLE` do Plano aprovado; sem recalcular Segment.
+- **Rota prepare:** `POST /campaigns/:campaignId/dispatches/:dispatchId/prepare` (OWNER/ADMIN).
+- **Listagem:** `GET .../dispatches/:dispatchId/items` paginada; destination mascarado; sem body completo.
+- **Detalhe de item:** `GET .../items/:dispatchItemId` implementado (mascarado + contentSnapshot).
+- **Atomicidade:** transação `createMany` + update condicional para READY; falha sem items → volta para `DRAFT`.
+- **Idempotência:** READY ou items existentes → `ConflictException`; claim condicional `DRAFT → PREPARING`.
+- **Canal:** preparação exige canal `CONNECTED` (ARCHIVED/outro tenant/provider inválido bloqueiam).
+- **Contadores:** `totalItems`/`pendingItems` = criados; demais zerados; `preparedAt` preenchido.
+- **Audit:** `DISPATCH_PREPARATION_STARTED`, `DISPATCH_PREPARED`, `DISPATCH_PREPARATION_FAILED` (metadata sem telefones/conteúdo).
+- **Web:** botão Preparar destinatários, progresso, tabela paginada, aviso 09.3.
+- **Fora de escopo:** BullMQ, fila, Worker, Evolution send, queue/start/pause/retry.
+
+Migration: `prisma/migrations/20260721180000_dispatch_item_materialization`.
+
 ---
 
 # 9. Subetapa 09.3 — Preparação e Enfileiramento
@@ -2637,10 +2657,10 @@ O Épico 10 não deve alterar as garantias do Motor de Disparo.
 
 ## 45. Próxima ação prática
 
-A **09.1 — Entidade Dispatch** está concluída.
+A **09.1 — Entidade Dispatch** e a **09.2 — Materialização dos DispatchItems** estão concluídas.
 
 A próxima implementação deve ser apenas:
 
-**09.2 — Materialização dos DispatchItems**
+**09.3 — Fila BullMQ e enfileiramento**
 
-Sem envio real, sem fila operacional de Worker e sem chamar Evolution para massa.
+Sem chamar Evolution para envio em massa.
