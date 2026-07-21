@@ -1403,6 +1403,9 @@ function createApprovalHarness(options: {
         status: options.channelStatus ?? ChannelAccountStatus.CONNECTED,
       }),
     },
+    dispatch: {
+      findUnique: async () => null,
+    },
     segment: {
       findFirst: async () => ({ id: 'segment-1', campaignId: 'campaign-1' }),
     },

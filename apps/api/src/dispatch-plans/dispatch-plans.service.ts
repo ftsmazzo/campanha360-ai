@@ -230,12 +230,18 @@ export class DispatchPlansService {
       }).ok === true;
     const planIsImmutable = isDispatchPlanImmutable(plan.status);
 
+    const existingDispatch = await this.prisma.dispatch.findUnique({
+      where: { dispatchPlanId: plan.id },
+      select: { id: true },
+    });
+
     return {
       ...plan,
       byEligibilityStatus: this.buildEligibilityStatusCounts(grouped),
       validationIsCurrent,
       simulationIsCurrent,
       planIsImmutable,
+      existingDispatchId: existingDispatch?.id ?? null,
       allowedActions: {
         canEdit: canWrite && isDispatchPlanEditable(plan.status),
         canCancel: canWrite && canCancelDispatchPlan(plan.status),
@@ -255,6 +261,10 @@ export class DispatchPlansService {
         canApprove: canApprove && approvalReady,
         canReject:
           canApprove && plan.status === DispatchPlanStatus.VALIDATED,
+        canCreateDispatch:
+          canApprove &&
+          plan.status === DispatchPlanStatus.APPROVED &&
+          !existingDispatch,
       },
     };
   }

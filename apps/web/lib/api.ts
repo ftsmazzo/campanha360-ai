@@ -713,6 +713,7 @@ export type DispatchPlanAllowedActions = {
   canRecalculateSimulation?: boolean;
   canApprove?: boolean;
   canReject?: boolean;
+  canCreateDispatch?: boolean;
 };
 
 export type DispatchPlanApprovalSnapshot = {
@@ -848,6 +849,7 @@ export type DispatchPlanItem = {
   cancellationReason?: string | null;
   canceledBy?: { id: string; name: string } | null;
   planIsImmutable?: boolean;
+  existingDispatchId?: string | null;
   allowedActions?: DispatchPlanAllowedActions;
   recalculated?: boolean;
   byEligibilityStatus?: Record<
@@ -880,6 +882,169 @@ export type DispatchPlanItem = {
   };
 };
 
+export type DispatchStatus =
+  | 'DRAFT'
+  | 'PREPARING'
+  | 'READY'
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'PAUSING'
+  | 'PAUSED'
+  | 'COMPLETED'
+  | 'COMPLETED_WITH_ERRORS'
+  | 'FAILED'
+  | 'CANCELED'
+  | 'EMERGENCY_STOPPED';
+
+export type DispatchContentSnapshot = {
+  type: 'TEXT';
+  body: string;
+  hash: string;
+  length: number;
+  approvedVersion: number;
+};
+
+export type DispatchConfigurationSnapshot = {
+  requestedMessagesPerMinute: number | null;
+  effectiveMessagesPerMinute: number | null;
+  minDelaySeconds: number | null;
+  maxDelaySeconds: number | null;
+  batchSize: number | null;
+  pauseBetweenBatchesSeconds: number | null;
+  timezone: string | null;
+  allowedStartTime: string | null;
+  allowedEndTime: string | null;
+  allowedDays: number[] | null;
+  plannedStartAt: string | null;
+  estimatedStartAt: string | null;
+  estimatedEndAt: string | null;
+  totalBatches: number | null;
+  totalBatchPauses: number | null;
+  estimatedActiveDurationSeconds: number | null;
+  estimatedCalendarDurationSeconds: number | null;
+};
+
+export type DispatchAllowedActions = {
+  canView: boolean;
+  canPrepare: boolean;
+  canQueue: boolean;
+  canStart: boolean;
+  canPause: boolean;
+  canResume: boolean;
+  canCancel: boolean;
+  canEmergencyStop: boolean;
+  canReconcile: boolean;
+  canRetryFailedItems: boolean;
+};
+
+export type DispatchApprovedAudience = {
+  totalEvaluated: number;
+  totalEligible: number;
+  totalExcluded: number;
+};
+
+export type DispatchListItem = {
+  id: string;
+  name: string;
+  status: DispatchStatus;
+  dispatchPlanId: string;
+  dispatchPlan: {
+    id: string;
+    name: string;
+    totalEligible: number;
+  };
+  channelAccount: {
+    id: string;
+    name: string;
+    provider: string;
+    status: string;
+  };
+  channelType: string;
+  totalItems: number;
+  sentItems: number;
+  failedItems: number;
+  approvedAudience: DispatchApprovedAudience;
+  createdAt: string;
+  createdBy: {
+    id: string;
+    name: string;
+  };
+};
+
+export type DispatchDetail = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  dispatchPlanId: string;
+  channelAccountId: string;
+  name: string;
+  description: string | null;
+  channelType: string;
+  contentSnapshot: DispatchContentSnapshot;
+  configurationSnapshot: DispatchConfigurationSnapshot;
+  approvalSnapshot: DispatchPlanApprovalSnapshot;
+  status: DispatchStatus;
+  totalItems: number;
+  pendingItems: number;
+  queuedItems: number;
+  processingItems: number;
+  sentItems: number;
+  deliveredItems: number;
+  readItems: number;
+  failedItems: number;
+  skippedItems: number;
+  canceledItems: number;
+  createdByUserId: string;
+  preparedAt: string | null;
+  queuedAt: string | null;
+  startedAt: string | null;
+  pausingAt: string | null;
+  pausedAt: string | null;
+  resumedAt: string | null;
+  completedAt: string | null;
+  failedAt: string | null;
+  canceledAt: string | null;
+  emergencyStoppedAt: string | null;
+  lastProgressAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  dispatchPlan: {
+    id: string;
+    name: string;
+    status: string;
+    version: number;
+    totalEligible: number;
+    totalEvaluated: number;
+    totalExcluded: number;
+  };
+  channelAccount: {
+    id: string;
+    name: string;
+    provider: string;
+    status: string;
+  };
+  createdBy: {
+    id: string;
+    name: string;
+  };
+  allowedActions: DispatchAllowedActions;
+  approvedAudience: DispatchApprovedAudience;
+};
+
+export type ListDispatchesResponse = {
+  dispatches: DispatchListItem[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    totalPages: number;
+  };
+  filters: {
+    status: DispatchStatus | null;
+    search: string | null;
+  };
+};
+
 export type CreateDispatchPlanPayload = {
   name: string;
   description?: string;
@@ -895,6 +1060,51 @@ export type UpdateDispatchPlanPayload = {
   channelAccountId?: string;
   content?: string;
 };
+
+export function fetchDispatches(
+  token: string,
+  campaignId: string,
+  params?: { page?: number; limit?: number; status?: string; search?: string },
+) {
+  const query = new URLSearchParams();
+  if (params?.page) query.set('page', String(params.page));
+  if (params?.limit) query.set('limit', String(params.limit));
+  if (params?.status) query.set('status', params.status);
+  if (params?.search) query.set('search', params.search);
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return request<ListDispatchesResponse>(
+    `/campaigns/${campaignId}/dispatches${suffix}`,
+    {},
+    token,
+  );
+}
+
+export function fetchDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<DispatchDetail>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}`,
+    {},
+    token,
+  );
+}
+
+export function createDispatch(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+) {
+  return request<DispatchDetail>(
+    `/campaigns/${campaignId}/dispatches`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ dispatchPlanId }),
+    },
+    token,
+  );
+}
 
 export function fetchDispatchPlans(token: string, campaignId: string) {
   return request<DispatchPlanItem[]>(

@@ -120,6 +120,21 @@ enum DispatchPlanRecipientEligibilityStatus {
   EXCLUDED_OTHER
 }
 
+enum DispatchStatus {
+  DRAFT
+  PREPARING
+  READY
+  QUEUED
+  RUNNING
+  PAUSING
+  PAUSED
+  COMPLETED
+  COMPLETED_WITH_ERRORS
+  FAILED
+  CANCELED
+  EMERGENCY_STOPPED
+}
+
 enum MessageDirection {
   INBOUND
   OUTBOUND
@@ -143,6 +158,7 @@ model User {
   approvedDispatchPlans DispatchPlan[] @relation("DispatchPlanApprovedBy")
   rejectedDispatchPlans DispatchPlan[] @relation("DispatchPlanRejectedBy")
   canceledDispatchPlans DispatchPlan[] @relation("DispatchPlanCanceledBy")
+  createdDispatches Dispatch[] @relation("DispatchCreatedBy")
   contactNotes ContactNote[]
   createdContactTasks ContactTask[] @relation("ContactTaskCreatedBy")
   assignedContactTasks ContactTask[] @relation("ContactTaskAssignedTo")
@@ -160,6 +176,7 @@ model Organization {
   campaigns   Campaign[]
   dispatchPlans DispatchPlan[]
   dispatchPlanRecipients DispatchPlanRecipient[]
+  dispatches Dispatch[]
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 }
@@ -191,6 +208,7 @@ model Campaign {
   contacts       Contact[]
   dispatchPlans  DispatchPlan[]
   dispatchPlanRecipients DispatchPlanRecipient[]
+  dispatches     Dispatch[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
@@ -357,6 +375,7 @@ model ChannelAccount {
   externalAccountId String?
   config            Json?
   dispatchPlans     DispatchPlan[]
+  dispatches        Dispatch[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
@@ -472,6 +491,7 @@ model DispatchPlan {
   rejectedBy       User?              @relation("DispatchPlanRejectedBy", fields: [rejectedByUserId], references: [id])
   canceledBy       User?              @relation("DispatchPlanCanceledBy", fields: [canceledByUserId], references: [id])
   recipients       DispatchPlanRecipient[]
+  dispatches       Dispatch[]
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
@@ -509,4 +529,54 @@ model DispatchPlanRecipient {
   @@index([organizationId, campaignId])
   @@index([contactId])
   @@index([normalizedDestination])
+}
+
+model Dispatch {
+  id                    String         @id @default(cuid())
+  organizationId        String
+  campaignId            String
+  dispatchPlanId        String         @unique
+  channelAccountId      String
+  name                  String
+  description           String?
+  channelType           ChannelType
+  contentSnapshot       Json
+  configurationSnapshot Json
+  approvalSnapshot      Json
+  status                DispatchStatus @default(DRAFT)
+  totalItems            Int            @default(0)
+  pendingItems          Int            @default(0)
+  queuedItems           Int            @default(0)
+  processingItems       Int            @default(0)
+  sentItems             Int            @default(0)
+  deliveredItems        Int            @default(0)
+  readItems             Int            @default(0)
+  failedItems           Int            @default(0)
+  skippedItems          Int            @default(0)
+  canceledItems         Int            @default(0)
+  createdByUserId       String
+  preparedAt            DateTime?
+  queuedAt              DateTime?
+  startedAt             DateTime?
+  pausingAt             DateTime?
+  pausedAt              DateTime?
+  resumedAt             DateTime?
+  completedAt           DateTime?
+  failedAt              DateTime?
+  canceledAt            DateTime?
+  emergencyStoppedAt    DateTime?
+  lastProgressAt        DateTime?
+  organization          Organization   @relation(fields: [organizationId], references: [id])
+  campaign              Campaign       @relation(fields: [campaignId], references: [id])
+  dispatchPlan          DispatchPlan   @relation(fields: [dispatchPlanId], references: [id])
+  channelAccount        ChannelAccount @relation(fields: [channelAccountId], references: [id])
+  createdBy             User           @relation("DispatchCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  @@index([organizationId, campaignId])
+  @@index([campaignId, status])
+  @@index([dispatchPlanId])
+  @@index([channelAccountId])
+  @@index([status, createdAt])
 }

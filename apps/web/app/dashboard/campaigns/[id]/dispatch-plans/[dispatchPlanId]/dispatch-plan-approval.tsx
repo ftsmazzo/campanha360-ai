@@ -1,10 +1,12 @@
 'use client';
 
 import { FormEvent, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   ApiError,
   DispatchPlanItem,
   approveDispatchPlan,
+  createDispatch,
   getStoredToken,
   rejectDispatchPlan,
 } from '../../../../../../lib/api';
@@ -28,7 +30,10 @@ export function DispatchPlanApproval({
   canApprove,
   onPlanUpdated,
 }: Props) {
+  const router = useRouter();
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
+  const [showCreateDispatchConfirm, setShowCreateDispatchConfirm] =
+    useState(false);
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [rejectReason, setRejectReason] = useState('');
   const [loading, setLoading] = useState(false);
@@ -41,6 +46,8 @@ export function DispatchPlanApproval({
     canApprove && (plan.allowedActions?.canApprove ?? false);
   const canRejectAction =
     canApprove && (plan.allowedActions?.canReject ?? false);
+  const canCreateDispatchAction =
+    canApprove && (plan.allowedActions?.canCreateDispatch ?? false);
 
   let guidance: string | null = null;
   if (plan.status === 'DRAFT') {
@@ -67,6 +74,37 @@ export function DispatchPlanApproval({
       setError(
         err instanceof ApiError ? err.message : 'Nao foi possivel aprovar',
       );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onCreateDispatch() {
+    const token = getStoredToken();
+    if (!token) return;
+    setLoading(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const created = await createDispatch(token, campaignId, plan.id);
+      setShowCreateDispatchConfirm(false);
+      router.push(
+        `/dashboard/campaigns/${campaignId}/dispatches/${created.id}`,
+      );
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setError(
+          err.message ||
+            'Ja existe um Disparo para este Plano. Abra a listagem de Disparos.',
+        );
+        setShowCreateDispatchConfirm(false);
+      } else {
+        setError(
+          err instanceof ApiError
+            ? err.message
+            : 'Nao foi possivel criar o Disparo',
+        );
+      }
     } finally {
       setLoading(false);
     }
@@ -290,10 +328,62 @@ export function DispatchPlanApproval({
             {plan.approvedBy ? ` por ${plan.approvedBy.name}` : ''}. Hash do
             conteudo: {approval.content.hash.slice(0, 12)}…
           </p>
-          <p className="mt-2">
-            A criacao do disparo sera implementada no Epico 09. Nenhuma mensagem
-            sera enviada nesta etapa.
+
+          {canCreateDispatchAction ? (
+            <div className="mt-4">
+              <button
+                type="button"
+                className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                disabled={loading}
+                onClick={() => setShowCreateDispatchConfirm(true)}
+              >
+                Criar Disparo
+              </button>
+            </div>
+          ) : plan.existingDispatchId ? (
+            <p className="mt-3">
+              <a
+                className="font-medium underline"
+                href={`/dashboard/campaigns/${campaignId}/dispatches/${plan.existingDispatchId}`}
+              >
+                Abrir Disparo existente
+              </a>
+            </p>
+          ) : !canApprove ? (
+            <p className="mt-3 text-green-800">
+              Apenas OWNER/ADMIN podem criar o Disparo. Voce pode visualizar o
+              Plano.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {showCreateDispatchConfirm ? (
+        <div className="mt-4 rounded-md border border-[#24382b] bg-[#f7f6f1] p-4">
+          <h4 className="font-semibold text-[#151515]">Confirmar criacao</h4>
+          <p className="mt-2 text-sm text-[#24382b]">
+            Este Disparo sera criado a partir do Plano aprovado e herdara seu
+            publico, canal, conteudo e configuracao. Nenhuma mensagem sera
+            enviada nesta etapa.
           </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              disabled={loading}
+              onClick={onCreateDispatch}
+            >
+              {loading ? 'Criando...' : 'Confirmar criacao'}
+            </button>
+            <button
+              type="button"
+              className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm"
+              disabled={loading}
+              onClick={() => setShowCreateDispatchConfirm(false)}
+            >
+              Voltar
+            </button>
+          </div>
         </div>
       ) : null}
 
