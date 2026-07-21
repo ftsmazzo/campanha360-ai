@@ -23,12 +23,13 @@ import {
   summarizeSnapshotRecipients,
 } from './dispatch-plan-snapshot.util';
 import {
-  buildValidationSnapshot,
-  canReopenDispatchPlan,
-  isValidationCurrent,
-  resolveValidationFinalStatus,
-  ValidationSnapshot,
-} from './dispatch-plan-validation.util';
+  assertChannelReadyForApproval,
+  buildApprovalSnapshot,
+  canApproveDispatchPlanPreconditions,
+  canApproveRole,
+  isDispatchPlanImmutable,
+  normalizeDecisionReason,
+} from './dispatch-plan-approval.util';
 import {
   buildSimulationSnapshot,
   canSimulateDispatchPlan,
@@ -36,8 +37,17 @@ import {
   normalizeSimulationConfig,
   DISPATCH_SIMULATION_DEFAULT_TIMEZONE,
 } from './dispatch-plan-simulation.util';
+import {
+  buildValidationSnapshot,
+  canReopenDispatchPlan,
+  isValidationCurrent,
+  resolveValidationFinalStatus,
+  ValidationSnapshot,
+} from './dispatch-plan-validation.util';
+import { CancelDispatchPlanDto } from './dto/cancel-dispatch-plan.dto';
 import { CreateDispatchPlanDto } from './dto/create-dispatch-plan.dto';
 import { ListDispatchPlanRecipientsQueryDto } from './dto/list-dispatch-plan-recipients-query.dto';
+import { RejectDispatchPlanDto } from './dto/reject-dispatch-plan.dto';
 import { SimulateDispatchPlanDto } from './dto/simulate-dispatch-plan.dto';
 import { UpdateDispatchPlanDto } from './dto/update-dispatch-plan.dto';
 import {
@@ -80,6 +90,15 @@ const dispatchPlanSelect = {
   simulationSnapshot: true,
   simulatedAt: true,
   simulatedVersion: true,
+  approvedByUserId: true,
+  approvedAt: true,
+  approvalSnapshot: true,
+  rejectedByUserId: true,
+  rejectedAt: true,
+  rejectionReason: true,
+  canceledByUserId: true,
+  canceledAt: true,
+  cancellationReason: true,
   createdByUserId: true,
   createdAt: true,
   updatedAt: true,
@@ -102,6 +121,24 @@ const dispatchPlanSelect = {
       id: true,
       name: true,
       email: true,
+    },
+  },
+  approvedBy: {
+    select: {
+      id: true,
+      name: true,
+    },
+  },
+  rejectedBy: {
+    select: {
+      id: true,
+      name: true,
+    },
+  },
+  canceledBy: {
+    select: {
+      id: true,
+      name: true,
     },
   },
 } satisfies Prisma.DispatchPlanSelect;
@@ -153,6 +190,7 @@ export class DispatchPlansService {
     ]);
 
     const canWrite = WRITE_ROLES.includes(membership.role);
+    const canApprove = canApproveRole(membership.role);
     const validationIsCurrent = isValidationCurrent({
       validationSnapshot: plan.validationSnapshot,
       validatedVersion: plan.validatedVersion,
@@ -176,17 +214,37 @@ export class DispatchPlansService {
       status: plan.status,
       validationIsCurrent,
     });
+    const approvalReady =
+      canApproveDispatchPlanPreconditions({
+        status: plan.status,
+        snapshotCreatedAt: plan.snapshotCreatedAt,
+        totalEligible: plan.totalEligible,
+        content: plan.content,
+        validationSnapshot: plan.validationSnapshot,
+        validatedAt: plan.validatedAt,
+        validatedVersion: plan.validatedVersion,
+        planVersion: plan.version,
+        simulationSnapshot: plan.simulationSnapshot,
+        simulatedAt: plan.simulatedAt,
+        simulatedVersion: plan.simulatedVersion,
+      }).ok === true;
+    const planIsImmutable = isDispatchPlanImmutable(plan.status);
 
     return {
       ...plan,
       byEligibilityStatus: this.buildEligibilityStatusCounts(grouped),
       validationIsCurrent,
       simulationIsCurrent,
+      planIsImmutable,
       allowedActions: {
         canEdit: canWrite && isDispatchPlanEditable(plan.status),
         canCancel: canWrite && canCancelDispatchPlan(plan.status),
         canGenerateSnapshot:
           canWrite && plan.status === DispatchPlanStatus.DRAFT,
+        canRegenerateSnapshot:
+          canWrite &&
+          plan.status === DispatchPlanStatus.DRAFT &&
+          Boolean(plan.snapshotCreatedAt),
         canValidate:
           canWrite &&
           canValidateDispatchPlan(plan.status) &&
@@ -194,6 +252,9 @@ export class DispatchPlansService {
         canReopen: canWrite && canReopenDispatchPlan(plan.status),
         canSimulate,
         canRecalculateSimulation: canSimulate && Boolean(plan.simulationSnapshot),
+        canApprove: canApprove && approvalReady,
+        canReject:
+          canApprove && plan.status === DispatchPlanStatus.VALIDATED,
       },
     };
   }
@@ -1028,7 +1089,12 @@ export class DispatchPlansService {
     };
   }
 
-  async cancel(userId: string, campaignId: string, dispatchPlanId: string) {
+  async cancel(
+    userId: string,
+    campaignId: string,
+    dispatchPlanId: string,
+    dto: CancelDispatchPlanDto,
+  ) {
     const campaign = await this.getCampaignContext(userId, campaignId, true);
     const existing = await this.getDispatchPlanOrThrow(
       dispatchPlanId,
@@ -1042,11 +1108,43 @@ export class DispatchPlansService {
       );
     }
 
-    const plan = await this.prisma.dispatchPlan.update({
-      where: { id: existing.id },
-      data: { status: DispatchPlanStatus.CANCELED },
-      select: dispatchPlanSelect,
+    let reason: string;
+    try {
+      reason = normalizeDecisionReason(dto.reason);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Motivo invalido',
+      );
+    }
+
+    const canceledAt = new Date();
+    const updated = await this.prisma.dispatchPlan.updateMany({
+      where: {
+        id: existing.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: {
+          in: [
+            DispatchPlanStatus.DRAFT,
+            DispatchPlanStatus.BLOCKED,
+            DispatchPlanStatus.VALIDATED,
+          ],
+        },
+        version: existing.version,
+      },
+      data: {
+        status: DispatchPlanStatus.CANCELED,
+        canceledByUserId: userId,
+        canceledAt,
+        cancellationReason: reason,
+      },
     });
+
+    if (updated.count !== 1) {
+      throw new ConflictException(
+        'Nao foi possivel cancelar o plano; ele foi alterado por outra operacao',
+      );
+    }
 
     await this.audit.log({
       organizationId: campaign.organizationId,
@@ -1054,17 +1152,337 @@ export class DispatchPlansService {
       actorUserId: userId,
       action: 'DISPATCH_PLAN_CANCELED',
       entityType: 'DispatchPlan',
-      entityId: plan.id,
-      metadata: buildDispatchPlanAuditMetadata({
-        dispatchPlanId: plan.id,
-        segmentId: plan.segmentId,
-        channelAccountId: plan.channelAccountId,
-        status: plan.status,
-        version: plan.version,
-      }),
+      entityId: existing.id,
+      metadata: {
+        dispatchPlanId: existing.id,
+        version: existing.version,
+        reasonLength: reason.length,
+        finalStatus: DispatchPlanStatus.CANCELED,
+        canceledAt: canceledAt.toISOString(),
+      },
     });
 
-    return plan;
+    return this.getDispatchPlanOrThrow(
+      existing.id,
+      campaign.organizationId,
+      campaignId,
+    );
+  }
+
+  async approve(userId: string, campaignId: string, dispatchPlanId: string) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    await this.organizationAccess.requireApproveAccess(
+      userId,
+      campaign.organizationId,
+    );
+
+    const existing = await this.getDispatchPlanOrThrow(
+      dispatchPlanId,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    const preconditions = canApproveDispatchPlanPreconditions({
+      status: existing.status,
+      snapshotCreatedAt: existing.snapshotCreatedAt,
+      totalEligible: existing.totalEligible,
+      content: existing.content,
+      validationSnapshot: existing.validationSnapshot,
+      validatedAt: existing.validatedAt,
+      validatedVersion: existing.validatedVersion,
+      planVersion: existing.version,
+      simulationSnapshot: existing.simulationSnapshot,
+      simulatedAt: existing.simulatedAt,
+      simulatedVersion: existing.simulatedVersion,
+    });
+    if (!preconditions.ok) {
+      throw new BadRequestException(preconditions.message);
+    }
+
+    await this.runApprovalFinalRecheck({
+      plan: existing,
+      organizationId: campaign.organizationId,
+      campaignId,
+    });
+
+    const channelAccount = await this.prisma.channelAccount.findFirst({
+      where: {
+        id: existing.channelAccountId,
+        organizationId: campaign.organizationId,
+      },
+      select: {
+        id: true,
+        campaignId: true,
+        provider: true,
+        status: true,
+      },
+    });
+
+    try {
+      assertChannelReadyForApproval({
+        channelExists: Boolean(channelAccount),
+        channelBelongsToCampaign: Boolean(
+          channelAccount && channelAccount.campaignId === campaignId,
+        ),
+        provider: channelAccount?.provider ?? null,
+        status: channelAccount?.status ?? null,
+      });
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Canal invalido para aprovacao',
+      );
+    }
+
+    const approvedAt = new Date();
+    const approvalSnapshot = buildApprovalSnapshot({
+      approvedAt,
+      approvedByUserId: userId,
+      channelProvider: String(channelAccount!.provider),
+      plan: {
+        id: existing.id,
+        name: existing.name,
+        campaignId: existing.campaignId,
+        segmentId: existing.segmentId,
+        channelAccountId: existing.channelAccountId,
+        channelType: existing.channelType,
+        version: existing.version,
+        content: existing.content,
+        totalEvaluated: existing.totalEvaluated,
+        totalEligible: existing.totalEligible,
+        totalExcluded: existing.totalExcluded,
+        snapshotCreatedAt: existing.snapshotCreatedAt,
+        validatedAt: existing.validatedAt,
+        validatedVersion: existing.validatedVersion,
+        validationSnapshot: existing.validationSnapshot,
+        simulatedAt: existing.simulatedAt,
+        simulatedVersion: existing.simulatedVersion,
+        simulationSnapshot: existing.simulationSnapshot,
+      },
+    });
+
+    const persisted = await this.prisma.dispatchPlan.updateMany({
+      where: {
+        id: existing.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: DispatchPlanStatus.VALIDATED,
+        version: existing.version,
+        validatedVersion: existing.version,
+        simulatedVersion: existing.version,
+      },
+      data: {
+        status: DispatchPlanStatus.APPROVED,
+        approvedByUserId: userId,
+        approvedAt,
+        approvalSnapshot: approvalSnapshot as unknown as Prisma.InputJsonValue,
+      },
+    });
+
+    if (persisted.count !== 1) {
+      throw new ConflictException(
+        'Nao foi possivel aprovar o plano; ele foi alterado por outra operacao',
+      );
+    }
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'DISPATCH_PLAN_APPROVED',
+      entityType: 'DispatchPlan',
+      entityId: existing.id,
+      metadata: {
+        dispatchPlanId: existing.id,
+        version: existing.version,
+        totalEvaluated: existing.totalEvaluated,
+        totalEligible: existing.totalEligible,
+        totalExcluded: existing.totalExcluded,
+        channelAccountId: existing.channelAccountId,
+        validatedAt: existing.validatedAt?.toISOString() ?? null,
+        simulatedAt: existing.simulatedAt?.toISOString() ?? null,
+        contentHash: approvalSnapshot.content.hash,
+        approvedAt: approvedAt.toISOString(),
+        finalStatus: DispatchPlanStatus.APPROVED,
+      },
+    });
+
+    return this.getById(userId, campaignId, existing.id);
+  }
+
+  async reject(
+    userId: string,
+    campaignId: string,
+    dispatchPlanId: string,
+    dto: RejectDispatchPlanDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    await this.organizationAccess.requireApproveAccess(
+      userId,
+      campaign.organizationId,
+    );
+
+    const existing = await this.getDispatchPlanOrThrow(
+      dispatchPlanId,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    if (existing.status !== DispatchPlanStatus.VALIDATED) {
+      throw new BadRequestException(
+        'Somente planos VALIDATED podem ser rejeitados',
+      );
+    }
+
+    let reason: string;
+    try {
+      reason = normalizeDecisionReason(dto.reason);
+    } catch (error) {
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Motivo invalido',
+      );
+    }
+
+    const rejectedAt = new Date();
+    const updated = await this.prisma.dispatchPlan.updateMany({
+      where: {
+        id: existing.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: DispatchPlanStatus.VALIDATED,
+        version: existing.version,
+      },
+      data: {
+        status: DispatchPlanStatus.REJECTED,
+        rejectedByUserId: userId,
+        rejectedAt,
+        rejectionReason: reason,
+      },
+    });
+
+    if (updated.count !== 1) {
+      throw new ConflictException(
+        'Nao foi possivel rejeitar o plano; ele foi alterado por outra operacao',
+      );
+    }
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'DISPATCH_PLAN_REJECTED',
+      entityType: 'DispatchPlan',
+      entityId: existing.id,
+      metadata: {
+        dispatchPlanId: existing.id,
+        version: existing.version,
+        reasonLength: reason.length,
+        finalStatus: DispatchPlanStatus.REJECTED,
+        rejectedAt: rejectedAt.toISOString(),
+      },
+    });
+
+    return this.getById(userId, campaignId, existing.id);
+  }
+
+  private async runApprovalFinalRecheck(input: {
+    plan: Awaited<ReturnType<DispatchPlansService['getDispatchPlanOrThrow']>>;
+    organizationId: string;
+    campaignId: string;
+  }) {
+    const { plan, organizationId, campaignId } = input;
+    const scope = {
+      organizationId,
+      campaignId,
+      dispatchPlanId: plan.id,
+    };
+
+    const [
+      recipientCount,
+      statusGroups,
+      eligibleOptOutCount,
+      eligibleBlockedCount,
+      eligibleDeletedCount,
+      eligibleDestinationGroups,
+    ] = await Promise.all([
+      this.prisma.dispatchPlanRecipient.count({ where: scope }),
+      this.prisma.dispatchPlanRecipient.groupBy({
+        by: ['eligibilityStatus'],
+        where: scope,
+        _count: { _all: true },
+      }),
+      this.prisma.dispatchPlanRecipient.count({
+        where: {
+          ...scope,
+          eligibilityStatus: DispatchPlanRecipientEligibilityStatus.ELIGIBLE,
+          optOutSnapshot: { not: Prisma.DbNull },
+        },
+      }),
+      this.prisma.dispatchPlanRecipient.count({
+        where: {
+          ...scope,
+          eligibilityStatus: DispatchPlanRecipientEligibilityStatus.ELIGIBLE,
+          contact: { status: ContactStatus.BLOCKED },
+        },
+      }),
+      this.prisma.dispatchPlanRecipient.count({
+        where: {
+          ...scope,
+          eligibilityStatus: DispatchPlanRecipientEligibilityStatus.ELIGIBLE,
+          contact: { status: ContactStatus.DELETED },
+        },
+      }),
+      this.prisma.dispatchPlanRecipient.groupBy({
+        by: ['normalizedDestination'],
+        where: {
+          ...scope,
+          eligibilityStatus: DispatchPlanRecipientEligibilityStatus.ELIGIBLE,
+        },
+        _count: { _all: true },
+      }),
+    ]);
+
+    if (recipientCount <= 0) {
+      throw new BadRequestException(
+        'Plano sem recipients nao pode ser aprovado',
+      );
+    }
+
+    const counts = this.buildEligibilityStatusCounts(statusGroups);
+    const eligibleCount =
+      counts[DispatchPlanRecipientEligibilityStatus.ELIGIBLE] ?? 0;
+    const excludedCount = recipientCount - eligibleCount;
+
+    if (
+      recipientCount !== plan.totalEvaluated ||
+      eligibleCount !== plan.totalEligible ||
+      excludedCount !== plan.totalExcluded ||
+      plan.totalEligible + plan.totalExcluded !== plan.totalEvaluated
+    ) {
+      throw new BadRequestException(
+        'Totais do Plano inconsistentes com os recipients',
+      );
+    }
+
+    if (eligibleOptOutCount > 0) {
+      throw new BadRequestException(
+        'Existem recipients ELIGIBLE com opt-out',
+      );
+    }
+    if (eligibleBlockedCount > 0) {
+      throw new BadRequestException(
+        'Existem contatos BLOCKED marcados como ELIGIBLE',
+      );
+    }
+    if (eligibleDeletedCount > 0) {
+      throw new BadRequestException(
+        'Existem contatos DELETED marcados como ELIGIBLE',
+      );
+    }
+    if (eligibleDestinationGroups.some((group) => group._count._all > 1)) {
+      throw new BadRequestException(
+        'Existem destinos duplicados entre recipients ELIGIBLE',
+      );
+    }
   }
 
   private async resolveSegment(

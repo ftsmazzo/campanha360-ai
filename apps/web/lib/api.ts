@@ -706,10 +706,59 @@ export type DispatchPlanAllowedActions = {
   canEdit: boolean;
   canCancel: boolean;
   canGenerateSnapshot: boolean;
+  canRegenerateSnapshot?: boolean;
   canValidate: boolean;
   canReopen: boolean;
   canSimulate?: boolean;
   canRecalculateSimulation?: boolean;
+  canApprove?: boolean;
+  canReject?: boolean;
+};
+
+export type DispatchPlanApprovalSnapshot = {
+  approvedAt: string;
+  approvedVersion: number;
+  approvedByUserId: string;
+  plan: {
+    dispatchPlanId: string;
+    name: string;
+    campaignId: string;
+    segmentId: string;
+    channelAccountId: string;
+    channelType: string;
+    channelProvider: string;
+  };
+  audience: {
+    totalEvaluated: number;
+    totalEligible: number;
+    totalExcluded: number;
+    snapshotCreatedAt: string | null;
+  };
+  validation: {
+    validatedAt: string | null;
+    validatedVersion: number | null;
+    passed: boolean;
+    errorCount: number;
+    warningCount: number;
+  };
+  simulation: {
+    simulatedAt: string | null;
+    simulatedVersion: number | null;
+    requestedMessagesPerMinute: number | null;
+    effectiveMessagesPerMinute: number | null;
+    totalBatches: number | null;
+    estimatedActiveDurationSeconds: number | null;
+    estimatedCalendarDurationSeconds: number | null;
+    estimatedStartAt: string | null;
+    estimatedEndAt: string | null;
+    timezone: string | null;
+  };
+  content: {
+    type: 'TEXT';
+    length: number;
+    hash: string;
+    body: string;
+  };
 };
 
 export type DispatchPlanSimulationWarning = {
@@ -788,6 +837,17 @@ export type DispatchPlanItem = {
   simulatedAt?: string | null;
   simulatedVersion?: number | null;
   simulationIsCurrent?: boolean;
+  approvalSnapshot?: DispatchPlanApprovalSnapshot | null;
+  approvedAt?: string | null;
+  approvedByUserId?: string | null;
+  approvedBy?: { id: string; name: string } | null;
+  rejectedAt?: string | null;
+  rejectionReason?: string | null;
+  rejectedBy?: { id: string; name: string } | null;
+  canceledAt?: string | null;
+  cancellationReason?: string | null;
+  canceledBy?: { id: string; name: string } | null;
+  planIsImmutable?: boolean;
   allowedActions?: DispatchPlanAllowedActions;
   recalculated?: boolean;
   byEligibilityStatus?: Record<
@@ -885,10 +945,36 @@ export function cancelDispatchPlan(
   token: string,
   campaignId: string,
   dispatchPlanId: string,
+  reason: string,
 ) {
   return request<DispatchPlanItem>(
     `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/cancel`,
+    { method: 'POST', body: JSON.stringify({ reason }) },
+    token,
+  );
+}
+
+export function approveDispatchPlan(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+) {
+  return request<DispatchPlanItem>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/approve`,
     { method: 'POST' },
+    token,
+  );
+}
+
+export function rejectDispatchPlan(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+  reason: string,
+) {
+  return request<DispatchPlanItem>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/reject`,
+    { method: 'POST', body: JSON.stringify({ reason }) },
     token,
   );
 }

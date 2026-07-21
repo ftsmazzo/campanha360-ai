@@ -10,8 +10,10 @@ import {
 } from '@nestjs/common';
 import { AuthUser, CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CancelDispatchPlanDto } from './dto/cancel-dispatch-plan.dto';
 import { CreateDispatchPlanDto } from './dto/create-dispatch-plan.dto';
 import { ListDispatchPlanRecipientsQueryDto } from './dto/list-dispatch-plan-recipients-query.dto';
+import { RejectDispatchPlanDto } from './dto/reject-dispatch-plan.dto';
 import { SimulateDispatchPlanDto } from './dto/simulate-dispatch-plan.dto';
 import { UpdateDispatchPlanDto } from './dto/update-dispatch-plan.dto';
 import { DispatchPlansService } from './dispatch-plans.service';
@@ -117,6 +119,34 @@ export class DispatchPlansController {
     );
   }
 
+  @Post(':dispatchPlanId/approve')
+  approve(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchPlanId') dispatchPlanId: string,
+  ) {
+    return this.dispatchPlansService.approve(
+      user.id,
+      campaignId,
+      dispatchPlanId,
+    );
+  }
+
+  @Post(':dispatchPlanId/reject')
+  reject(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchPlanId') dispatchPlanId: string,
+    @Body() dto: RejectDispatchPlanDto,
+  ) {
+    return this.dispatchPlansService.reject(
+      user.id,
+      campaignId,
+      dispatchPlanId,
+      dto,
+    );
+  }
+
   @Put(':dispatchPlanId')
   update(
     @CurrentUser() user: AuthUser,
@@ -137,11 +167,13 @@ export class DispatchPlansController {
     @CurrentUser() user: AuthUser,
     @Param('campaignId') campaignId: string,
     @Param('dispatchPlanId') dispatchPlanId: string,
+    @Body() dto: CancelDispatchPlanDto,
   ) {
     return this.dispatchPlansService.cancel(
       user.id,
       campaignId,
       dispatchPlanId,
+      dto,
     );
   }
 }

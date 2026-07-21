@@ -28,10 +28,12 @@ import {
   getDispatchPlanStatusLabel,
   isDispatchPlanEditableStatus,
 } from '../../../../../../lib/dispatch-plans';
-import { canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
+import { canApproveRole, canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
 import { DispatchPlanAudience } from './dispatch-plan-audience';
-import { DispatchPlanValidation } from './dispatch-plan-validation';
+import { DispatchPlanApproval } from './dispatch-plan-approval';
+import { DispatchPlanProgress } from './dispatch-plan-progress';
 import { DispatchPlanSimulation } from './dispatch-plan-simulation';
+import { DispatchPlanValidation } from './dispatch-plan-validation';
 
 export default function DispatchPlanDetailPage() {
   const router = useRouter();
@@ -58,14 +60,23 @@ export default function DispatchPlanDetailPage() {
   const canWrite = campaign
     ? canWriteRole(getOrganizationRole(user?.memberships, campaign.organizationId))
     : false;
+  const canApprove = campaign
+    ? canApproveRole(
+        getOrganizationRole(user?.memberships, campaign.organizationId),
+      )
+    : false;
 
   const editable = plan
     ? isDispatchPlanEditableStatus(plan.status) &&
       canWrite &&
-      plan.status !== 'VALIDATING'
+      plan.status !== 'VALIDATING' &&
+      !plan.planIsImmutable
     : false;
   const cancelable =
-    plan && canWrite ? canCancelDispatchPlanStatus(plan.status) : false;
+    plan && canWrite
+      ? (plan.allowedActions?.canCancel ??
+        canCancelDispatchPlanStatus(plan.status))
+      : false;
 
   const evolutionChannels = useMemo(
     () =>
@@ -167,7 +178,14 @@ export default function DispatchPlanDetailPage() {
 
   async function onCancel() {
     if (!cancelable || !plan) return;
-    if (!window.confirm('Cancelar este plano de disparo?')) return;
+    const reason = window.prompt(
+      'Informe o motivo do cancelamento (minimo 10 caracteres):',
+    );
+    if (reason == null) return;
+    if (reason.trim().length < 10) {
+      setError('Motivo do cancelamento deve ter ao menos 10 caracteres');
+      return;
+    }
 
     const token = getStoredToken();
     if (!token) {
@@ -180,7 +198,12 @@ export default function DispatchPlanDetailPage() {
     setSuccess(null);
 
     try {
-      const updated = await cancelDispatchPlan(token, campaignId, dispatchPlanId);
+      const updated = await cancelDispatchPlan(
+        token,
+        campaignId,
+        dispatchPlanId,
+        reason.trim(),
+      );
       setPlan(updated);
       setSuccess('Plano cancelado');
     } catch (err) {
@@ -278,9 +301,11 @@ export default function DispatchPlanDetailPage() {
         </div>
 
         <p className="mt-4 rounded-md border border-[#e6d9a8] bg-[#fff8e1] px-3 py-2 text-sm text-[#6b5a1e]">
-          Nada sera enviado a partir desta tela. Aprovacao e execucao permanecem
-          fora desta subetapa.
+          Nada sera enviado a partir desta tela. A criacao do disparo real
+          permanece no Epico 09.
         </p>
+
+        {!loading && plan ? <DispatchPlanProgress plan={plan} /> : null}
 
         {loading ? (
           <p className="mt-6 text-sm text-[#65655f]">Carregando...</p>
@@ -414,6 +439,13 @@ export default function DispatchPlanDetailPage() {
             campaignId={campaignId}
             plan={plan}
             canWrite={canWrite}
+            onPlanUpdated={onPlanUpdated}
+          />
+          <DispatchPlanApproval
+            campaignId={campaignId}
+            plan={plan}
+            canWrite={canWrite}
+            canApprove={canApprove}
             onPlanUpdated={onPlanUpdated}
           />
           </>

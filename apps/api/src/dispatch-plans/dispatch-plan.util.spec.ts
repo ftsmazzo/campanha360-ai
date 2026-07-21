@@ -37,6 +37,7 @@ describe('dispatch-plan.util', () => {
     assert.equal(canCancelDispatchPlan(DispatchPlanStatus.BLOCKED), true);
     assert.equal(canCancelDispatchPlan(DispatchPlanStatus.VALIDATED), true);
     assert.equal(canCancelDispatchPlan(DispatchPlanStatus.APPROVED), false);
+    assert.equal(canCancelDispatchPlan(DispatchPlanStatus.REJECTED), false);
     assert.equal(canCancelDispatchPlan(DispatchPlanStatus.CANCELED), false);
   });
 

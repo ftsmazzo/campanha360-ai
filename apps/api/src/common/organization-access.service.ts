@@ -8,6 +8,11 @@ const WRITE_ROLES: MembershipRole[] = [
   MembershipRole.MANAGER,
 ];
 
+const APPROVE_ROLES: MembershipRole[] = [
+  MembershipRole.OWNER,
+  MembershipRole.ADMIN,
+];
+
 @Injectable()
 export class OrganizationAccessService {
   constructor(private readonly prisma: PrismaService) {}
@@ -31,6 +36,18 @@ export class OrganizationAccessService {
 
     if (!WRITE_ROLES.includes(membership.role)) {
       throw new ForbiddenException('Permissao insuficiente para esta acao');
+    }
+
+    return membership;
+  }
+
+  async requireApproveAccess(userId: string, organizationId: string) {
+    const membership = await this.requireMembership(userId, organizationId);
+
+    if (!APPROVE_ROLES.includes(membership.role)) {
+      throw new ForbiddenException(
+        'Permissao insuficiente para aprovar ou rejeitar',
+      );
     }
 
     return membership;

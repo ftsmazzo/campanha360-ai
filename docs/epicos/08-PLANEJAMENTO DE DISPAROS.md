@@ -1456,8 +1456,42 @@ Fora desta subetapa (intencional):
 - `Dispatch` / `DispatchItem`;
 - BullMQ, Worker, Evolution send, agendamento real, retry, pausa ou execucao.
 
-## Proxima subetapa
+## Estado da 08.5
 
-Implementar apenas:
+**Concluida no codigo (aprovacao e imutabilidade).**
 
-**08.5 — Aprovacao e Imutabilidade**
+Entregue:
+
+- campos de aprovacao/rejeicao/cancelamento no `DispatchPlan`;
+- migration `20260721163000_dispatch_plan_approval`;
+- `POST .../approve` (OWNER/ADMIN);
+- `POST .../reject` com motivo obrigatorio (OWNER/ADMIN);
+- `POST .../cancel` com motivo obrigatorio (OWNER/ADMIN/MANAGER);
+- rechecagem final leve antes da aprovacao;
+- `approvalSnapshot` com conteudo + hash SHA-256;
+- imutabilidade apos APPROVED/REJECTED/CANCELED;
+- flags `canApprove`, `canReject`, `planIsImmutable`;
+- etapa Aprovacao e progresso na Web;
+- audit `DISPATCH_PLAN_APPROVED`, `DISPATCH_PLAN_REJECTED`,
+  `DISPATCH_PLAN_CANCELED`.
+
+## Estado final do Epico 08
+
+**Concluido.**
+
+- Plano criado;
+- publico congelado;
+- blindagens aplicadas;
+- simulacao persistida;
+- aprovacao explicita;
+- imutabilidade;
+- nenhuma execucao real.
+
+Fora desta subetapa / Epico 08 (intencional):
+
+- `Dispatch` / `DispatchItem`;
+- BullMQ, Worker, Evolution send, agendamento real.
+
+## Proxima etapa
+
+Iniciar o Epico 09 — Motor de Disparo, apenas apos validacao deste fechamento.

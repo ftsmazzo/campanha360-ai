@@ -15,6 +15,7 @@ import {
   ContactStatus,
   DispatchPlanRecipientEligibilityStatus,
   DispatchPlanStatus,
+  MembershipRole,
 } from '@prisma/client';
 import { SnapshotContactInput } from './dispatch-plan-snapshot.util';
 import { DispatchPlansService } from './dispatch-plans.service';
@@ -43,6 +44,15 @@ function plan(overrides: Record<string, unknown> = {}) {
     simulationSnapshot: null,
     simulatedAt: null,
     simulatedVersion: null,
+    approvedByUserId: null,
+    approvedAt: null,
+    approvalSnapshot: null,
+    rejectedByUserId: null,
+    rejectedAt: null,
+    rejectionReason: null,
+    canceledByUserId: null,
+    canceledAt: null,
+    cancellationReason: null,
     createdByUserId: 'user-1',
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -54,6 +64,9 @@ function plan(overrides: Record<string, unknown> = {}) {
       status: ChannelAccountStatus.CONNECTED,
     },
     createdBy: { id: 'user-1', name: 'Usuario', email: 'u@example.com' },
+    approvedBy: null,
+    rejectedBy: null,
+    canceledBy: null,
     ...overrides,
   };
 }
@@ -1270,5 +1283,328 @@ describe('DispatchPlansService simulation 08.4', () => {
     );
     assert.equal(result.simulationIsCurrent, true);
     assert.equal(result.status, DispatchPlanStatus.VALIDATED);
+  });
+});
+
+function approvablePlan(overrides: Record<string, unknown> = {}) {
+  return validatedPlan({
+    simulationSnapshot: {
+      configuration: {
+        requestedMessagesPerMinute: 4,
+        timezone: 'America/Sao_Paulo',
+      },
+      estimates: {
+        effectiveMessagesPerMinute: 4,
+        totalBatches: 2,
+        estimatedActiveDurationSeconds: 300,
+        estimatedCalendarDurationSeconds: 300,
+        estimatedStartAt: '2026-07-22T11:00:00.000Z',
+        estimatedEndAt: '2026-07-22T11:05:00.000Z',
+      },
+    },
+    simulatedAt: new Date('2026-07-21T12:00:00.000Z'),
+    simulatedVersion: 3,
+    ...overrides,
+  });
+}
+
+function createApprovalHarness(options: {
+  existingPlan?: ReturnType<typeof plan> | null;
+  denyWrite?: boolean;
+  denyApprove?: boolean;
+  persistCount?: number;
+  channelStatus?: ChannelAccountStatus;
+  channelProvider?: ChannelProvider;
+  recipientCount?: number;
+  eligibleCount?: number;
+  eligibleOptOutCount?: number;
+  duplicateEligible?: boolean;
+} = {}) {
+  const currentPlan =
+    options.existingPlan === undefined ? approvablePlan() : options.existingPlan;
+  let status =
+    (currentPlan?.status as DispatchPlanStatus) ?? DispatchPlanStatus.VALIDATED;
+  let version = currentPlan?.version ?? 3;
+  let approvalSnapshot: unknown = currentPlan?.approvalSnapshot ?? null;
+  let approvedAt: Date | null = null;
+  let approvedByUserId: string | null = null;
+  let rejectionReason: string | null = null;
+  let rejectedAt: Date | null = null;
+  let cancellationReason: string | null = null;
+  let canceledAt: Date | null = null;
+  const auditEvents: Array<Record<string, unknown>> = [];
+
+  const recipientCount = options.recipientCount ?? currentPlan?.totalEvaluated ?? 40;
+  const eligibleCount = options.eligibleCount ?? currentPlan?.totalEligible ?? 40;
+
+  const prisma = {
+    campaign: {
+      findUnique: async () => ({
+        id: 'campaign-1',
+        organizationId: 'org-1',
+        status: CampaignStatus.ACTIVE,
+      }),
+    },
+    dispatchPlan: {
+      findFirst: async () => {
+        if (!currentPlan) return null;
+        return {
+          ...currentPlan,
+          status,
+          version,
+          approvalSnapshot,
+          approvedAt,
+          approvedByUserId,
+          rejectionReason,
+          rejectedAt,
+          cancellationReason,
+          canceledAt,
+          approvedBy: approvedByUserId
+            ? { id: approvedByUserId, name: 'Aprovador' }
+            : null,
+          rejectedBy: null,
+          canceledBy: null,
+        };
+      },
+      updateMany: async (args: {
+        where: Record<string, unknown>;
+        data: Record<string, unknown>;
+      }) => {
+        const count = options.persistCount ?? 1;
+        if (count !== 1) return { count };
+        if (args.data.status === DispatchPlanStatus.APPROVED) {
+          status = DispatchPlanStatus.APPROVED;
+          approvalSnapshot = args.data.approvalSnapshot;
+          approvedAt = args.data.approvedAt as Date;
+          approvedByUserId = args.data.approvedByUserId as string;
+        }
+        if (args.data.status === DispatchPlanStatus.REJECTED) {
+          status = DispatchPlanStatus.REJECTED;
+          rejectionReason = args.data.rejectionReason as string;
+          rejectedAt = args.data.rejectedAt as Date;
+        }
+        if (args.data.status === DispatchPlanStatus.CANCELED) {
+          status = DispatchPlanStatus.CANCELED;
+          cancellationReason = args.data.cancellationReason as string;
+          canceledAt = args.data.canceledAt as Date;
+        }
+        if (args.data.status === DispatchPlanStatus.DRAFT) {
+          status = DispatchPlanStatus.DRAFT;
+        }
+        return { count: 1 };
+      },
+      update: async () => ({ ...currentPlan, status }),
+    },
+    channelAccount: {
+      findFirst: async () => ({
+        id: 'channel-1',
+        campaignId: 'campaign-1',
+        provider: options.channelProvider ?? ChannelProvider.WHATSAPP_EVOLUTION,
+        status: options.channelStatus ?? ChannelAccountStatus.CONNECTED,
+      }),
+    },
+    segment: {
+      findFirst: async () => ({ id: 'segment-1', campaignId: 'campaign-1' }),
+    },
+    dispatchPlanRecipient: {
+      count: async (args: { where: Record<string, unknown> }) => {
+        if (args.where.optOutSnapshot) return options.eligibleOptOutCount ?? 0;
+        if (args.where.contact) return 0;
+        return recipientCount;
+      },
+      groupBy: async (args: { by: string[] }) => {
+        if (args.by.includes('normalizedDestination')) {
+          return options.duplicateEligible
+            ? [{ normalizedDestination: '5562999990001', _count: { _all: 2 } }]
+            : [];
+        }
+        return [
+          {
+            eligibilityStatus: DispatchPlanRecipientEligibilityStatus.ELIGIBLE,
+            _count: { _all: eligibleCount },
+          },
+        ];
+      },
+    },
+  };
+
+  const access = {
+    requireWriteAccess: async () => {
+      if (options.denyWrite) throw new ForbiddenException('Permissao insuficiente');
+      return { role: MembershipRole.MANAGER };
+    },
+    requireApproveAccess: async () => {
+      if (options.denyApprove) {
+        throw new ForbiddenException('Permissao insuficiente para aprovar');
+      }
+      return { role: MembershipRole.OWNER };
+    },
+    requireMembership: async () => ({
+      role: options.denyApprove ? MembershipRole.MANAGER : MembershipRole.OWNER,
+    }),
+  };
+
+  const audit = {
+    log: async (event: Record<string, unknown>) => {
+      auditEvents.push(event);
+    },
+  };
+
+  return {
+    service: new DispatchPlansService(
+      prisma as never,
+      access as never,
+      audit as never,
+    ),
+    auditEvents,
+    getStatus: () => status,
+    getApprovalSnapshot: () => approvalSnapshot,
+  };
+}
+
+describe('DispatchPlansService approval 08.5', () => {
+  it('OWNER aprova Plano VALIDATED completo', async () => {
+    const harness = createApprovalHarness();
+    const result = await harness.service.approve(
+      'user-1',
+      'campaign-1',
+      'plan-1',
+    );
+    assert.equal(result.status, DispatchPlanStatus.APPROVED);
+    assert.equal(harness.getStatus(), DispatchPlanStatus.APPROVED);
+    assert.ok((harness.getApprovalSnapshot() as { content: { hash: string } }).content.hash);
+    assert.equal(harness.auditEvents[0]?.action, 'DISPATCH_PLAN_APPROVED');
+    const metadata = harness.auditEvents[0]?.metadata as Record<string, unknown>;
+    assert.equal('content' in metadata, false);
+    assert.equal(typeof metadata.contentHash, 'string');
+  });
+
+  it('MANAGER e estados invalidos nao aprovam', async () => {
+    await assert.rejects(
+      createApprovalHarness({ denyApprove: true }).service.approve(
+        'manager-1',
+        'campaign-1',
+        'plan-1',
+      ),
+      ForbiddenException,
+    );
+    await assert.rejects(
+      createApprovalHarness({
+        existingPlan: approvablePlan({ status: DispatchPlanStatus.DRAFT }),
+      }).service.approve('user-1', 'campaign-1', 'plan-1'),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createApprovalHarness({
+        existingPlan: approvablePlan({ simulationSnapshot: null, simulatedAt: null }),
+      }).service.approve('user-1', 'campaign-1', 'plan-1'),
+      BadRequestException,
+    );
+  });
+
+  it('canal desconectado e recipients inconsistentes nao aprovam', async () => {
+    await assert.rejects(
+      createApprovalHarness({
+        channelStatus: ChannelAccountStatus.DISCONNECTED,
+      }).service.approve('user-1', 'campaign-1', 'plan-1'),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createApprovalHarness({ recipientCount: 0, eligibleCount: 0 }).service.approve(
+        'user-1',
+        'campaign-1',
+        'plan-1',
+      ),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createApprovalHarness({ duplicateEligible: true }).service.approve(
+        'user-1',
+        'campaign-1',
+        'plan-1',
+      ),
+      BadRequestException,
+    );
+  });
+
+  it('aprovacao concorrente gera conflito', async () => {
+    await assert.rejects(
+      createApprovalHarness({ persistCount: 0 }).service.approve(
+        'user-1',
+        'campaign-1',
+        'plan-1',
+      ),
+      ConflictException,
+    );
+  });
+
+  it('OWNER rejeita com motivo e torna imutavel', async () => {
+    const harness = createApprovalHarness();
+    const result = await harness.service.reject(
+      'user-1',
+      'campaign-1',
+      'plan-1',
+      { reason: 'Conteudo inadequado para disparo' },
+    );
+    assert.equal(result.status, DispatchPlanStatus.REJECTED);
+    assert.equal(harness.auditEvents[0]?.action, 'DISPATCH_PLAN_REJECTED');
+  });
+
+  it('MANAGER nao rejeita e motivo curto falha', async () => {
+    await assert.rejects(
+      createApprovalHarness({ denyApprove: true }).service.reject(
+        'manager-1',
+        'campaign-1',
+        'plan-1',
+        { reason: 'Motivo adequado para rejeicao' },
+      ),
+      ForbiddenException,
+    );
+    await assert.rejects(
+      createApprovalHarness().service.reject('user-1', 'campaign-1', 'plan-1', {
+        reason: 'curto',
+      }),
+      BadRequestException,
+    );
+  });
+
+  it('cancelamento exige motivo e preserva status final', async () => {
+    const harness = createApprovalHarness({
+      existingPlan: approvablePlan({ status: DispatchPlanStatus.DRAFT }),
+    });
+    const result = await harness.service.cancel(
+      'user-1',
+      'campaign-1',
+      'plan-1',
+      { reason: 'Plano cancelado pelo gestor' },
+    );
+    assert.equal(result.status, DispatchPlanStatus.CANCELED);
+    assert.equal(harness.auditEvents[0]?.action, 'DISPATCH_PLAN_CANCELED');
+
+    await assert.rejects(
+      createApprovalHarness({
+        existingPlan: approvablePlan({ status: DispatchPlanStatus.APPROVED }),
+      }).service.cancel('user-1', 'campaign-1', 'plan-1', {
+        reason: 'Tentativa invalida de cancelar',
+      }),
+      BadRequestException,
+    );
+  });
+
+  it('APPROVED nao edita nem reabre', async () => {
+    await assert.rejects(
+      createApprovalHarness({
+        existingPlan: approvablePlan({ status: DispatchPlanStatus.APPROVED }),
+      }).service.update('user-1', 'campaign-1', 'plan-1', {
+        content: 'novo',
+      }),
+      BadRequestException,
+    );
+    await assert.rejects(
+      createApprovalHarness({
+        existingPlan: approvablePlan({ status: DispatchPlanStatus.APPROVED }),
+      }).service.reopen('user-1', 'campaign-1', 'plan-1'),
+      BadRequestException,
+    );
   });
 });
