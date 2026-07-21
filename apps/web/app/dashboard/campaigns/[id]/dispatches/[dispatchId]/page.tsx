@@ -11,6 +11,7 @@ import {
   DispatchDetail,
   DispatchItemListEntry,
   QueueDispatchResponse,
+  StartDispatchResponse,
   clearStoredToken,
   fetchCampaign,
   fetchDispatch,
@@ -20,6 +21,7 @@ import {
   prepareDispatch,
   queueDispatch,
   redistributeDispatch,
+  startDispatch,
 } from '../../../../../../lib/api';
 import {
   formatDurationSeconds,
@@ -52,9 +54,14 @@ export default function DispatchDetailPage() {
   const [preparing, setPreparing] = useState(false);
   const [redistributing, setRedistributing] = useState(false);
   const [queuing, setQueuing] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [showPrepareConfirm, setShowPrepareConfirm] = useState(false);
   const [showQueueConfirm, setShowQueueConfirm] = useState(false);
+  const [showStartConfirm, setShowStartConfirm] = useState(false);
   const [queueResult, setQueueResult] = useState<QueueDispatchResponse | null>(
+    null,
+  );
+  const [startResult, setStartResult] = useState<StartDispatchResponse | null>(
     null,
   );
   const [error, setError] = useState<string | null>(null);
@@ -191,6 +198,37 @@ export default function DispatchDetailPage() {
     }
   }
 
+  async function onStart() {
+    const token = getStoredToken();
+    if (!token) return;
+    setStarting(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await startDispatch(token, campaignId, dispatchId);
+      setStartResult(result);
+      setShowStartConfirm(false);
+      setSuccess(
+        `Execucao iniciada: ${result.jobsRepublished} job(s) republicado(s) de ${result.itemsEligible} item(ns) elegivel(is).`,
+      );
+      await reload();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setError(err.message || 'Inicio ja realizado ou em andamento.');
+        setShowStartConfirm(false);
+        await reload();
+      } else {
+        setError(
+          err instanceof ApiError
+            ? err.message
+            : 'Nao foi possivel iniciar o envio real',
+        );
+      }
+    } finally {
+      setStarting(false);
+    }
+  }
+
   async function onQueue() {
     const token = getStoredToken();
     if (!token) return;
@@ -232,6 +270,8 @@ export default function DispatchDetailPage() {
     canApprove && (dispatch?.allowedActions?.canPrepare ?? false);
   const canQueueAction =
     canApprove && (dispatch?.allowedActions?.canQueue ?? false);
+  const canStartAction =
+    canApprove && (dispatch?.allowedActions?.canStart ?? false);
 
   return (
     <DashboardShell userName={user?.name}>
@@ -239,7 +279,7 @@ export default function DispatchDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-sm font-medium uppercase tracking-wide text-[#65655f]">
-              Etapa 09.3 — fila operacional tecnica
+              Etapa 09.4 — envio real (Worker + Evolution)
             </p>
             <h2 className="mt-2 text-2xl font-semibold text-[#151515]">
               {dispatch?.name ?? 'Disparo'}
@@ -383,8 +423,9 @@ export default function DispatchDetailPage() {
               <div className="rounded-md border border-[#c9d7ee] bg-[#eef4fc] px-4 py-3 text-sm text-[#1e3a5f]">
                 <p className="font-semibold">Fila operacional criada</p>
                 <p className="mt-1">
-                  A fila foi criada em modo tecnico. O envio real sera
-                  implementado na subetapa 09.4.
+                  A fila foi validada tecnicamente. Use Iniciar envio para
+                  disparar o envio real via Evolution (respeitando os limites
+                  do modo piloto quando habilitado).
                 </p>
                 <p className="mt-2">
                   Enfileirados: {dispatch.queuedItems} · Pendentes:{' '}
@@ -401,6 +442,54 @@ export default function DispatchDetailPage() {
                     {queueResult.itemsBlocked} · Fila: {queueResult.queueName}
                   </p>
                 ) : null}
+              </div>
+            ) : null}
+
+            {dispatch.status === 'RUNNING' ? (
+              <div className="rounded-md border border-[#1e3a5f] bg-[#eef4fc] px-4 py-3 text-sm text-[#1e3a5f]">
+                <p className="font-semibold">Envio real em execucao</p>
+                <p className="mt-1">
+                  O Worker esta processando os itens elegiveis e chamando a
+                  Evolution API. Acompanhe o progresso na tabela abaixo.
+                </p>
+                <p className="mt-2">
+                  Enviados: {dispatch.sentItems} · Falhas: {dispatch.failedItems}{' '}
+                  · Ignorados: {dispatch.skippedItems} · Enfileirados:{' '}
+                  {dispatch.queuedItems}
+                  {dispatch.startedAt
+                    ? ` · Iniciado em ${new Date(dispatch.startedAt).toLocaleString('pt-BR')}`
+                    : ''}
+                </p>
+                {startResult ? (
+                  <p className="mt-2 text-xs">
+                    Jobs republicados: {startResult.jobsRepublished} · Items
+                    elegiveis: {startResult.itemsEligible}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {(dispatch.status === 'COMPLETED' ||
+              dispatch.status === 'COMPLETED_WITH_ERRORS') ? (
+              <div
+                className={`rounded-md border px-4 py-3 text-sm ${
+                  dispatch.status === 'COMPLETED'
+                    ? 'border-green-200 bg-green-50 text-green-900'
+                    : 'border-amber-200 bg-amber-50 text-amber-900'
+                }`}
+              >
+                <p className="font-semibold">
+                  {dispatch.status === 'COMPLETED'
+                    ? 'Envio concluido com sucesso'
+                    : 'Envio concluido com erros'}
+                </p>
+                <p className="mt-2">
+                  Enviados: {dispatch.sentItems} · Falhas: {dispatch.failedItems}{' '}
+                  · Ignorados: {dispatch.skippedItems}
+                  {dispatch.completedAt
+                    ? ` · Concluido em ${new Date(dispatch.completedAt).toLocaleString('pt-BR')}`
+                    : ''}
+                </p>
               </div>
             ) : null}
 
@@ -427,6 +516,25 @@ export default function DispatchDetailPage() {
                 >
                   {queuing ? 'Enfileirando...' : 'Enfileirar destinatarios'}
                 </button>
+              </div>
+            ) : null}
+
+            {canStartAction ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  className="rounded-md bg-[#7a2e2e] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  disabled={starting}
+                  onClick={() => setShowStartConfirm(true)}
+                >
+                  {starting ? 'Iniciando...' : 'Iniciar execucao'}
+                </button>
+                <span
+                  className="rounded-md border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900"
+                  title="Modo piloto ativo por padrao (DISPATCH_PILOT_MODE): volume e destinos podem estar limitados pelo backend."
+                >
+                  Modo piloto
+                </span>
               </div>
             ) : null}
 
@@ -484,6 +592,44 @@ export default function DispatchDetailPage() {
                     className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm"
                     disabled={queuing}
                     onClick={() => setShowQueueConfirm(false)}
+                  >
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {showStartConfirm ? (
+              <div className="rounded-md border border-[#7a2e2e] bg-white p-4">
+                <h4 className="font-semibold text-[#151515]">
+                  Confirmar inicio da execucao
+                </h4>
+                <p className="mt-2 text-sm text-[#24382b]">
+                  Esta acao iniciara envios reais pelo WhatsApp usando as
+                  instancias aprovadas. Confirme somente se os destinatarios
+                  sao internos/autorizados e se o piloto foi validado.
+                </p>
+                <p className="mt-2 text-xs text-[#65655f]">
+                  Destinatarios: {dispatch.queuedItems} · Instancias:{' '}
+                  {dispatch.channels?.length ?? 1} · Status: {dispatch.status}
+                  {dispatch.queuedAt
+                    ? ` · Enfileirado em ${new Date(dispatch.queuedAt).toLocaleString('pt-BR')}`
+                    : ''}
+                </p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md bg-[#7a2e2e] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    disabled={starting}
+                    onClick={onStart}
+                  >
+                    {starting ? 'Iniciando...' : 'Confirmar execucao'}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm"
+                    disabled={starting}
+                    onClick={() => setShowStartConfirm(false)}
                   >
                     Voltar
                   </button>
@@ -647,8 +793,14 @@ export default function DispatchDetailPage() {
                       <option value="">Todos</option>
                       <option value="PENDING">Pendente</option>
                       <option value="QUEUED">Enfileirado</option>
+                      <option value="PROCESSING">Processando</option>
                       <option value="SENT">Enviado</option>
+                      <option value="RETRY_SCHEDULED">Retry agendado</option>
                       <option value="FAILED">Falhou</option>
+                      <option value="SKIPPED">Ignorado</option>
+                      <option value="UNKNOWN_PROVIDER_STATE">
+                        Estado desconhecido
+                      </option>
                     </select>
                   </div>
                 </div>
@@ -755,8 +907,9 @@ export default function DispatchDetailPage() {
             <section className="rounded-md border border-[#deddd4] bg-white p-4">
               <h3 className="font-semibold text-[#151515]">Proximas etapas</h3>
               <p className="mt-2 text-sm text-[#65655f]">
-                O envio real (Worker Evolution) permanece na subetapa 09.4.
-                Nesta etapa nao ha botao &quot;Iniciar envio&quot;.
+                O envio real (Worker Evolution) foi implementado na subetapa
+                09.4. Pausar/retomar/cancelar em execucao permanecem para
+                subetapas futuras.
               </p>
             </section>
           </div>

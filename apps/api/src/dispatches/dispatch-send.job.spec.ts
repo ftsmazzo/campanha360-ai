@@ -114,4 +114,17 @@ describe('dispatch-send job contract (apps/api)', () => {
       ]),
     );
   });
+
+  it('producer bloqueia ensureJob/requeueItem quando engine/fila estao desabilitados (default)', async () => {
+    clearFlags();
+    const producer = new DispatchSendProducer(fakeConfigService());
+    const payload = {
+      dispatchId: 'dispatch-1',
+      dispatchItemId: 'item-1',
+      organizationId: 'org-1',
+      campaignId: 'campaign-1',
+    };
+    await assert.rejects(() => producer.ensureJob(payload));
+    await assert.rejects(() => producer.requeueItem(payload));
+  });
 });

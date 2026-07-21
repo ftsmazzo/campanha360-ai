@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test": "npx --yes tsx --test lib/dispatch-plans.multi-instance.spec.ts lib/dispatches.progress.spec.ts"
   },
   "dependencies": {
     "next": "^15.0.0",

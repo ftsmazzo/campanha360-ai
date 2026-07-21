@@ -17,7 +17,7 @@
     "test:contact-removal": "npx --yes tsx --test src/contacts/contact-removal.util.spec.ts",
     "test:segments": "npx --yes tsx --test src/segments/segment-filters.util.spec.ts",
     "test:segment-prevalidate": "npx --yes tsx --test src/segments/segment-prevalidate.util.spec.ts",
-    "test:dispatches": "npx --yes tsx --test src/dispatches/dispatch.util.spec.ts src/dispatches/dispatch-prepare.util.spec.ts src/dispatches/dispatch-channel-selection.util.spec.ts src/dispatches/dispatches.service.spec.ts src/dispatches/dispatch-queue.util.spec.ts src/dispatches/dispatch-queue.service.spec.ts",
+    "test:dispatches": "npx --yes tsx --test src/dispatches/dispatch.util.spec.ts src/dispatches/dispatch-prepare.util.spec.ts src/dispatches/dispatch-channel-selection.util.spec.ts src/dispatches/dispatches.service.spec.ts src/dispatches/dispatch-queue.util.spec.ts src/dispatches/dispatch-queue.service.spec.ts src/dispatches/dispatch-send.job.spec.ts src/dispatches/dispatch-start.util.spec.ts src/dispatches/dispatch-start.service.spec.ts",
     "test:dispatch-plans": "npx --yes tsx --test src/dispatch-plans/dispatch-plan.util.spec.ts src/dispatch-plans/dispatch-plan-snapshot.util.spec.ts src/dispatch-plans/dispatch-plan-validation.util.spec.ts src/dispatch-plans/dispatch-plan-simulation.util.spec.ts src/dispatch-plans/dispatch-plan-approval.util.spec.ts src/dispatch-plans/dispatch-plan-protection.constants.spec.ts src/dispatch-plans/dispatch-plan-multi-instance.util.spec.ts src/dispatch-plans/dispatch-plans.service.spec.ts",
     "test:dispatch-send-job": "npx --yes tsx --test src/dispatches/dispatch-send.job.spec.ts"
   },

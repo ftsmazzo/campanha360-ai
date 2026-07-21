@@ -14,6 +14,7 @@ import { ListDispatchItemsQueryDto } from './dto/list-dispatch-items-query.dto';
 import { ListDispatchesQueryDto } from './dto/list-dispatches-query.dto';
 import { DispatchesService } from './dispatches.service';
 import { DispatchQueueService } from './dispatch-queue.service';
+import { DispatchStartService } from './dispatch-start.service';
 
 @Controller('campaigns/:campaignId/dispatches')
 @UseGuards(JwtAuthGuard)
@@ -21,6 +22,7 @@ export class DispatchesController {
   constructor(
     private readonly dispatchesService: DispatchesService,
     private readonly dispatchQueueService: DispatchQueueService,
+    private readonly dispatchStartService: DispatchStartService,
   ) {}
 
   @Get()
@@ -83,6 +85,15 @@ export class DispatchesController {
       campaignId,
       dispatchId,
     );
+  }
+
+  @Post(':dispatchId/start')
+  start(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+  ) {
+    return this.dispatchStartService.start(user.id, campaignId, dispatchId);
   }
 
   @Get(':dispatchId/items')

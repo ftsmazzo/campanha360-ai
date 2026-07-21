@@ -1249,6 +1249,16 @@ export type QueueDispatchResponse = {
   queueName: string;
 };
 
+export type StartDispatchResponse = {
+  dispatchId: string;
+  status: DispatchStatus;
+  startedAt: string;
+  totalItems: number;
+  queuedItems: number;
+  itemsEligible: number;
+  jobsRepublished: number;
+};
+
 export type ListDispatchItemsResponse = {
   items: DispatchItemListEntry[];
   pagination: {
@@ -1383,6 +1393,18 @@ export function queueDispatch(
 ) {
   return request<QueueDispatchResponse>(
     `/campaigns/${campaignId}/dispatches/${dispatchId}/queue`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function startDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<StartDispatchResponse>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/start`,
     { method: 'POST' },
     token,
   );

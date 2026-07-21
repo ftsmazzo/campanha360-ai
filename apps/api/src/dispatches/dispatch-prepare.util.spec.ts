@@ -17,8 +17,21 @@ import {
   buildDispatchAllowedActionsForPrepare,
   buildPreparedDispatchItems,
   canPrepareDispatch,
+  isDispatchStartWithinPilotLimit,
   maskDestination,
 } from './dispatch-prepare.util';
+
+const START_FLAG_KEYS = [
+  'DISPATCH_ENGINE_ENABLED',
+  'DISPATCH_QUEUE_ENABLED',
+  'DISPATCH_SEND_ENABLED',
+  'DISPATCH_PILOT_MODE',
+  'DISPATCH_PILOT_MAX_ITEMS',
+] as const;
+
+function clearStartFlags(): void {
+  for (const key of START_FLAG_KEYS) delete process.env[key];
+}
 
 describe('dispatch-prepare.util', () => {
   it('exige canal CONNECTED para preparar', () => {
@@ -192,6 +205,99 @@ describe('dispatch-prepare.util', () => {
     } finally {
       delete process.env.DISPATCH_ENGINE_ENABLED;
       delete process.env.DISPATCH_QUEUE_ENABLED;
+    }
+  });
+
+  it('isDispatchStartWithinPilotLimit respeita o teto do piloto (default true/5)', () => {
+    clearStartFlags();
+    assert.equal(isDispatchStartWithinPilotLimit(5), true);
+    assert.equal(isDispatchStartWithinPilotLimit(6), false);
+    process.env.DISPATCH_PILOT_MODE = 'false';
+    assert.equal(isDispatchStartWithinPilotLimit(999), true);
+    clearStartFlags();
+  });
+
+  it('canStart (09.4) exige OWNER/ADMIN, QUEUED, queuedItems>0, sem redistribuicao e ENGINE+QUEUE+SEND', () => {
+    clearStartFlags();
+    // Todas as flags off (default): canStart false mesmo com o resto correto.
+    assert.equal(
+      buildDispatchAllowedActionsForPrepare({
+        role: MembershipRole.OWNER,
+        status: DispatchStatus.QUEUED,
+        totalItems: 3,
+        queuedItems: 3,
+        requiringRedistribution: false,
+      }).canStart,
+      false,
+    );
+
+    process.env.DISPATCH_ENGINE_ENABLED = 'true';
+    process.env.DISPATCH_QUEUE_ENABLED = 'true';
+    process.env.DISPATCH_SEND_ENABLED = 'true';
+    try {
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.OWNER,
+          status: DispatchStatus.QUEUED,
+          totalItems: 3,
+          queuedItems: 3,
+          requiringRedistribution: false,
+        }).canStart,
+        true,
+      );
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.MANAGER,
+          status: DispatchStatus.QUEUED,
+          totalItems: 3,
+          queuedItems: 3,
+          requiringRedistribution: false,
+        }).canStart,
+        false,
+      );
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.OWNER,
+          status: DispatchStatus.READY,
+          totalItems: 3,
+          queuedItems: 0,
+          requiringRedistribution: false,
+        }).canStart,
+        false,
+      );
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.OWNER,
+          status: DispatchStatus.QUEUED,
+          totalItems: 3,
+          queuedItems: 0,
+          requiringRedistribution: false,
+        }).canStart,
+        false,
+      );
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.OWNER,
+          status: DispatchStatus.QUEUED,
+          totalItems: 3,
+          queuedItems: 3,
+          requiringRedistribution: true,
+        }).canStart,
+        false,
+      );
+      // Pilot mode default true, teto default 5: 6 items bloqueia canStart.
+      assert.equal(
+        buildDispatchAllowedActionsForPrepare({
+          role: MembershipRole.OWNER,
+          status: DispatchStatus.QUEUED,
+          totalItems: 6,
+          queuedItems: 6,
+          requiringRedistribution: false,
+        }).canStart,
+        false,
+      );
+    } finally {
+      clearStartFlags();
     }
   });
 

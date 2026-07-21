@@ -508,6 +508,7 @@ export class DispatchesService {
         role: membership.role,
         status: dispatch.status,
         totalItems: dispatch.totalItems,
+        queuedItems: dispatch.queuedItems,
         requiringRedistribution: dispatch.requiringRedistribution,
       }),
       approvedAudience: this.extractApprovedAudience(dispatch.approvalSnapshot),

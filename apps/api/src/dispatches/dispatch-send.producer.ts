@@ -135,6 +135,76 @@ export class DispatchSendProducer implements OnModuleDestroy {
     return { status: 'enqueued', jobId };
   }
 
+  /**
+   * Garante que exista um job "vivo" (waiting/active/delayed) para o item.
+   * Diferente de `enqueueItem`, que trata qualquer job existente como
+   * duplicado: aqui, se o job encontrado ja estiver em estado terminal
+   * (`completed`/`failed` — por exemplo, de uma tentativa tecnica da 09.3
+   * ou de uma execucao anterior), ele e removido e recriado com o mesmo
+   * jobId deterministico antes do envio real (`start`, subetapa 09.4).
+   */
+  async ensureJob(
+    payload: DispatchSendEnqueueInput,
+  ): Promise<DispatchSendEnqueueResult & { requeued: boolean }> {
+    assertDispatchQueueAllowed();
+    const validPayload = assertDispatchSendJobPayload(payload);
+    const jobId = buildDispatchSendJobId(
+      validPayload.dispatchId,
+      validPayload.dispatchItemId,
+    );
+
+    const queue = this.getQueue();
+    const existing = await this.fetchJob(queue, jobId);
+
+    let requeued = false;
+    if (existing) {
+      const state = await existing.getState().catch(() => 'unknown');
+      if (state === 'completed' || state === 'failed') {
+        await existing.remove().catch(() => undefined);
+        requeued = true;
+      } else {
+        return { status: 'duplicate', jobId, requeued: false };
+      }
+    }
+
+    try {
+      await queue.add(DISPATCH_SEND_QUEUE_NAME, validPayload, {
+        ...DISPATCH_SEND_JOB_OPTIONS,
+        jobId,
+      });
+    } catch (error) {
+      const rawMessage =
+        error instanceof Error ? error.message : 'erro desconhecido';
+      this.logger.error(
+        JSON.stringify({
+          action: 'DISPATCH_SEND_ENSURE_JOB_FAILED',
+          queueName: DISPATCH_SEND_QUEUE_NAME,
+          jobId,
+          dispatchId: validPayload.dispatchId,
+          dispatchItemId: validPayload.dispatchItemId,
+          organizationId: validPayload.organizationId,
+          campaignId: validPayload.campaignId,
+          reason: rawMessage,
+        }),
+      );
+      throw new ServiceUnavailableException(
+        `Falha ao republicar job na fila operacional de disparo. Detalhe tecnico: ${rawMessage}`,
+      );
+    }
+
+    return { status: 'enqueued', jobId, requeued };
+  }
+
+  /**
+   * Alias semantico de `ensureJob` para uso no fluxo de `start` (re-publica
+   * jobs dos items elegiveis QUEUED/RETRY_SCHEDULED/SCHEDULED).
+   */
+  async requeueItem(
+    payload: DispatchSendEnqueueInput,
+  ): Promise<DispatchSendEnqueueResult & { requeued: boolean }> {
+    return this.ensureJob(payload);
+  }
+
   /** Enfileira vários itens em lotes sequenciais, preservando idempotência por item. */
   async enqueueMany(
     payloads: DispatchSendEnqueueInput[],

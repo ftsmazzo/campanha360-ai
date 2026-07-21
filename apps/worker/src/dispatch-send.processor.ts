@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
   ChannelAccountStatus,
+  ContactStatus,
+  DispatchChannelOperationalStatus,
+  DispatchItemErrorCategory,
   DispatchItemStatus,
   DispatchStatus,
   type PrismaClient,
@@ -9,25 +12,41 @@ import {
   assertDispatchSendJobPayload,
   buildReassignmentUpdate,
   canReassignDispatchItem,
+  computeDispatchNextRetryAt,
+  isDispatchDestinationAllowed,
   isDispatchEngineEnabled,
   isDispatchQueueEnabled,
+  isDispatchRetryExhausted,
   isDispatchSendEnabled,
   isWithinOperationalWindow,
   resolveNextOperationalWindowStart,
   selectNextEligibleDispatchChannel,
+  sendEvolutionText,
+  type EvolutionSendCategory,
+  type EvolutionSendInput,
+  type EvolutionSendResult,
   type OperationalWindowConfig,
   type SelectableDispatchChannel,
 } from '@campanha360/shared';
 
 /**
- * Worker tecnico da subetapa 09.3. Consome jobs da fila `dispatch-send`,
- * revalida tenancy/estado/canal e realiza a "validacao tecnica" do item
- * (technicalValidatedAt). NUNCA chama a Evolution, nunca seta
- * providerMessageId/sentAt/SENT — isso pertence exclusivamente a 09.4.
+ * Worker de disparo. Consome jobs da fila `dispatch-send`.
+ *
+ * - Enquanto o Dispatch nao esta RUNNING, ou RUNNING mas
+ *   DISPATCH_SEND_ENABLED=false, mantem o path tecnico da subetapa 09.3
+ *   (apenas valida/technicalValidatedAt, NUNCA chama a Evolution).
+ * - Quando o Dispatch esta RUNNING e DISPATCH_SEND_ENABLED=true, executa o
+ *   envio real (subetapa 09.4): last-mile (opt-out/bloqueio/destino),
+ *   selecao/rotacao de canal, respeito a delays/pausas, chamada a
+ *   Evolution (injetavel via `deps.sendText` para testes) e resolucao de
+ *   SENT / RETRY_SCHEDULED / FAILED / UNKNOWN_PROVIDER_STATE.
  */
 
 const LOCK_DURATION_MS = 30_000;
 const DEFER_MINUTES_NO_CHANNEL = 5;
+const CHANNEL_COOLDOWN_STEP_MS = 5 * 60_000;
+const CHANNEL_COOLDOWN_MAX_STEPS = 6;
+const CHANNEL_FAILOVER_RETRY_DELAY_MS = 5_000;
 
 const NON_ACTIVE_DISPATCH_STATUSES = new Set<string>([
   DispatchStatus.PAUSING,
@@ -50,11 +69,29 @@ const CLAIMABLE_ITEM_STATUSES: DispatchItemStatus[] = [
   DispatchItemStatus.SCHEDULED,
 ];
 
+const CLAIMABLE_ITEM_STATUSES_REAL_SEND: DispatchItemStatus[] = [
+  DispatchItemStatus.QUEUED,
+  DispatchItemStatus.SCHEDULED,
+  DispatchItemStatus.RETRY_SCHEDULED,
+];
+
 const DEFAULT_WINDOW: OperationalWindowConfig = {
   timezone: 'America/Sao_Paulo',
   allowedStartTime: '09:00',
   allowedEndTime: '18:00',
   allowedDays: [1, 2, 3, 4, 5, 6],
+};
+
+const DEFAULT_SEND_POLICY: DispatchSendProtectionPolicy = {
+  minDelaySeconds: 20,
+  maxDelaySeconds: 45,
+  batchSize: 15,
+  pauseBetweenBatchesSeconds: 600,
+  longPauseEveryMessages: 50,
+  longPauseMinutes: 15,
+  rotateEveryMessages: 100,
+  pauseOn403: true,
+  pauseOn429: true,
 };
 
 export type DispatchSendJobLike = {
@@ -72,19 +109,48 @@ export type DispatchSendProcessAction =
   | 'DEFERRED_REDISTRIBUTION'
   | 'DEFERRED_NO_CHANNEL'
   | 'DEFERRED_OUTSIDE_WINDOW'
+  | 'DEFERRED_CHANNEL_DELAY'
+  | 'DEFERRED_CHANNEL_COOLDOWN'
   | 'SKIPPED_FLAG_DISABLED'
-  | 'SKIPPED_CLAIM_LOST';
+  | 'SKIPPED_CLAIM_LOST'
+  | 'SKIPPED_CONTACT_DELETED'
+  | 'SKIPPED_CONTACT_BLOCKED'
+  | 'SKIPPED_CONTACT_OPT_OUT'
+  | 'SKIPPED_PILOT_DESTINATION_NOT_ALLOWED'
+  | 'FAILED_INVALID_DESTINATION'
+  | 'SENT'
+  | 'RETRY_SCHEDULED'
+  | 'FAILED'
+  | 'UNKNOWN_PROVIDER_STATE';
 
 export type DispatchSendProcessResult = {
   action: DispatchSendProcessAction;
-  send: false;
+  send: boolean;
   dispatchItemId?: string;
   reason?: string;
+};
+
+export type DispatchSendProtectionPolicy = {
+  minDelaySeconds: number;
+  maxDelaySeconds: number;
+  batchSize: number;
+  pauseBetweenBatchesSeconds: number;
+  longPauseEveryMessages: number;
+  longPauseMinutes: number;
+  rotateEveryMessages: number;
+  pauseOn403: boolean;
+  pauseOn429: boolean;
 };
 
 export type DispatchSendProcessorDeps = {
   prisma: PrismaClient;
   now?: () => Date;
+  /** Injetavel para testes; default = cliente real (fetch nativo). */
+  sendText?: (input: EvolutionSendInput) => Promise<EvolutionSendResult>;
+  evolutionBaseUrl?: string;
+  evolutionApiKey?: string;
+  /** Injetavel para testes deterministicos do delay min/max por canal. */
+  random?: () => number;
 };
 
 export async function processDispatchSendJob(
@@ -104,14 +170,6 @@ export async function processDispatchSendJob(
 
   const payload = assertDispatchSendJobPayload(job.data);
 
-  if (isDispatchSendEnabled()) {
-    // 09.4 usara esta flag para ativar o envio real; aqui apenas avisamos.
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[dispatch-send] DISPATCH_SEND_ENABLED=true detectado, mas a 09.3 nao envia mensagens (item=${payload.dispatchItemId})`,
-    );
-  }
-
   const dispatch = await prisma.dispatch.findFirst({
     where: {
       id: payload.dispatchId,
@@ -121,6 +179,7 @@ export async function processDispatchSendJob(
     select: {
       id: true,
       status: true,
+      totalItems: true,
       requiringRedistribution: true,
       approvalSnapshot: true,
       configurationSnapshot: true,
@@ -171,7 +230,7 @@ export async function processDispatchSendJob(
     await prisma.dispatchItem.updateMany({
       where: {
         id: item.id,
-        status: { in: CLAIMABLE_ITEM_STATUSES },
+        status: { in: [...CLAIMABLE_ITEM_STATUSES_REAL_SEND] },
       },
       data: {
         status: DispatchItemStatus.SCHEDULED,
@@ -181,6 +240,52 @@ export async function processDispatchSendJob(
     });
     return { action: 'DEFERRED_REDISTRIBUTION', send: false, dispatchItemId: item.id };
   }
+
+  const realSendMode =
+    dispatch.status === DispatchStatus.RUNNING && isDispatchSendEnabled();
+
+  if (!realSendMode) {
+    return runTechnicalValidation({ job, dispatch, item, prisma, now });
+  }
+
+  return runRealSend({ job, dispatch, item, prisma, now, deps });
+}
+
+// ---------------------------------------------------------------------------
+// Path tecnico (subetapa 09.3) — inalterado.
+// ---------------------------------------------------------------------------
+
+type DispatchRow = {
+  id: string;
+  status: string;
+  totalItems?: number;
+  requiringRedistribution: boolean;
+  approvalSnapshot: unknown;
+  configurationSnapshot: unknown;
+};
+
+type ItemRow = Record<string, unknown> & {
+  id: string;
+  status: string;
+  dispatchChannelId: string | null;
+  originalDispatchChannelId: string | null;
+  channelAccountId: string;
+  reassignmentCount: number;
+  contactId?: string;
+  normalizedDestination?: string;
+  attemptCount?: number;
+  maxAttempts?: number;
+};
+
+async function runTechnicalValidation(input: {
+  job: DispatchSendJobLike;
+  dispatch: DispatchRow;
+  item: ItemRow;
+  prisma: PrismaClient;
+  now: () => Date;
+}): Promise<DispatchSendProcessResult> {
+  const { job, dispatch, prisma, now } = input;
+  let item = input.item;
 
   const lockToken = randomUUID();
   const lockExpiresAt = new Date(now().getTime() + LOCK_DURATION_MS);
@@ -210,62 +315,12 @@ export async function processDispatchSendJob(
   }
 
   try {
-    const dispatchChannelRows = await prisma.dispatchChannel.findMany({
-      where: { dispatchId: dispatch.id },
-      include: { channelAccount: { select: { id: true, status: true } } },
+    const { effectiveChannel, reassigned } = await resolveEffectiveChannel({
+      prisma,
+      dispatch,
+      item,
+      now,
     });
-
-    const selectable: SelectableDispatchChannel[] = dispatchChannelRows.map((row) => ({
-      id: row.id,
-      channelAccountId: row.channelAccountId,
-      enabled: row.enabled,
-      priority: row.priority,
-      weight: row.weight,
-      effectiveDailyLimit: row.effectiveDailyLimit,
-      assignedItems: row.assignedItems,
-      sentItems: row.sentItems,
-      consecutiveErrors: row.consecutiveErrors,
-      cooldownUntil: row.cooldownUntil,
-      operationalStatus: row.operationalStatus,
-      connected: row.channelAccount.status === ChannelAccountStatus.CONNECTED,
-      archived: row.channelAccount.status === ChannelAccountStatus.ARCHIVED,
-    }));
-
-    const currentChannel = item.dispatchChannelId
-      ? selectable.find((c) => c.id === item.dispatchChannelId) ?? null
-      : null;
-    const currentApta = currentChannel
-      ? isChannelApta(currentChannel, now())
-      : false;
-
-    let effectiveChannel: SelectableDispatchChannel | null = currentChannel;
-    let reassigned = false;
-
-    if (!currentApta) {
-      const next = selectNextEligibleDispatchChannel(selectable, {
-        now: now(),
-        excludeChannelIds: item.dispatchChannelId ? [item.dispatchChannelId] : [],
-      });
-
-      if (next && canReassignDispatchItem(item.status)) {
-        const update = buildReassignmentUpdate(
-          {
-            dispatchChannelId: item.dispatchChannelId,
-            originalDispatchChannelId: item.originalDispatchChannelId,
-            channelAccountId: item.channelAccountId,
-            reassignmentCount: item.reassignmentCount,
-            status: item.status,
-          },
-          { id: next.id, channelAccountId: next.channelAccountId },
-          now(),
-        );
-        await prisma.dispatchItem.update({ where: { id: item.id }, data: update });
-        effectiveChannel = next;
-        reassigned = true;
-      } else {
-        effectiveChannel = null;
-      }
-    }
 
     if (!effectiveChannel) {
       const deferAt = new Date(now().getTime() + DEFER_MINUTES_NO_CHANNEL * 60_000);
@@ -308,14 +363,7 @@ export async function processDispatchSendJob(
         },
       });
 
-      if (job.moveToDelayed) {
-        try {
-          await job.moveToDelayed(nextStart.getTime(), job.token);
-        } catch {
-          // Se o BullMQ nao permitir mover (ex.: fora de contexto de teste),
-          // o item ja ficou SCHEDULED e o reconcile/producer cuidam depois.
-        }
-      }
+      await tryMoveToDelayed(job, nextStart);
 
       return { action: 'DEFERRED_OUTSIDE_WINDOW', send: false, dispatchItemId: item.id };
     }
@@ -353,6 +401,698 @@ export async function processDispatchSendJob(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Envio real (subetapa 09.4)
+// ---------------------------------------------------------------------------
+
+async function runRealSend(input: {
+  job: DispatchSendJobLike;
+  dispatch: DispatchRow;
+  item: ItemRow;
+  prisma: PrismaClient;
+  now: () => Date;
+  deps: DispatchSendProcessorDeps;
+}): Promise<DispatchSendProcessResult> {
+  const { job, dispatch, prisma, now, deps } = input;
+  const item = input.item;
+
+  const lockToken = randomUUID();
+  const lockExpiresAt = new Date(now().getTime() + LOCK_DURATION_MS);
+  const nowValue = now();
+
+  const claim = await prisma.dispatchItem.updateMany({
+    where: {
+      id: item.id,
+      status: { in: CLAIMABLE_ITEM_STATUSES_REAL_SEND },
+      OR: [{ lockExpiresAt: null }, { lockExpiresAt: { lt: nowValue } }],
+    },
+    data: {
+      status: DispatchItemStatus.PROCESSING,
+      lockedAt: nowValue,
+      lockToken,
+      lockExpiresAt,
+    },
+  });
+
+  if (claim.count !== 1) {
+    return {
+      action: 'SKIPPED_CLAIM_LOST',
+      send: false,
+      dispatchItemId: item.id,
+      reason: 'CLAIM_CONFLICT',
+    };
+  }
+
+  try {
+    // --- Last-mile: contato ---
+    const contact = await prisma.contact.findFirst({
+      where: {
+        id: item.contactId,
+        organizationId: (item as { organizationId?: string }).organizationId,
+        campaignId: (item as { campaignId?: string }).campaignId,
+      },
+      select: {
+        status: true,
+        optOuts: {
+          where: { OR: [{ channel: null }, { channel: 'WHATSAPP' }] },
+          take: 1,
+          select: { id: true },
+        },
+      },
+    } as never);
+
+    if (contact) {
+      const contactStatus = String((contact as { status?: unknown }).status ?? '');
+      if (contactStatus === ContactStatus.DELETED) {
+        await finalizeSkip(prisma, item, now(), 'CONTACT_DELETED', DispatchItemErrorCategory.CONTACT_DELETED);
+        await recomputeDispatchProgress(prisma, dispatch, now());
+        return { action: 'SKIPPED_CONTACT_DELETED', send: false, dispatchItemId: item.id };
+      }
+      if (contactStatus === ContactStatus.BLOCKED) {
+        await finalizeSkip(prisma, item, now(), 'CONTACT_BLOCKED', DispatchItemErrorCategory.CONTACT_BLOCKED);
+        await recomputeDispatchProgress(prisma, dispatch, now());
+        return { action: 'SKIPPED_CONTACT_BLOCKED', send: false, dispatchItemId: item.id };
+      }
+      const optOuts = (contact as { optOuts?: unknown[] }).optOuts;
+      if (Array.isArray(optOuts) && optOuts.length > 0) {
+        await finalizeSkip(prisma, item, now(), 'CONTACT_OPT_OUT', DispatchItemErrorCategory.CONTACT_OPT_OUT);
+        await recomputeDispatchProgress(prisma, dispatch, now());
+        return { action: 'SKIPPED_CONTACT_OPT_OUT', send: false, dispatchItemId: item.id };
+      }
+    }
+
+    // --- Last-mile: destino ---
+    const normalizedDestination = String(item.normalizedDestination ?? '');
+    if (!isValidNormalizedDestination(normalizedDestination)) {
+      await finalizeFailed(
+        prisma,
+        item,
+        now(),
+        'INVALID_DESTINATION',
+        DispatchItemErrorCategory.INVALID_DESTINATION,
+        'Destino invalido apos revalidacao last-mile',
+      );
+      await recomputeDispatchProgress(prisma, dispatch, now());
+      return { action: 'FAILED_INVALID_DESTINATION', send: false, dispatchItemId: item.id };
+    }
+
+    if (!isDispatchDestinationAllowed(normalizedDestination)) {
+      await finalizeSkip(
+        prisma,
+        item,
+        now(),
+        'PILOT_DESTINATION_NOT_ALLOWED',
+        null,
+      );
+      await recomputeDispatchProgress(prisma, dispatch, now());
+      return {
+        action: 'SKIPPED_PILOT_DESTINATION_NOT_ALLOWED',
+        send: false,
+        dispatchItemId: item.id,
+      };
+    }
+
+    // --- Selecao/failover de canal ---
+    const { effectiveChannel, reassigned } = await resolveEffectiveChannel({
+      prisma,
+      dispatch,
+      item,
+      now,
+    });
+
+    if (!effectiveChannel) {
+      const deferAt = new Date(now().getTime() + DEFER_MINUTES_NO_CHANNEL * 60_000);
+      await prisma.dispatchItem.update({
+        where: { id: item.id },
+        data: {
+          status: DispatchItemStatus.SCHEDULED,
+          scheduledAt: deferAt,
+          lastQueueError: 'NO_ELIGIBLE_CHANNEL',
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+        },
+      });
+      return { action: 'DEFERRED_NO_CHANNEL', send: false, dispatchItemId: item.id };
+    }
+
+    // --- Rotacao por volume (rotateEveryMessages) ---
+    const policy = extractSendProtectionPolicy(dispatch.approvalSnapshot);
+    let selectedChannel = effectiveChannel;
+    let rotated = false;
+
+    if (
+      !reassigned &&
+      shouldRotateChannel(selectedChannel.sentItems, policy.rotateEveryMessages)
+    ) {
+      const rotationCandidate = await resolveEffectiveChannel({
+        prisma,
+        dispatch,
+        item: { ...item, dispatchChannelId: selectedChannel.id },
+        now,
+        excludeCurrent: true,
+      });
+      if (rotationCandidate.effectiveChannel) {
+        selectedChannel = rotationCandidate.effectiveChannel;
+        rotated = true;
+      }
+    }
+
+    // --- Janela operacional ---
+    const window = extractOperationalWindow(
+      dispatch.approvalSnapshot,
+      dispatch.configurationSnapshot,
+    );
+    const insideWindow = isWithinOperationalWindow({
+      now: now(),
+      timezone: window.timezone,
+      allowedStartTime: window.allowedStartTime,
+      allowedEndTime: window.allowedEndTime,
+      allowedDays: window.allowedDays,
+    });
+
+    if (!insideWindow) {
+      const nextStart = resolveNextOperationalWindowStart(now(), window);
+      await prisma.dispatchItem.update({
+        where: { id: item.id },
+        data: {
+          status: DispatchItemStatus.SCHEDULED,
+          scheduledAt: nextStart,
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+        },
+      });
+      await tryMoveToDelayed(job, nextStart);
+      return { action: 'DEFERRED_OUTSIDE_WINDOW', send: false, dispatchItemId: item.id };
+    }
+
+    // --- Delay minimo/batch/pausa longa por canal ---
+    const usageDateKey = computeUsageDateKey(now());
+    const usage = await prisma.dispatchChannelUsageDaily.findUnique({
+      where: {
+        dispatchChannelId_usageDate: {
+          dispatchChannelId: selectedChannel.id,
+          usageDate: usageDateKey,
+        },
+      },
+    });
+
+    const requiredDelayMs = computeChannelSendDelayMs(
+      policy,
+      selectedChannel.sentItems,
+      deps.random ?? Math.random,
+    );
+    const lastSentAt = (usage as { lastSentAt?: Date | null } | null)?.lastSentAt ?? null;
+
+    if (lastSentAt && requiredDelayMs > 0) {
+      const elapsed = now().getTime() - lastSentAt.getTime();
+      if (elapsed < requiredDelayMs) {
+        const resumeAt = new Date(lastSentAt.getTime() + requiredDelayMs);
+        await prisma.dispatchItem.update({
+          where: { id: item.id },
+          data: {
+            status: DispatchItemStatus.SCHEDULED,
+            scheduledAt: resumeAt,
+            dispatchChannelId: selectedChannel.id,
+            channelAccountId: selectedChannel.channelAccountId,
+            lockedAt: null,
+            lockToken: null,
+            lockExpiresAt: null,
+          },
+        });
+        await tryMoveToDelayed(job, resumeAt);
+        return { action: 'DEFERRED_CHANNEL_DELAY', send: false, dispatchItemId: item.id };
+      }
+    }
+
+    if (rotated) {
+      await prisma.dispatchItem.update({
+        where: { id: item.id },
+        data: {
+          dispatchChannelId: selectedChannel.id,
+          channelAccountId: selectedChannel.channelAccountId,
+        },
+      });
+    }
+
+    // --- Chamada Evolution ---
+    const channelAccount = await prisma.channelAccount.findUnique({
+      where: { id: selectedChannel.channelAccountId },
+      select: { externalAccountId: true },
+    });
+
+    const contentSnapshot = (item.contentSnapshot ?? {}) as { body?: unknown };
+    const text = typeof contentSnapshot.body === 'string' ? contentSnapshot.body : '';
+
+    const sendFn = deps.sendText ?? sendEvolutionText;
+    const result = await sendFn({
+      baseUrl: deps.evolutionBaseUrl ?? process.env.EVOLUTION_API_URL ?? '',
+      apiKey: deps.evolutionApiKey ?? process.env.EVOLUTION_API_KEY,
+      instanceName:
+        (channelAccount as { externalAccountId?: string | null } | null)
+          ?.externalAccountId ?? '',
+      destination: normalizedDestination,
+      text,
+      idempotencyKey: item.id,
+    });
+
+    const attemptCount = (item.attemptCount ?? 0) + 1;
+    const maxAttempts = item.maxAttempts ?? 3;
+
+    if (result.success) {
+      await finalizeSent(prisma, item, now(), {
+        providerMessageId: result.providerMessageId,
+        providerStatus: result.providerStatus,
+        attemptCount,
+      });
+      await prisma.dispatchChannel.updateMany({
+        where: { id: selectedChannel.id },
+        data: {
+          sentItems: selectedChannel.sentItems + 1,
+          consecutiveErrors: 0,
+          cooldownUntil: null,
+          operationalStatus: DispatchChannelOperationalStatus.READY,
+        },
+      });
+      await upsertChannelUsageDaily(prisma, {
+        organizationId: (item as { organizationId?: string }).organizationId ?? '',
+        campaignId: (item as { campaignId?: string }).campaignId ?? '',
+        dispatchChannelId: selectedChannel.id,
+        channelAccountId: selectedChannel.channelAccountId,
+        usageDate: usageDateKey,
+        now: now(),
+      });
+      await recomputeDispatchProgress(prisma, dispatch, now());
+      return { action: 'SENT', send: true, dispatchItemId: item.id };
+    }
+
+    const failure = result;
+
+    if (
+      (failure.category === 'PROVIDER_RATE_LIMIT' && policy.pauseOn429) ||
+      (failure.category === 'AUTHENTICATION_ERROR' && policy.pauseOn403)
+    ) {
+      const nextConsecutiveErrors = (selectedChannel.consecutiveErrors ?? 0) + 1;
+      await prisma.dispatchChannel.updateMany({
+        where: { id: selectedChannel.id },
+        data: {
+          consecutiveErrors: nextConsecutiveErrors,
+          cooldownUntil: computeChannelCooldownUntil(now(), nextConsecutiveErrors),
+          operationalStatus: DispatchChannelOperationalStatus.COOLDOWN,
+        },
+      });
+
+      const failoverCandidate = await resolveEffectiveChannel({
+        prisma,
+        dispatch,
+        item: { ...item, dispatchChannelId: selectedChannel.id },
+        now,
+        excludeCurrent: true,
+      });
+
+      const resumeAt = new Date(now().getTime() + CHANNEL_FAILOVER_RETRY_DELAY_MS);
+
+      if (failoverCandidate.effectiveChannel) {
+        await prisma.dispatchItem.update({
+          where: { id: item.id },
+          data: {
+            status: DispatchItemStatus.SCHEDULED,
+            scheduledAt: resumeAt,
+            dispatchChannelId: failoverCandidate.effectiveChannel.id,
+            channelAccountId: failoverCandidate.effectiveChannel.channelAccountId,
+            lockedAt: null,
+            lockToken: null,
+            lockExpiresAt: null,
+            lastQueueError: `CHANNEL_COOLDOWN_${failure.errorCode}`,
+          },
+        });
+      } else {
+        await prisma.dispatchItem.update({
+          where: { id: item.id },
+          data: {
+            status: DispatchItemStatus.SCHEDULED,
+            scheduledAt: resumeAt,
+            lockedAt: null,
+            lockToken: null,
+            lockExpiresAt: null,
+            lastQueueError: `CHANNEL_COOLDOWN_NO_FAILOVER_${failure.errorCode}`,
+          },
+        });
+      }
+      await tryMoveToDelayed(job, resumeAt);
+      await recomputeDispatchProgress(prisma, dispatch, now());
+      return { action: 'DEFERRED_CHANNEL_COOLDOWN', send: true, dispatchItemId: item.id };
+    }
+
+    if (failure.ambiguous) {
+      await finalizeUnknown(prisma, item, now(), attemptCount, failure);
+      await recomputeDispatchProgress(prisma, dispatch, now());
+      return { action: 'UNKNOWN_PROVIDER_STATE', send: true, dispatchItemId: item.id };
+    }
+
+    const isTransient =
+      failure.category === 'TRANSIENT_NETWORK' ||
+      failure.category === 'PROVIDER_UNAVAILABLE' ||
+      failure.category === 'PROVIDER_TIMEOUT';
+
+    if (isTransient && !isDispatchRetryExhausted(attemptCount, maxAttempts)) {
+      const nextRetryAt = computeDispatchNextRetryAt(now(), attemptCount);
+      await finalizeRetryScheduled(prisma, item, now(), attemptCount, nextRetryAt, failure);
+      await tryMoveToDelayed(job, nextRetryAt);
+      await recomputeDispatchProgress(prisma, dispatch, now());
+      return { action: 'RETRY_SCHEDULED', send: true, dispatchItemId: item.id };
+    }
+
+    await finalizeFailed(
+      prisma,
+      item,
+      now(),
+      failure.errorCode,
+      mapEvolutionCategoryToErrorCategory(failure.category),
+      failure.errorMessage,
+      attemptCount,
+    );
+    await recomputeDispatchProgress(prisma, dispatch, now());
+    return { action: 'FAILED', send: true, dispatchItemId: item.id };
+  } catch (error) {
+    await prisma.dispatchItem.updateMany({
+      where: { id: item.id, status: DispatchItemStatus.PROCESSING },
+      data: {
+        status: DispatchItemStatus.RETRY_SCHEDULED,
+        lockedAt: null,
+        lockToken: null,
+        lockExpiresAt: null,
+        lastQueueError: error instanceof Error ? error.message : 'UNKNOWN_ERROR',
+      },
+    });
+    throw error;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers de finalizacao de item
+// ---------------------------------------------------------------------------
+
+async function finalizeSkip(
+  prisma: PrismaClient,
+  item: ItemRow,
+  now: Date,
+  errorCode: string,
+  errorCategory: DispatchItemErrorCategory | null,
+): Promise<void> {
+  await prisma.dispatchItem.update({
+    where: { id: item.id },
+    data: {
+      status: DispatchItemStatus.SKIPPED,
+      skippedAt: now,
+      errorCategory,
+      errorCode,
+      errorMessage: errorCode,
+      lockedAt: null,
+      lockToken: null,
+      lockExpiresAt: null,
+    },
+  });
+}
+
+async function finalizeFailed(
+  prisma: PrismaClient,
+  item: ItemRow,
+  now: Date,
+  errorCode: string,
+  errorCategory: DispatchItemErrorCategory,
+  errorMessage: string,
+  attemptCount?: number,
+): Promise<void> {
+  await prisma.dispatchItem.update({
+    where: { id: item.id },
+    data: {
+      status: DispatchItemStatus.FAILED,
+      failedAt: now,
+      lastAttemptAt: now,
+      ...(attemptCount != null ? { attemptCount } : {}),
+      errorCategory,
+      errorCode,
+      errorMessage,
+      lockedAt: null,
+      lockToken: null,
+      lockExpiresAt: null,
+    },
+  });
+}
+
+async function finalizeSent(
+  prisma: PrismaClient,
+  item: ItemRow,
+  now: Date,
+  data: {
+    providerMessageId: string | null;
+    providerStatus: string | null;
+    attemptCount: number;
+  },
+): Promise<void> {
+  await prisma.dispatchItem.update({
+    where: { id: item.id },
+    data: {
+      status: DispatchItemStatus.SENT,
+      sentAt: now,
+      lastAttemptAt: now,
+      attemptCount: data.attemptCount,
+      providerMessageId: data.providerMessageId,
+      providerStatus: data.providerStatus,
+      errorCategory: null,
+      errorCode: null,
+      errorMessage: null,
+      lockedAt: null,
+      lockToken: null,
+      lockExpiresAt: null,
+    },
+  });
+}
+
+async function finalizeRetryScheduled(
+  prisma: PrismaClient,
+  item: ItemRow,
+  now: Date,
+  attemptCount: number,
+  nextRetryAt: Date,
+  failure: { errorCode: string; errorMessage: string; category: EvolutionSendCategory },
+): Promise<void> {
+  await prisma.dispatchItem.update({
+    where: { id: item.id },
+    data: {
+      status: DispatchItemStatus.RETRY_SCHEDULED,
+      attemptCount,
+      nextRetryAt,
+      lastAttemptAt: now,
+      errorCategory: mapEvolutionCategoryToErrorCategory(failure.category),
+      errorCode: failure.errorCode,
+      errorMessage: failure.errorMessage,
+      lockedAt: null,
+      lockToken: null,
+      lockExpiresAt: null,
+    },
+  });
+}
+
+async function finalizeUnknown(
+  prisma: PrismaClient,
+  item: ItemRow,
+  now: Date,
+  attemptCount: number,
+  failure: { errorCode: string; errorMessage: string },
+): Promise<void> {
+  await prisma.dispatchItem.update({
+    where: { id: item.id },
+    data: {
+      status: DispatchItemStatus.UNKNOWN_PROVIDER_STATE,
+      attemptCount,
+      lastAttemptAt: now,
+      nextRetryAt: null,
+      errorCategory: null,
+      errorCode: failure.errorCode,
+      errorMessage: failure.errorMessage,
+      lockedAt: null,
+      lockToken: null,
+      lockExpiresAt: null,
+    },
+  });
+}
+
+async function upsertChannelUsageDaily(
+  prisma: PrismaClient,
+  input: {
+    organizationId: string;
+    campaignId: string;
+    dispatchChannelId: string;
+    channelAccountId: string;
+    usageDate: Date;
+    now: Date;
+  },
+): Promise<void> {
+  await prisma.dispatchChannelUsageDaily.upsert({
+    where: {
+      dispatchChannelId_usageDate: {
+        dispatchChannelId: input.dispatchChannelId,
+        usageDate: input.usageDate,
+      },
+    },
+    create: {
+      organizationId: input.organizationId,
+      campaignId: input.campaignId,
+      dispatchChannelId: input.dispatchChannelId,
+      channelAccountId: input.channelAccountId,
+      usageDate: input.usageDate,
+      sentCount: 1,
+      lastSentAt: input.now,
+    },
+    update: {
+      sentCount: { increment: 1 },
+      lastSentAt: input.now,
+    },
+  });
+}
+
+async function recomputeDispatchProgress(
+  prisma: PrismaClient,
+  dispatch: DispatchRow,
+  now: Date,
+): Promise<void> {
+  const grouped = await prisma.dispatchItem.groupBy({
+    by: ['status'],
+    where: {
+      dispatchId: dispatch.id,
+    },
+    _count: { _all: true },
+  } as never);
+
+  const counts: Record<string, number> = {};
+  for (const row of grouped as Array<{ status: string; _count: { _all: number } }>) {
+    counts[row.status] = row._count._all;
+  }
+
+  const pendingItems = counts[DispatchItemStatus.PENDING] ?? 0;
+  const queuedItems =
+    (counts[DispatchItemStatus.QUEUED] ?? 0) +
+    (counts[DispatchItemStatus.SCHEDULED] ?? 0) +
+    (counts[DispatchItemStatus.RETRY_SCHEDULED] ?? 0);
+  const processingItems = counts[DispatchItemStatus.PROCESSING] ?? 0;
+  const sentItems = counts[DispatchItemStatus.SENT] ?? 0;
+  const deliveredItems = counts[DispatchItemStatus.DELIVERED] ?? 0;
+  const readItems = counts[DispatchItemStatus.READ] ?? 0;
+  const failedItems =
+    (counts[DispatchItemStatus.FAILED] ?? 0) +
+    (counts[DispatchItemStatus.UNKNOWN_PROVIDER_STATE] ?? 0);
+  const skippedItems = counts[DispatchItemStatus.SKIPPED] ?? 0;
+  const canceledItems = counts[DispatchItemStatus.CANCELED] ?? 0;
+
+  const unresolved = pendingItems + queuedItems + processingItems;
+  const data: Record<string, unknown> = {
+    pendingItems,
+    queuedItems,
+    processingItems,
+    sentItems,
+    deliveredItems,
+    readItems,
+    failedItems,
+    skippedItems,
+    canceledItems,
+    lastProgressAt: now,
+  };
+
+  if (unresolved === 0 && (dispatch.totalItems ?? 0) > 0) {
+    data.completedAt = now;
+    data.status =
+      failedItems + skippedItems + canceledItems > 0
+        ? DispatchStatus.COMPLETED_WITH_ERRORS
+        : DispatchStatus.COMPLETED;
+  }
+
+  await prisma.dispatch.updateMany({
+    where: { id: dispatch.id, status: DispatchStatus.RUNNING },
+    data,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Selecao de canal (compartilhada entre tecnico e real)
+// ---------------------------------------------------------------------------
+
+async function resolveEffectiveChannel(input: {
+  prisma: PrismaClient;
+  dispatch: DispatchRow;
+  item: ItemRow;
+  now: () => Date;
+  excludeCurrent?: boolean;
+}): Promise<{
+  effectiveChannel: SelectableDispatchChannel | null;
+  reassigned: boolean;
+}> {
+  const { prisma, dispatch, item, now } = input;
+
+  const dispatchChannelRows = await prisma.dispatchChannel.findMany({
+    where: { dispatchId: dispatch.id },
+    include: { channelAccount: { select: { id: true, status: true } } },
+  });
+
+  const selectable: SelectableDispatchChannel[] = dispatchChannelRows.map((row) => ({
+    id: row.id,
+    channelAccountId: row.channelAccountId,
+    enabled: row.enabled,
+    priority: row.priority,
+    weight: row.weight,
+    effectiveDailyLimit: row.effectiveDailyLimit,
+    assignedItems: row.assignedItems,
+    sentItems: row.sentItems,
+    consecutiveErrors: row.consecutiveErrors,
+    cooldownUntil: row.cooldownUntil,
+    operationalStatus: row.operationalStatus,
+    connected: row.channelAccount.status === ChannelAccountStatus.CONNECTED,
+    archived: row.channelAccount.status === ChannelAccountStatus.ARCHIVED,
+  }));
+
+  const currentChannel = item.dispatchChannelId
+    ? selectable.find((c) => c.id === item.dispatchChannelId) ?? null
+    : null;
+  const currentApta =
+    !input.excludeCurrent && currentChannel ? isChannelApta(currentChannel, now()) : false;
+
+  if (currentApta && currentChannel) {
+    return { effectiveChannel: currentChannel, reassigned: false };
+  }
+
+  const next = selectNextEligibleDispatchChannel(selectable, {
+    now: now(),
+    excludeChannelIds: item.dispatchChannelId ? [item.dispatchChannelId] : [],
+  });
+
+  if (!next) {
+    return { effectiveChannel: null, reassigned: false };
+  }
+
+  if (!canReassignDispatchItem(item.status)) {
+    return { effectiveChannel: input.excludeCurrent ? null : currentChannel, reassigned: false };
+  }
+
+  if (!input.excludeCurrent) {
+    const update = buildReassignmentUpdate(
+      {
+        dispatchChannelId: item.dispatchChannelId,
+        originalDispatchChannelId: item.originalDispatchChannelId,
+        channelAccountId: item.channelAccountId,
+        reassignmentCount: item.reassignmentCount,
+        status: item.status,
+      },
+      { id: next.id, channelAccountId: next.channelAccountId },
+      now(),
+    );
+    await prisma.dispatchItem.update({ where: { id: item.id }, data: update });
+  }
+
+  return { effectiveChannel: next, reassigned: true };
+}
+
 function isChannelApta(channel: SelectableDispatchChannel, now: Date): boolean {
   if (!channel.enabled || channel.archived || !channel.connected) return false;
   if (channel.operationalStatus !== 'READY') return false;
@@ -365,6 +1105,121 @@ function isChannelApta(channel: SelectableDispatchChannel, now: Date): boolean {
   }
   const remaining = channel.effectiveDailyLimit - channel.assignedItems - channel.sentItems;
   return remaining > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Politica de protecao / delays / rotacao (puro, testavel)
+// ---------------------------------------------------------------------------
+
+export function extractSendProtectionPolicy(
+  approvalSnapshot: unknown,
+): DispatchSendProtectionPolicy {
+  const snapshot = (approvalSnapshot ?? {}) as {
+    protectionPolicy?: Partial<DispatchSendProtectionPolicy>;
+  };
+  const policy = snapshot.protectionPolicy ?? {};
+
+  return {
+    minDelaySeconds: firstNumber(policy.minDelaySeconds) ?? DEFAULT_SEND_POLICY.minDelaySeconds,
+    maxDelaySeconds: firstNumber(policy.maxDelaySeconds) ?? DEFAULT_SEND_POLICY.maxDelaySeconds,
+    batchSize: firstNumber(policy.batchSize) ?? DEFAULT_SEND_POLICY.batchSize,
+    pauseBetweenBatchesSeconds:
+      firstNumber(policy.pauseBetweenBatchesSeconds) ??
+      DEFAULT_SEND_POLICY.pauseBetweenBatchesSeconds,
+    longPauseEveryMessages:
+      firstNumber(policy.longPauseEveryMessages) ?? DEFAULT_SEND_POLICY.longPauseEveryMessages,
+    longPauseMinutes:
+      firstNumber(policy.longPauseMinutes) ?? DEFAULT_SEND_POLICY.longPauseMinutes,
+    rotateEveryMessages:
+      firstNumber(policy.rotateEveryMessages) ?? DEFAULT_SEND_POLICY.rotateEveryMessages,
+    pauseOn403:
+      typeof policy.pauseOn403 === 'boolean' ? policy.pauseOn403 : DEFAULT_SEND_POLICY.pauseOn403,
+    pauseOn429:
+      typeof policy.pauseOn429 === 'boolean' ? policy.pauseOn429 : DEFAULT_SEND_POLICY.pauseOn429,
+  };
+}
+
+/**
+ * Delay minimo exigido antes do proximo envio no mesmo canal: o maior
+ * entre o delay aleatorio (min/max) e a pausa de lote/pausa longa quando
+ * `sentItemsBeforeSend` cruza os limiares configurados.
+ */
+export function computeChannelSendDelayMs(
+  policy: DispatchSendProtectionPolicy,
+  sentItemsBeforeSend: number,
+  random: () => number = Math.random,
+): number {
+  const min = Math.max(0, policy.minDelaySeconds) * 1000;
+  const max = Math.max(min, policy.maxDelaySeconds * 1000);
+  const randomDelayMs = max > min ? min + random() * (max - min) : min;
+
+  let pauseMs = 0;
+  if (sentItemsBeforeSend > 0 && policy.longPauseEveryMessages > 0) {
+    if (sentItemsBeforeSend % policy.longPauseEveryMessages === 0) {
+      pauseMs = Math.max(pauseMs, policy.longPauseMinutes * 60_000);
+    }
+  }
+  if (sentItemsBeforeSend > 0 && policy.batchSize > 0) {
+    if (sentItemsBeforeSend % policy.batchSize === 0) {
+      pauseMs = Math.max(pauseMs, policy.pauseBetweenBatchesSeconds * 1000);
+    }
+  }
+
+  return Math.max(randomDelayMs, pauseMs);
+}
+
+export function shouldRotateChannel(
+  sentItemsBeforeSend: number,
+  rotateEveryMessages: number,
+): boolean {
+  if (rotateEveryMessages <= 0) return false;
+  return sentItemsBeforeSend > 0 && sentItemsBeforeSend % rotateEveryMessages === 0;
+}
+
+export function computeChannelCooldownUntil(now: Date, consecutiveErrors: number): Date {
+  const steps = Math.min(Math.max(consecutiveErrors, 1), CHANNEL_COOLDOWN_MAX_STEPS);
+  return new Date(now.getTime() + steps * CHANNEL_COOLDOWN_STEP_MS);
+}
+
+export function computeUsageDateKey(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+}
+
+export function isValidNormalizedDestination(value: string): boolean {
+  return /^\d{10,15}$/.test(value);
+}
+
+export function mapEvolutionCategoryToErrorCategory(
+  category: EvolutionSendCategory,
+): DispatchItemErrorCategory {
+  switch (category) {
+    case 'TRANSIENT_NETWORK':
+      return DispatchItemErrorCategory.TRANSIENT_NETWORK;
+    case 'PROVIDER_RATE_LIMIT':
+      return DispatchItemErrorCategory.PROVIDER_RATE_LIMIT;
+    case 'PROVIDER_UNAVAILABLE':
+      return DispatchItemErrorCategory.PROVIDER_UNAVAILABLE;
+    case 'PROVIDER_TIMEOUT':
+      return DispatchItemErrorCategory.PROVIDER_TIMEOUT;
+    case 'AUTHENTICATION_ERROR':
+      return DispatchItemErrorCategory.AUTHENTICATION_ERROR;
+    case 'INVALID_DESTINATION':
+      return DispatchItemErrorCategory.INVALID_DESTINATION;
+    case 'CONTENT_REJECTED':
+      return DispatchItemErrorCategory.CONTENT_REJECTED;
+    default:
+      return DispatchItemErrorCategory.UNKNOWN;
+  }
+}
+
+async function tryMoveToDelayed(job: DispatchSendJobLike, at: Date): Promise<void> {
+  if (!job.moveToDelayed) return;
+  try {
+    await job.moveToDelayed(at.getTime(), job.token);
+  } catch {
+    // Se o BullMQ nao permitir mover (ex.: fora de contexto de teste),
+    // o item ja foi atualizado no banco e o reconcile/producer cuidam depois.
+  }
 }
 
 function extractOperationalWindow(
@@ -415,4 +1270,8 @@ function firstNumberArray(...values: unknown[]): number[] | null {
     }
   }
   return null;
+}
+
+function firstNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }

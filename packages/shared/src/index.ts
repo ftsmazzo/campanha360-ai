@@ -17,3 +17,5 @@ export * from './dispatch-queue.constants';
 export * from './dispatch-feature-flags';
 export * from './dispatch-channel-selection';
 export * from './dispatch-window.util';
+export * from './dispatch-send-retry';
+export * from './evolution-send.client';

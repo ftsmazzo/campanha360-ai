@@ -7,7 +7,13 @@ import {
   DispatchStatus,
   MembershipRole,
 } from '@prisma/client';
-import { isDispatchEngineEnabled, isDispatchQueueEnabled } from '@campanha360/shared';
+import {
+  getDispatchPilotMaxItems,
+  isDispatchEngineEnabled,
+  isDispatchPilotMode,
+  isDispatchQueueEnabled,
+  isDispatchSendEnabled,
+} from '@campanha360/shared';
 import {
   isAllowedDispatchProvider,
   isArchivedChannelAccount,
@@ -259,10 +265,22 @@ export function canPrepareDispatch(input: {
   );
 }
 
+/**
+ * Verifica se o volume do Dispatch respeita o teto rigido do piloto
+ * (subetapa 09.4/09.8). Fora do modo piloto (DISPATCH_PILOT_MODE=false),
+ * nao ha limite adicional aqui — outros limites de homologacao continuam
+ * ativos em camadas anteriores (DISPATCH_PREPARE_MAX_ITEMS).
+ */
+export function isDispatchStartWithinPilotLimit(totalItems: number): boolean {
+  if (!isDispatchPilotMode()) return true;
+  return totalItems <= getDispatchPilotMaxItems();
+}
+
 export function buildDispatchAllowedActionsForPrepare(input: {
   role: MembershipRole | string | null | undefined;
   status: DispatchStatus | string;
   totalItems: number;
+  queuedItems?: number;
   requiringRedistribution?: boolean;
 }) {
   const canApprove =
@@ -287,12 +305,26 @@ export function buildDispatchAllowedActionsForPrepare(input: {
     canApprove &&
     (input.status === DispatchStatus.QUEUED || input.status === 'QUEUED');
 
+  // 09.4: iniciar o envio real exige OWNER/ADMIN, Dispatch QUEUED com ao
+  // menos um item QUEUED, sem pendencia de redistribuicao, as tres flags
+  // do motor habilitadas (ENGINE+QUEUE+SEND) e volume dentro do teto do
+  // piloto (quando DISPATCH_PILOT_MODE=true, o default conservador).
+  const canStart =
+    canApprove &&
+    (input.status === DispatchStatus.QUEUED || input.status === 'QUEUED') &&
+    (input.queuedItems ?? 0) > 0 &&
+    !input.requiringRedistribution &&
+    isDispatchEngineEnabled() &&
+    isDispatchQueueEnabled() &&
+    isDispatchSendEnabled() &&
+    isDispatchStartWithinPilotLimit(input.totalItems);
+
   return {
     canView: true,
     canPrepare: canPrepareDispatch(input),
     canQueue,
     canRedistribute: Boolean(input.requiringRedistribution),
-    canStart: false,
+    canStart,
     canPause: false,
     canResume: false,
     canCancel: false,

@@ -235,6 +235,7 @@ model Organization {
   dispatches Dispatch[]
   dispatchItems DispatchItem[]
   dispatchChannels DispatchChannel[]
+  dispatchChannelUsageDaily DispatchChannelUsageDaily[]
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 }
@@ -270,6 +271,7 @@ model Campaign {
   dispatches     Dispatch[]
   dispatchItems  DispatchItem[]
   dispatchChannels DispatchChannel[]
+  dispatchChannelUsageDaily DispatchChannelUsageDaily[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
@@ -441,6 +443,7 @@ model ChannelAccount {
   dispatches        Dispatch[]
   dispatchItems     DispatchItem[]
   dispatchChannels  DispatchChannel[]
+  dispatchChannelUsageDaily DispatchChannelUsageDaily[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
@@ -713,6 +716,7 @@ model DispatchChannel {
   channelAccount        ChannelAccount                  @relation(fields: [channelAccountId], references: [id])
   items                 DispatchItem[]                  @relation("DispatchItemChannel")
   originalItems         DispatchItem[]                  @relation("DispatchItemOriginalChannel")
+  usageDaily            DispatchChannelUsageDaily[]
   createdAt             DateTime                        @default(now())
   updatedAt             DateTime                        @updatedAt
 
@@ -721,6 +725,34 @@ model DispatchChannel {
   @@index([organizationId, campaignId])
   @@index([channelAccountId])
   @@index([operationalStatus])
+}
+
+/**
+ * Contador diario de envio por instancia (DispatchChannel), usado pelo
+ * Worker (subetapa 09.4) para: (a) incrementar sentCount/failedCount de
+ * forma atomica no sucesso/erro; (b) decidir rotacao (rotateEveryMessages)
+ * e respeito ao delay minimo entre envios do mesmo canal (lastSentAt).
+ */
+model DispatchChannelUsageDaily {
+  id                String          @id @default(cuid())
+  organizationId    String
+  campaignId        String
+  dispatchChannelId String
+  channelAccountId  String
+  usageDate         DateTime        @db.Date
+  sentCount         Int             @default(0)
+  failedCount       Int             @default(0)
+  lastSentAt        DateTime?
+  organization      Organization    @relation(fields: [organizationId], references: [id])
+  campaign          Campaign        @relation(fields: [campaignId], references: [id])
+  dispatchChannel   DispatchChannel @relation(fields: [dispatchChannelId], references: [id], onDelete: Cascade)
+  channelAccount    ChannelAccount  @relation(fields: [channelAccountId], references: [id])
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@unique([dispatchChannelId, usageDate])
+  @@index([organizationId, campaignId])
+  @@index([channelAccountId, usageDate])
 }
 
 model DispatchItem {

@@ -101,23 +101,41 @@ export type DispatchProgressStep = {
   state: 'done' | 'current' | 'pending';
 };
 
+const TERMINAL_DISPATCH_STATUSES = [
+  'COMPLETED',
+  'COMPLETED_WITH_ERRORS',
+  'FAILED',
+  'CANCELED',
+  'EMERGENCY_STOPPED',
+];
+
+const PAST_QUEUE_STATUSES = [
+  'RUNNING',
+  'PAUSING',
+  'PAUSED',
+  ...TERMINAL_DISPATCH_STATUSES,
+];
+
+const EXECUTION_CURRENT_STATUSES = ['RUNNING', 'PAUSING', 'PAUSED'];
+
 export function getDispatchProgressSteps(
   status: string,
 ): DispatchProgressStep[] {
   const creationDone = true;
-  const preparationDone = status === 'READY' || [
-    'QUEUED',
-    'RUNNING',
-    'PAUSING',
-    'PAUSED',
-    'COMPLETED',
-    'COMPLETED_WITH_ERRORS',
-    'FAILED',
-    'CANCELED',
-    'EMERGENCY_STOPPED',
-  ].includes(status);
+  const preparationDone =
+    status === 'READY' ||
+    status === 'QUEUED' ||
+    PAST_QUEUE_STATUSES.includes(status);
   const preparationCurrent = status === 'PREPARING';
-  const preparationPending = status === 'DRAFT';
+
+  const queueDone =
+    status === 'QUEUED' || PAST_QUEUE_STATUSES.includes(status);
+  const queueCurrent = false;
+
+  const executionDone = TERMINAL_DISPATCH_STATUSES.includes(status);
+  const executionCurrent = EXECUTION_CURRENT_STATUSES.includes(status);
+
+  const completionDone = TERMINAL_DISPATCH_STATUSES.includes(status);
 
   return [
     {
@@ -128,16 +146,22 @@ export function getDispatchProgressSteps(
     {
       id: 'preparation',
       label: 'Preparacao',
-      state: preparationDone
-        ? 'done'
-        : preparationCurrent
-          ? 'current'
-          : preparationPending
-            ? 'pending'
-            : 'pending',
+      state: preparationDone ? 'done' : preparationCurrent ? 'current' : 'pending',
     },
-    { id: 'queue', label: 'Fila', state: 'pending' },
-    { id: 'execution', label: 'Execucao', state: 'pending' },
-    { id: 'completion', label: 'Conclusao', state: 'pending' },
+    {
+      id: 'queue',
+      label: 'Fila',
+      state: queueDone ? 'done' : queueCurrent ? 'current' : 'pending',
+    },
+    {
+      id: 'execution',
+      label: 'Execucao',
+      state: executionDone ? 'done' : executionCurrent ? 'current' : 'pending',
+    },
+    {
+      id: 'completion',
+      label: 'Conclusao',
+      state: completionDone ? 'done' : 'pending',
+    },
   ];
 }

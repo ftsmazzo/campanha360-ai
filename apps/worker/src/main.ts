@@ -3,6 +3,8 @@ import {
   DISPATCH_SEND_QUEUE_NAME,
   isDispatchEngineEnabled,
   isDispatchQueueEnabled,
+  isDispatchSendEnabled,
+  sendEvolutionText,
 } from '@campanha360/shared';
 import { createRedisConnection } from './redis';
 import { prisma } from './prisma';
@@ -25,7 +27,16 @@ async function bootstrap(): Promise<void> {
 
   const worker = new Worker(
     DISPATCH_SEND_QUEUE_NAME,
-    async (job) => processDispatchSendJob(job, { prisma }),
+    async (job) =>
+      processDispatchSendJob(job, {
+        prisma,
+        // Injetado explicitamente (em vez do default interno do processor)
+        // para deixar claro o ponto unico de integracao com a Evolution.
+        // NAO logar apiKey/telefone/conteudo — sendEvolutionText ja garante isso.
+        sendText: sendEvolutionText,
+        evolutionBaseUrl: process.env.EVOLUTION_API_URL,
+        evolutionApiKey: process.env.EVOLUTION_API_KEY,
+      }),
     {
       connection,
       concurrency: 5,
@@ -33,7 +44,8 @@ async function bootstrap(): Promise<void> {
   );
 
   worker.on('ready', () => {
-    console.log(`[worker] pronto para consumir a fila "${DISPATCH_SEND_QUEUE_NAME}" (modo tecnico 09.3, sem envio)`);
+    const mode = isDispatchSendEnabled() ? 'envio real 09.4' : 'modo tecnico 09.3, sem envio';
+    console.log(`[worker] pronto para consumir a fila "${DISPATCH_SEND_QUEUE_NAME}" (${mode})`);
   });
 
   worker.on('completed', (job, result: DispatchSendProcessResult) => {
