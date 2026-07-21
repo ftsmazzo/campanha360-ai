@@ -264,6 +264,12 @@ export default function CampaignContactsPage() {
             >
               Segmentos
             </Link>
+            <Link
+              className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
+              href={`/dashboard/campaigns/${campaignId}/dispatch-plans`}
+            >
+              Planejamento de Disparos
+            </Link>
           </div>
         </div>
 

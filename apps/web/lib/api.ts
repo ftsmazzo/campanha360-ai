@@ -650,6 +650,121 @@ export function deleteSegment(token: string, campaignId: string, segmentId: stri
   );
 }
 
+export type DispatchPlanStatus =
+  | 'DRAFT'
+  | 'VALIDATING'
+  | 'VALIDATED'
+  | 'BLOCKED'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'EXPIRED'
+  | 'CANCELED';
+
+export type DispatchPlanItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  segmentId: string;
+  channelAccountId: string;
+  name: string;
+  description: string | null;
+  channelType: string;
+  content: string;
+  status: DispatchPlanStatus;
+  version: number;
+  createdByUserId: string;
+  createdAt: string;
+  updatedAt: string;
+  segment: {
+    id: string;
+    name: string;
+  };
+  channelAccount: {
+    id: string;
+    name: string;
+    provider: string;
+    status: string;
+  };
+  createdBy: {
+    id: string;
+    name: string;
+    email: string;
+  };
+};
+
+export type CreateDispatchPlanPayload = {
+  name: string;
+  description?: string;
+  segmentId: string;
+  channelAccountId: string;
+  content: string;
+};
+
+export type UpdateDispatchPlanPayload = {
+  name?: string;
+  description?: string;
+  segmentId?: string;
+  channelAccountId?: string;
+  content?: string;
+};
+
+export function fetchDispatchPlans(token: string, campaignId: string) {
+  return request<DispatchPlanItem[]>(
+    `/campaigns/${campaignId}/dispatch-plans`,
+    {},
+    token,
+  );
+}
+
+export function fetchDispatchPlan(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+) {
+  return request<DispatchPlanItem>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}`,
+    {},
+    token,
+  );
+}
+
+export function createDispatchPlan(
+  token: string,
+  campaignId: string,
+  payload: CreateDispatchPlanPayload,
+) {
+  return request<DispatchPlanItem>(
+    `/campaigns/${campaignId}/dispatch-plans`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateDispatchPlan(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+  payload: UpdateDispatchPlanPayload,
+) {
+  return request<DispatchPlanItem>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function cancelDispatchPlan(
+  token: string,
+  campaignId: string,
+  dispatchPlanId: string,
+) {
+  return request<DispatchPlanItem>(
+    `/campaigns/${campaignId}/dispatch-plans/${dispatchPlanId}/cancel`,
+    { method: 'POST' },
+    token,
+  );
+}
+
 export function applyContactTag(
   token: string,
   campaignId: string,

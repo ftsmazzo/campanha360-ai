@@ -97,6 +97,17 @@ enum ChannelAccountStatus {
   ARCHIVED
 }
 
+enum DispatchPlanStatus {
+  DRAFT
+  VALIDATING
+  VALIDATED
+  BLOCKED
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELED
+}
+
 enum MessageDirection {
   INBOUND
   OUTBOUND
@@ -116,6 +127,7 @@ model User {
   status       UserStatus       @default(ACTIVE)
   memberships  Membership[]
   auditLogs    AuditLog[]
+  createdDispatchPlans DispatchPlan[] @relation("DispatchPlanCreatedBy")
   contactNotes ContactNote[]
   createdContactTasks ContactTask[] @relation("ContactTaskCreatedBy")
   assignedContactTasks ContactTask[] @relation("ContactTaskAssignedTo")
@@ -131,6 +143,7 @@ model Organization {
   status      OrganizationStatus @default(ACTIVE)
   memberships Membership[]
   campaigns   Campaign[]
+  dispatchPlans DispatchPlan[]
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 }
@@ -160,6 +173,7 @@ model Campaign {
   organization   Organization       @relation(fields: [organizationId], references: [id])
   candidate      Candidate?
   contacts       Contact[]
+  dispatchPlans  DispatchPlan[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
@@ -324,6 +338,7 @@ model ChannelAccount {
   status            ChannelAccountStatus @default(DISCONNECTED)
   externalAccountId String?
   config            Json?
+  dispatchPlans     DispatchPlan[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
@@ -389,9 +404,37 @@ model Segment {
   description     String?
   filters         Json
   createdByUserId String?
+  dispatchPlans   DispatchPlan[]
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
   @@unique([campaignId, name])
   @@index([organizationId, campaignId])
+}
+
+model DispatchPlan {
+  id               String             @id @default(cuid())
+  organizationId   String
+  campaignId       String
+  segmentId        String
+  channelAccountId String
+  name             String
+  description      String?
+  channelType      ChannelType
+  content          String
+  status           DispatchPlanStatus @default(DRAFT)
+  version          Int                @default(1)
+  createdByUserId  String
+  organization     Organization       @relation(fields: [organizationId], references: [id])
+  campaign         Campaign           @relation(fields: [campaignId], references: [id])
+  segment          Segment            @relation(fields: [segmentId], references: [id])
+  channelAccount   ChannelAccount     @relation(fields: [channelAccountId], references: [id])
+  createdBy        User               @relation("DispatchPlanCreatedBy", fields: [createdByUserId], references: [id])
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@index([organizationId, campaignId])
+  @@index([campaignId, status])
+  @@index([segmentId])
+  @@index([channelAccountId])
 }

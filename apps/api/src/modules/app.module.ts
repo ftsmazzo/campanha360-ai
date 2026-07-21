@@ -13,6 +13,7 @@ import { OrganizationsModule } from '../organizations/organizations.module';
 import { PrismaModule } from '../prisma/prisma.module';
 import { TagsModule } from '../tags/tags.module';
 import { SegmentsModule } from '../segments/segments.module';
+import { DispatchPlansModule } from '../dispatch-plans/dispatch-plans.module';
 import { EvolutionWebhookModule } from '../webhooks/evolution-webhook.module';
 import { InboxModule } from '../inbox/inbox.module';
 import { HealthController } from './health.controller';
@@ -29,6 +30,7 @@ import { HealthController } from './health.controller';
     ContactsModule,
     TagsModule,
     SegmentsModule,
+    DispatchPlansModule,
     ContactNotesModule,
     ContactTasksModule,
     ContactTimelineModule,
