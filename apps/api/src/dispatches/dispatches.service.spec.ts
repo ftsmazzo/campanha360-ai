@@ -118,6 +118,42 @@ function approvedPlan(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function mockDispatchChannelRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'dispatch-channel-1',
+    channelAccountId: 'channel-1',
+    dispatchPlanChannelId: 'plan-channel-1',
+    enabled: true,
+    priority: 10,
+    weight: 100,
+    effectiveDailyLimit: 5000,
+    assignedItems: 0,
+    processedItems: 0,
+    sentItems: 0,
+    failedItems: 0,
+    consecutiveErrors: 0,
+    cooldownUntil: null,
+    operationalStatus: 'READY',
+    channelAccount: {
+      id: 'channel-1',
+      name: 'Evolution',
+      campaignId: 'campaign-1',
+      provider: ChannelProvider.WHATSAPP_EVOLUTION,
+      status: ChannelAccountStatus.CONNECTED,
+    },
+    ...overrides,
+  };
+}
+
+function mockDispatchChannelModel() {
+  return {
+    findMany: async () => [mockDispatchChannelRow()],
+    createMany: async () => ({ count: 1 }),
+    update: async () => mockDispatchChannelRow(),
+  };
+}
+
+
 function createHarness(options: {
   plan?: ReturnType<typeof approvedPlan> | null;
   existingDispatch?: boolean;
@@ -218,12 +254,31 @@ function createHarness(options: {
               status: ChannelAccountStatus.CONNECTED,
             },
     },
+    dispatchPlanChannel: {
+      findMany: async () => [
+        {
+          id: 'plan-channel-1',
+          channelAccountId: 'channel-1',
+          enabled: true,
+          priority: 10,
+          weight: 100,
+          dailyLimit: 5000,
+          assignedCapacity: 0,
+          configurationSnapshot: null,
+        },
+      ],
+    },
+    dispatchChannel: mockDispatchChannelModel(),
     dispatchItem: {
       groupBy: async () => [],
       findMany: async () => [],
       count: async () => 0,
       findFirst: async () => null,
+      createMany: async () => ({ count: 0 }),
     },
+    $transaction: async (
+      callback: (tx: Record<string, unknown>) => Promise<unknown>,
+    ) => callback(prisma as unknown as Record<string, unknown>),
   };
 
   const access = {
@@ -406,6 +461,7 @@ function createPrepareHarness(options: {
   recipients?: ReturnType<typeof eligibleRecipients>;
   failCreateMany?: boolean;
   claimFails?: boolean;
+  requiringRedistribution?: boolean;
 } = {}) {
   const body = 'Mensagem aprovada';
   const hash = hashDispatchPlanContent(body);
@@ -437,6 +493,7 @@ function createPrepareHarness(options: {
     configurationSnapshot: {},
     approvalSnapshot: approvalSnapshot(body),
     status,
+    requiringRedistribution: options.requiringRedistribution ?? false,
     totalItems,
     pendingItems,
     queuedItems: 0,
@@ -542,6 +599,7 @@ function createPrepareHarness(options: {
     dispatchPlanRecipient: {
       findMany: async () => recipients,
     },
+    dispatchChannel: mockDispatchChannelModel(),
     dispatchItem: {
       count: async () => items.length,
       createMany: async (args: { data: Array<Record<string, unknown>> }) => {
@@ -760,5 +818,33 @@ describe('DispatchesService 09.2 prepare', () => {
     );
     assert.equal(detail.allowedActions.canPrepare, false);
     assert.equal(detail.itemSummary.PENDING, 2);
+    assert.equal(detail.allowedActions.canQueue, true);
+
+    const legacy = createPrepareHarness({
+      status: DispatchStatus.READY,
+      totalItems: 2,
+      requiringRedistribution: true,
+    });
+    const legacyDetail = await legacy.service.getById(
+      'user-1',
+      'campaign-1',
+      'dispatch-1',
+    );
+    assert.equal(legacyDetail.allowedActions.canQueue, false);
+  });
+
+  it('requiringRedistribution bloqueia canQueue', async () => {
+    const harness = createPrepareHarness({
+      status: DispatchStatus.READY,
+      totalItems: 2,
+      requiringRedistribution: true,
+    });
+    const detail = await harness.service.getById(
+      'user-1',
+      'campaign-1',
+      'dispatch-1',
+    );
+    assert.equal(detail.allowedActions.canQueue, false);
+    assert.equal(detail.allowedActions.canRedistribute, true);
   });
 });

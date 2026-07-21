@@ -89,6 +89,64 @@ function snapshotContact(id = 'contact-1'): SnapshotContactInput {
   };
 }
 
+
+function mockEnabledPlanChannelRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "plan-channel-1",
+    dispatchPlanId: "plan-1",
+    channelAccountId: "channel-1",
+    enabled: true,
+    priority: 10,
+    weight: 100,
+    dailyLimit: 5000,
+    hourlyLimit: 500,
+    newAccountDailyLimit: 200,
+    warmupDailyLimit: 1000,
+    assignedRecipients: 0,
+    assignedCapacity: 0,
+    channelAccount: {
+      id: "channel-1",
+      name: "Evolution",
+      provider: ChannelProvider.WHATSAPP_EVOLUTION,
+      status: ChannelAccountStatus.CONNECTED,
+      createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    },
+    ...overrides,
+  };
+}
+
+function mockEnabledPlanChannels() {
+  return [mockEnabledPlanChannelRow()];
+}
+
+function mockDispatchPlanChannelModel() {
+  return {
+    findMany: async () => mockEnabledPlanChannels(),
+    update: async () => mockEnabledPlanChannelRow(),
+    deleteMany: async () => ({ count: 0 }),
+    createMany: async () => ({ count: 1 }),
+    updateMany: async () => ({ count: 1 }),
+  };
+}
+
+function attachPrismaTransaction(
+  prisma: Record<string, unknown>,
+  txOverrides: Record<string, unknown> = {},
+) {
+  prisma.$transaction = async (
+    callback: (tx: Record<string, unknown>) => Promise<unknown>,
+  ) => {
+    const tx = {
+      dispatchPlanChannel: mockDispatchPlanChannelModel(),
+      dispatchPlan: prisma.dispatchPlan,
+      ...txOverrides,
+    };
+    return callback(tx);
+  };
+  return prisma;
+}
+
+
 function createSnapshotHarness(options: {
   existingPlan?: ReturnType<typeof plan> | null;
   contacts?: ReturnType<typeof snapshotContact>[];
@@ -617,7 +675,10 @@ function createValidationHarness(options: {
         ];
       },
     },
+    dispatchPlanChannel: mockDispatchPlanChannelModel(),
   };
+
+  attachPrismaTransaction(prisma as Record<string, unknown>);
 
   const access = {
     requireWriteAccess: async () => {
@@ -1055,7 +1116,10 @@ function createSimulationHarness(options: {
       count: async () => 0,
       groupBy: async () => [],
     },
+    dispatchPlanChannel: mockDispatchPlanChannelModel(),
   };
+
+  attachPrismaTransaction(prisma as Record<string, unknown>);
 
   const access = {
     requireWriteAccess: async () => {
@@ -1429,7 +1493,10 @@ function createApprovalHarness(options: {
         ];
       },
     },
+    dispatchPlanChannel: mockDispatchPlanChannelModel(),
   };
+
+  attachPrismaTransaction(prisma as Record<string, unknown>);
 
   const access = {
     requireWriteAccess: async () => {

@@ -12,6 +12,7 @@ import {
   DispatchPlanStatus,
   MembershipRole,
   Prisma,
+  ProtectionProfile,
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
@@ -50,6 +51,15 @@ import { ListDispatchPlanRecipientsQueryDto } from './dto/list-dispatch-plan-rec
 import { RejectDispatchPlanDto } from './dto/reject-dispatch-plan.dto';
 import { SimulateDispatchPlanDto } from './dto/simulate-dispatch-plan.dto';
 import { UpdateDispatchPlanDto } from './dto/update-dispatch-plan.dto';
+import {
+  buildProtectionPolicyFromProfile,
+  type ProtectionPolicySnapshot,
+} from './dispatch-plan-protection.constants';
+import {
+  consolidateMultiInstanceSimulation,
+  consolidateMultiInstanceValidation,
+  type PlanChannelInput,
+} from './dispatch-plan-multi-instance.util';
 import {
   buildDispatchPlanAuditMetadata,
   canCancelDispatchPlan,
@@ -100,6 +110,9 @@ const dispatchPlanSelect = {
   canceledAt: true,
   cancellationReason: true,
   createdByUserId: true,
+  protectionPolicySnapshot: true,
+  legacySingleChannel: true,
+  multiInstanceEnabled: true,
   createdAt: true,
   updatedAt: true,
   segment: {
@@ -115,6 +128,33 @@ const dispatchPlanSelect = {
       provider: true,
       status: true,
     },
+  },
+  planChannels: {
+    select: {
+      id: true,
+      channelAccountId: true,
+      enabled: true,
+      priority: true,
+      weight: true,
+      dailyLimit: true,
+      hourlyLimit: true,
+      newAccountDailyLimit: true,
+      warmupDailyLimit: true,
+      assignedCapacity: true,
+      assignedRecipients: true,
+      configurationSnapshot: true,
+      healthSnapshot: true,
+      channelAccount: {
+        select: {
+          id: true,
+          name: true,
+          provider: true,
+          status: true,
+          createdAt: true,
+        },
+      },
+    },
+    orderBy: [{ priority: 'asc' }, { weight: 'desc' }],
   },
   createdBy: {
     select: {
@@ -596,27 +636,97 @@ export class DispatchPlansService {
       campaign.organizationId,
       campaignId,
     );
-    const channelAccount = await this.resolveChannelAccount(
-      dto.channelAccountId,
-      campaign.organizationId,
-      campaignId,
-    );
 
-    const plan = await this.prisma.dispatchPlan.create({
-      data: {
-        organizationId: campaign.organizationId,
+    const channelInputs =
+      dto.channels && dto.channels.length > 0
+        ? dto.channels
+        : dto.channelAccountId
+          ? [{ channelAccountId: dto.channelAccountId }]
+          : [];
+
+    if (channelInputs.length === 0) {
+      throw new BadRequestException(
+        'Informe channelAccountId ou channels[] com ao menos uma instancia',
+      );
+    }
+
+    const resolvedChannels: Array<{
+      input: {
+        channelAccountId: string;
+        priority?: number;
+        weight?: number;
+        dailyLimit?: number;
+      };
+      channelAccount: Awaited<ReturnType<DispatchPlansService['resolveChannelAccount']>>;
+    }> = [];
+    for (const input of channelInputs) {
+      const channelAccount = await this.resolveChannelAccount(
+        input.channelAccountId,
+        campaign.organizationId,
         campaignId,
-        segmentId: segment.id,
-        channelAccountId: channelAccount.id,
-        name: dto.name.trim(),
-        description: dto.description?.trim() || null,
-        channelType: resolveDispatchChannelType(channelAccount.provider),
-        content: dto.content.trim(),
-        status: DispatchPlanStatus.DRAFT,
-        version: 1,
-        createdByUserId: userId,
-      },
-      select: dispatchPlanSelect,
+      );
+      resolvedChannels.push({ input, channelAccount });
+    }
+
+    const seenChannelIds = new Set<string>();
+    for (const row of resolvedChannels) {
+      if (seenChannelIds.has(row.channelAccount.id)) {
+        throw new BadRequestException(
+          'channels[] nao pode repetir a mesma instancia',
+        );
+      }
+      seenChannelIds.add(row.channelAccount.id);
+    }
+
+    const primary = resolvedChannels[0]!.channelAccount;
+    const policy = buildProtectionPolicyFromProfile(
+      dto.protectionProfile ?? ProtectionProfile.MODERATE,
+    );
+    const multiInstanceEnabled = resolvedChannels.length > 1;
+
+    const plan = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.dispatchPlan.create({
+        data: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          segmentId: segment.id,
+          channelAccountId: primary.id,
+          name: dto.name.trim(),
+          description: dto.description?.trim() || null,
+          channelType: resolveDispatchChannelType(primary.provider),
+          content: dto.content.trim(),
+          status: DispatchPlanStatus.DRAFT,
+          version: 1,
+          createdByUserId: userId,
+          protectionPolicySnapshot: policy as unknown as Prisma.InputJsonValue,
+          legacySingleChannel: !multiInstanceEnabled,
+          multiInstanceEnabled,
+        },
+        select: { id: true },
+      });
+
+      await tx.dispatchPlanChannel.createMany({
+        data: resolvedChannels.map(({ input, channelAccount }, index) => ({
+          organizationId: campaign.organizationId,
+          campaignId,
+          dispatchPlanId: created.id,
+          channelAccountId: channelAccount.id,
+          enabled: true,
+          priority: input.priority ?? (index + 1) * 10,
+          weight: input.weight ?? 100,
+          dailyLimit: input.dailyLimit ?? policy.dailyLimitPerInstance,
+          hourlyLimit: policy.hourlyLimit,
+          newAccountDailyLimit: policy.newAccountMaxPerDay,
+          warmupDailyLimit: policy.warmupMaxPerDay,
+          assignedCapacity: 0,
+          assignedRecipients: 0,
+        })),
+      });
+
+      return tx.dispatchPlan.findFirstOrThrow({
+        where: { id: created.id },
+        select: dispatchPlanSelect,
+      });
     });
 
     await this.audit.log({
@@ -658,8 +768,6 @@ export class DispatchPlansService {
     }
 
     const nextSegmentId = dto.segmentId ?? existing.segmentId;
-    const nextChannelAccountId =
-      dto.channelAccountId ?? existing.channelAccountId;
     const nextContent =
       dto.content === undefined ? existing.content : dto.content.trim();
 
@@ -667,9 +775,54 @@ export class DispatchPlansService {
       throw new BadRequestException('Conteudo textual e obrigatorio');
     }
 
+    const channelInputs =
+      dto.channels && dto.channels.length > 0
+        ? dto.channels
+        : dto.channelAccountId
+          ? [{ channelAccountId: dto.channelAccountId }]
+          : null;
+
+    let resolvedChannels: Array<{
+      input: {
+        channelAccountId: string;
+        priority?: number;
+        weight?: number;
+        dailyLimit?: number;
+      };
+      channelAccount: Awaited<
+        ReturnType<DispatchPlansService['resolveChannelAccount']>
+      >;
+    }> | null = null;
+
+    if (channelInputs) {
+      resolvedChannels = [];
+      const seen = new Set<string>();
+      for (const input of channelInputs) {
+        const channelAccount = await this.resolveChannelAccount(
+          input.channelAccountId,
+          campaign.organizationId,
+          campaignId,
+        );
+        if (seen.has(channelAccount.id)) {
+          throw new BadRequestException(
+            'channels[] nao pode repetir a mesma instancia',
+          );
+        }
+        seen.add(channelAccount.id);
+        resolvedChannels.push({ input, channelAccount });
+      }
+    }
+
+    const nextChannelAccountId =
+      resolvedChannels?.[0]?.channelAccount.id ??
+      dto.channelAccountId ??
+      existing.channelAccountId;
+
     const segmentChanged = nextSegmentId !== existing.segmentId;
     const channelChanged = nextChannelAccountId !== existing.channelAccountId;
     const contentChanged = nextContent !== existing.content;
+    const poolChanged = Boolean(resolvedChannels);
+    const policyChanged = dto.protectionProfile !== undefined;
 
     if (segmentChanged) {
       await this.resolveSegment(
@@ -680,7 +833,7 @@ export class DispatchPlansService {
     }
 
     let nextChannelType: ChannelType = existing.channelType;
-    if (channelChanged) {
+    if (channelChanged || poolChanged) {
       const channelAccount = await this.resolveChannelAccount(
         nextChannelAccountId,
         campaign.organizationId,
@@ -689,15 +842,26 @@ export class DispatchPlansService {
       nextChannelType = resolveDispatchChannelType(channelAccount.provider);
     }
 
+    const nextPolicy = policyChanged
+      ? buildProtectionPolicyFromProfile(dto.protectionProfile!)
+      : ((existing.protectionPolicySnapshot as ProtectionPolicySnapshot | null) ??
+        buildProtectionPolicyFromProfile(ProtectionProfile.MODERATE));
+
+    const multiInstanceEnabled = resolvedChannels
+      ? resolvedChannels.length > 1
+      : existing.multiInstanceEnabled;
+
     const bumpVersion = shouldBumpDispatchPlanVersion({
       segmentChanged,
-      channelChanged,
+      channelChanged: channelChanged || poolChanged,
       contentChanged,
     });
     const wasBlocked = existing.status === DispatchPlanStatus.BLOCKED;
     const shouldInvalidateValidation =
       wasBlocked ||
       bumpVersion ||
+      poolChanged ||
+      policyChanged ||
       existing.validationSnapshot !== null ||
       existing.validatedAt !== null ||
       existing.validatedVersion !== null ||
@@ -705,32 +869,83 @@ export class DispatchPlansService {
       existing.simulatedAt !== null ||
       existing.simulatedVersion !== null;
 
-    const plan = await this.prisma.dispatchPlan.update({
-      where: { id: existing.id },
-      data: {
-        name: dto.name === undefined ? undefined : dto.name.trim(),
-        description:
-          dto.description === undefined
-            ? undefined
-            : dto.description?.trim() || null,
-        segmentId: segmentChanged ? nextSegmentId : undefined,
-        channelAccountId: channelChanged ? nextChannelAccountId : undefined,
-        channelType: channelChanged ? nextChannelType : undefined,
-        content: contentChanged ? nextContent : undefined,
-        version: bumpVersion ? existing.version + 1 : undefined,
-        ...(shouldInvalidateValidation
-          ? {
-              status: DispatchPlanStatus.DRAFT,
-              validationSnapshot: Prisma.DbNull,
-              validatedAt: null,
-              validatedVersion: null,
-              simulationSnapshot: Prisma.DbNull,
-              simulatedAt: null,
-              simulatedVersion: null,
-            }
-          : {}),
-      },
-      select: dispatchPlanSelect,
+    const plan = await this.prisma.$transaction(async (tx) => {
+      if (resolvedChannels) {
+        await tx.dispatchPlanChannel.deleteMany({
+          where: { dispatchPlanId: existing.id },
+        });
+        await tx.dispatchPlanChannel.createMany({
+          data: resolvedChannels.map(({ input, channelAccount }, index) => ({
+            organizationId: campaign.organizationId,
+            campaignId,
+            dispatchPlanId: existing.id,
+            channelAccountId: channelAccount.id,
+            enabled: true,
+            priority: input.priority ?? (index + 1) * 10,
+            weight: input.weight ?? 100,
+            dailyLimit: input.dailyLimit ?? nextPolicy.dailyLimitPerInstance,
+            hourlyLimit: nextPolicy.hourlyLimit,
+            newAccountDailyLimit: nextPolicy.newAccountMaxPerDay,
+            warmupDailyLimit: nextPolicy.warmupMaxPerDay,
+            assignedCapacity: 0,
+            assignedRecipients: 0,
+          })),
+        });
+      } else if (policyChanged) {
+        await tx.dispatchPlanChannel.updateMany({
+          where: { dispatchPlanId: existing.id },
+          data: {
+            dailyLimit: nextPolicy.dailyLimitPerInstance,
+            hourlyLimit: nextPolicy.hourlyLimit,
+            newAccountDailyLimit: nextPolicy.newAccountMaxPerDay,
+            warmupDailyLimit: nextPolicy.warmupMaxPerDay,
+            assignedCapacity: 0,
+            assignedRecipients: 0,
+            healthSnapshot: Prisma.DbNull,
+            configurationSnapshot: Prisma.DbNull,
+          },
+        });
+      }
+
+      return tx.dispatchPlan.update({
+        where: { id: existing.id },
+        data: {
+          name: dto.name === undefined ? undefined : dto.name.trim(),
+          description:
+            dto.description === undefined
+              ? undefined
+              : dto.description?.trim() || null,
+          segmentId: segmentChanged ? nextSegmentId : undefined,
+          channelAccountId:
+            channelChanged || poolChanged ? nextChannelAccountId : undefined,
+          channelType:
+            channelChanged || poolChanged ? nextChannelType : undefined,
+          content: contentChanged ? nextContent : undefined,
+          version: bumpVersion ? existing.version + 1 : undefined,
+          protectionPolicySnapshot:
+            policyChanged || poolChanged
+              ? (nextPolicy as unknown as Prisma.InputJsonValue)
+              : undefined,
+          legacySingleChannel: resolvedChannels
+            ? resolvedChannels.length === 1
+            : undefined,
+          multiInstanceEnabled: resolvedChannels
+            ? multiInstanceEnabled
+            : undefined,
+          ...(shouldInvalidateValidation
+            ? {
+                status: DispatchPlanStatus.DRAFT,
+                validationSnapshot: Prisma.DbNull,
+                validatedAt: null,
+                validatedVersion: null,
+                simulationSnapshot: Prisma.DbNull,
+                simulatedAt: null,
+                simulatedVersion: null,
+              }
+            : {}),
+        },
+        select: dispatchPlanSelect,
+      });
     });
 
     await this.audit.log({
@@ -820,28 +1035,83 @@ export class DispatchPlansService {
         version: existing.version,
         facts,
       });
+
+      const multiInstance = await this.evaluateMultiInstanceCapacity(
+        existing,
+        campaign.organizationId,
+        campaignId,
+      );
+      if (multiInstance && !multiInstance.passed) {
+        validationSnapshot.passed = false;
+        validationSnapshot.summary = {
+          ...validationSnapshot.summary,
+          errors: (validationSnapshot.summary?.errors ?? 0) + 1,
+        };
+        validationSnapshot.checks = [
+          ...(validationSnapshot.checks ?? []),
+          {
+            code: 'MULTI_INSTANCE_CAPACITY',
+            severity: 'ERROR',
+            passed: false,
+            title: 'Capacidade multi-instancia',
+            message: `Capacidade total (${multiInstance.totalCapacity}) insuficiente para publico elegivel (${multiInstance.totalEligibleAudience})`,
+            details: {
+              capacityDeficit: multiInstance.capacityDeficit,
+              unassignedRecipients: multiInstance.unassignedRecipients,
+              eligibleInstances: multiInstance.eligibleInstances,
+              blockedInstances: multiInstance.blockedInstances,
+            },
+          },
+        ];
+      }
+
+      if (multiInstance) {
+        (validationSnapshot as ValidationSnapshot & {
+          multiInstance?: unknown;
+        }).multiInstance = multiInstance;
+      }
+
       const finalStatus = resolveValidationFinalStatus(
         validationSnapshot.passed,
       );
 
-      const persisted = await this.prisma.dispatchPlan.updateMany({
-        where: {
-          id: existing.id,
-          organizationId: campaign.organizationId,
-          campaignId,
-          status: DispatchPlanStatus.VALIDATING,
-          version: existing.version,
-        },
-        data: {
-          status: finalStatus,
-          validationSnapshot:
-            validationSnapshot as unknown as Prisma.InputJsonValue,
-          validatedAt: checkedAt,
-          validatedVersion: existing.version,
-          simulationSnapshot: Prisma.DbNull,
-          simulatedAt: null,
-          simulatedVersion: null,
-        },
+      const persisted = await this.prisma.$transaction(async (tx) => {
+        if (multiInstance) {
+          for (const channel of multiInstance.channels) {
+            const assigned =
+              multiInstance.distribution.find(
+                (row) => row.channelId === channel.channelId,
+              )?.assignedRecipients ?? 0;
+            await tx.dispatchPlanChannel.update({
+              where: { id: channel.channelId },
+              data: {
+                assignedRecipients: channel.blocked ? 0 : assigned,
+                assignedCapacity: channel.remainingCapacity,
+                healthSnapshot: channel as unknown as Prisma.InputJsonValue,
+              },
+            });
+          }
+        }
+
+        return tx.dispatchPlan.updateMany({
+          where: {
+            id: existing.id,
+            organizationId: campaign.organizationId,
+            campaignId,
+            status: DispatchPlanStatus.VALIDATING,
+            version: existing.version,
+          },
+          data: {
+            status: finalStatus,
+            validationSnapshot:
+              validationSnapshot as unknown as Prisma.InputJsonValue,
+            validatedAt: checkedAt,
+            validatedVersion: existing.version,
+            simulationSnapshot: Prisma.DbNull,
+            simulatedAt: null,
+            simulatedVersion: null,
+          },
+        });
       });
 
       if (persisted.count !== 1) {
@@ -998,18 +1268,33 @@ export class DispatchPlansService {
       );
     }
 
+    const protectionPolicy =
+      (existing.protectionPolicySnapshot as ProtectionPolicySnapshot | null) ??
+      buildProtectionPolicyFromProfile(ProtectionProfile.MODERATE);
+
     let config;
     try {
       config = normalizeSimulationConfig(
         {
-          messagesPerMinute: dto.messagesPerMinute,
-          minDelaySeconds: dto.minDelaySeconds,
-          maxDelaySeconds: dto.maxDelaySeconds,
-          batchSize: dto.batchSize,
-          pauseBetweenBatchesSeconds: dto.pauseBetweenBatchesSeconds,
-          timezone: dto.timezone,
-          allowedStartTime: dto.allowedStartTime,
-          allowedEndTime: dto.allowedEndTime,
+          messagesPerMinute:
+            dto.messagesPerMinute ??
+            Math.max(
+              1,
+              Math.min(
+                60 / ((protectionPolicy.minDelaySeconds + protectionPolicy.maxDelaySeconds) / 2),
+                protectionPolicy.hourlyLimit / 60,
+              ),
+            ),
+          minDelaySeconds: dto.minDelaySeconds ?? protectionPolicy.minDelaySeconds,
+          maxDelaySeconds: dto.maxDelaySeconds ?? protectionPolicy.maxDelaySeconds,
+          batchSize: dto.batchSize ?? protectionPolicy.batchSize,
+          pauseBetweenBatchesSeconds:
+            dto.pauseBetweenBatchesSeconds ??
+            protectionPolicy.pauseBetweenBatchesSeconds,
+          timezone: dto.timezone ?? protectionPolicy.timezone,
+          allowedStartTime:
+            dto.allowedStartTime ?? protectionPolicy.allowedStartTime,
+          allowedEndTime: dto.allowedEndTime ?? protectionPolicy.allowedEndTime,
           allowedDays: dto.allowedDays,
           plannedStartAt: dto.plannedStartAt,
         },
@@ -1033,21 +1318,106 @@ export class DispatchPlansService {
       now: simulatedAt,
     });
 
-    const persisted = await this.prisma.dispatchPlan.updateMany({
-      where: {
-        id: existing.id,
-        organizationId: campaign.organizationId,
-        campaignId,
-        status: DispatchPlanStatus.VALIDATED,
-        version: existing.version,
-        validatedVersion: existing.version,
-      },
-      data: {
-        simulationSnapshot:
-          simulationSnapshot as unknown as Prisma.InputJsonValue,
-        simulatedAt,
-        simulatedVersion: existing.version,
-      },
+    const multiCapacity = await this.evaluateMultiInstanceCapacity(
+      existing,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    let multiInstanceSimulation = null;
+    if (multiCapacity) {
+      const planChannels = await this.prisma.dispatchPlanChannel.findMany({
+        where: {
+          dispatchPlanId: existing.id,
+          organizationId: campaign.organizationId,
+          campaignId,
+          enabled: true,
+        },
+        include: {
+          channelAccount: {
+            select: {
+              id: true,
+              provider: true,
+              status: true,
+              createdAt: true,
+            },
+          },
+        },
+      });
+
+      const channelInputs: PlanChannelInput[] = planChannels.map((row) => {
+        const ageMs = simulatedAt.getTime() - row.channelAccount.createdAt.getTime();
+        const accountAgeDays = Math.max(
+          0,
+          Math.floor(ageMs / (24 * 60 * 60 * 1000)),
+        );
+        return {
+          id: row.id,
+          channelAccountId: row.channelAccountId,
+          enabled: row.enabled,
+          priority: row.priority,
+          weight: row.weight,
+          provider: row.channelAccount.provider,
+          status: row.channelAccount.status,
+          accountAgeDays,
+          assignedRecipients: 0,
+          dailyLimit: row.dailyLimit,
+          hourlyLimit: row.hourlyLimit,
+          newAccountDailyLimit: row.newAccountDailyLimit,
+          warmupDailyLimit: row.warmupDailyLimit,
+        };
+      });
+
+      multiInstanceSimulation = consolidateMultiInstanceSimulation({
+        totalEligibleAudience: existing.totalEligible,
+        channels: channelInputs,
+        policy: protectionPolicy,
+        now: simulatedAt,
+        distribution: multiCapacity.distribution,
+      });
+
+      (simulationSnapshot as typeof simulationSnapshot & {
+        multiInstance?: unknown;
+      }).multiInstance = multiInstanceSimulation;
+    }
+
+    const persisted = await this.prisma.$transaction(async (tx) => {
+      if (multiCapacity) {
+        for (const channel of multiCapacity.channels) {
+          const assigned =
+            multiCapacity.distribution.find(
+              (row) => row.channelId === channel.channelId,
+            )?.assignedRecipients ?? 0;
+          await tx.dispatchPlanChannel.update({
+            where: { id: channel.channelId },
+            data: {
+              assignedRecipients: channel.blocked ? 0 : assigned,
+              assignedCapacity: channel.remainingCapacity,
+              configurationSnapshot: {
+                protectionPolicy,
+                distributionStrategy: protectionPolicy.distributionStrategy,
+              } as unknown as Prisma.InputJsonValue,
+            },
+          });
+        }
+      }
+
+      return tx.dispatchPlan.updateMany({
+        where: {
+          id: existing.id,
+          organizationId: campaign.organizationId,
+          campaignId,
+          status: DispatchPlanStatus.VALIDATED,
+          version: existing.version,
+          validatedVersion: existing.version,
+        },
+        data: {
+          simulationSnapshot:
+            simulationSnapshot as unknown as Prisma.InputJsonValue,
+          simulatedAt,
+          simulatedVersion: existing.version,
+        },
+      });
     });
 
     if (persisted.count !== 1) {
@@ -1082,6 +1452,7 @@ export class DispatchPlansService {
         estimatedStartAt: simulationSnapshot.estimates.estimatedStartAt,
         estimatedEndAt: simulationSnapshot.estimates.estimatedEndAt,
         timezone: simulationSnapshot.configuration.timezone,
+        multiInstanceActive: multiInstanceSimulation?.activeInstances ?? 0,
       },
     });
 
@@ -1244,31 +1615,83 @@ export class DispatchPlansService {
     }
 
     const approvedAt = new Date();
-    const approvalSnapshot = buildApprovalSnapshot({
-      approvedAt,
-      approvedByUserId: userId,
-      channelProvider: String(channelAccount!.provider),
-      plan: {
-        id: existing.id,
-        name: existing.name,
-        campaignId: existing.campaignId,
-        segmentId: existing.segmentId,
-        channelAccountId: existing.channelAccountId,
-        channelType: existing.channelType,
-        version: existing.version,
-        content: existing.content,
-        totalEvaluated: existing.totalEvaluated,
-        totalEligible: existing.totalEligible,
-        totalExcluded: existing.totalExcluded,
-        snapshotCreatedAt: existing.snapshotCreatedAt,
-        validatedAt: existing.validatedAt,
-        validatedVersion: existing.validatedVersion,
-        validationSnapshot: existing.validationSnapshot,
-        simulatedAt: existing.simulatedAt,
-        simulatedVersion: existing.simulatedVersion,
-        simulationSnapshot: existing.simulationSnapshot,
+    const planChannels = await this.prisma.dispatchPlanChannel.findMany({
+      where: {
+        dispatchPlanId: existing.id,
+        organizationId: campaign.organizationId,
+        campaignId,
       },
+      include: {
+        channelAccount: {
+          select: {
+            id: true,
+            name: true,
+            provider: true,
+            status: true,
+            createdAt: true,
+          },
+        },
+      },
+      orderBy: [{ priority: 'asc' }, { weight: 'desc' }],
     });
+
+    const protectionPolicy =
+      (existing.protectionPolicySnapshot as ProtectionPolicySnapshot | null) ??
+      buildProtectionPolicyFromProfile(ProtectionProfile.MODERATE);
+
+    const multiCapacity = await this.evaluateMultiInstanceCapacity(
+      existing,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    const approvalSnapshot = {
+      ...buildApprovalSnapshot({
+        approvedAt,
+        approvedByUserId: userId,
+        channelProvider: String(channelAccount!.provider),
+        plan: {
+          id: existing.id,
+          name: existing.name,
+          campaignId: existing.campaignId,
+          segmentId: existing.segmentId,
+          channelAccountId: existing.channelAccountId,
+          channelType: existing.channelType,
+          version: existing.version,
+          content: existing.content,
+          totalEvaluated: existing.totalEvaluated,
+          totalEligible: existing.totalEligible,
+          totalExcluded: existing.totalExcluded,
+          snapshotCreatedAt: existing.snapshotCreatedAt,
+          validatedAt: existing.validatedAt,
+          validatedVersion: existing.validatedVersion,
+          validationSnapshot: existing.validationSnapshot,
+          simulatedAt: existing.simulatedAt,
+          simulatedVersion: existing.simulatedVersion,
+          simulationSnapshot: existing.simulationSnapshot,
+        },
+      }),
+      protectionPolicy,
+      distributionStrategy: protectionPolicy.distributionStrategy,
+      multiInstance: {
+        enabled: planChannels.length > 1,
+        legacySingleChannel: existing.legacySingleChannel,
+        channels: planChannels.map((row) => ({
+          dispatchPlanChannelId: row.id,
+          channelAccountId: row.channelAccountId,
+          name: row.channelAccount.name,
+          provider: row.channelAccount.provider,
+          status: row.channelAccount.status,
+          enabled: row.enabled,
+          priority: row.priority,
+          weight: row.weight,
+          dailyLimit: row.dailyLimit,
+          assignedRecipients: row.assignedRecipients,
+        })),
+        capacity: multiCapacity,
+        simulation: existing.simulationSnapshot,
+      },
+    };
 
     const persisted = await this.prisma.dispatchPlan.updateMany({
       where: {
@@ -1780,5 +2203,70 @@ export class DispatchPlansService {
     }
 
     return counts;
+  }
+
+  private async evaluateMultiInstanceCapacity(
+    plan: {
+      id: string;
+      totalEligible: number;
+      protectionPolicySnapshot: unknown;
+    },
+    organizationId: string,
+    campaignId: string,
+  ) {
+    const planChannels = await this.prisma.dispatchPlanChannel.findMany({
+      where: {
+        dispatchPlanId: plan.id,
+        organizationId,
+        campaignId,
+        enabled: true,
+      },
+      include: {
+        channelAccount: {
+          select: {
+            id: true,
+            provider: true,
+            status: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    if (planChannels.length === 0) {
+      return null;
+    }
+
+    const policy =
+      (plan.protectionPolicySnapshot as ProtectionPolicySnapshot | null) ??
+      buildProtectionPolicyFromProfile(ProtectionProfile.MODERATE);
+
+    const now = new Date();
+    const channelInputs: PlanChannelInput[] = planChannels.map((row) => {
+      const ageMs = now.getTime() - row.channelAccount.createdAt.getTime();
+      const accountAgeDays = Math.max(0, Math.floor(ageMs / (24 * 60 * 60 * 1000)));
+      return {
+        id: row.id,
+        channelAccountId: row.channelAccountId,
+        enabled: row.enabled,
+        priority: row.priority,
+        weight: row.weight,
+        provider: row.channelAccount.provider,
+        status: row.channelAccount.status,
+        accountAgeDays,
+        assignedRecipients: 0,
+        dailyLimit: row.dailyLimit,
+        hourlyLimit: row.hourlyLimit,
+        newAccountDailyLimit: row.newAccountDailyLimit,
+        warmupDailyLimit: row.warmupDailyLimit,
+      };
+    });
+
+    return consolidateMultiInstanceValidation({
+      totalEligibleAudience: plan.totalEligible,
+      channels: channelInputs,
+      policy,
+      now,
+    });
   }
 }

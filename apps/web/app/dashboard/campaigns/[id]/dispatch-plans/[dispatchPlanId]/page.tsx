@@ -11,6 +11,7 @@ import {
   ChannelAccountItem,
   DispatchPlanItem,
   DispatchPlanSnapshotSummary,
+  MultiInstanceConsolidated,
   SegmentItem,
   cancelDispatchPlan,
   clearStoredToken,
@@ -26,6 +27,9 @@ import {
   canCancelDispatchPlanStatus,
   getDispatchPlanStatusBadgeClass,
   getDispatchPlanStatusLabel,
+  getDistributionStrategyLabel,
+  getPlanChannelStageLabel,
+  getProtectionProfileLabel,
   isDispatchPlanEditableStatus,
 } from '../../../../../../lib/dispatch-plans';
 import { canApproveRole, canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
@@ -49,7 +53,10 @@ export default function DispatchPlanDetailPage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [segmentId, setSegmentId] = useState('');
-  const [channelAccountId, setChannelAccountId] = useState('');
+  const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>([]);
+  const [protectionProfile, setProtectionProfile] = useState<
+    'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE'
+  >('MODERATE');
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -112,7 +119,17 @@ export default function DispatchPlanDetailPage() {
         setName(planItem.name);
         setDescription(planItem.description ?? '');
         setSegmentId(planItem.segmentId);
-        setChannelAccountId(planItem.channelAccountId);
+        setSelectedChannelIds(
+          planItem.planChannels?.length
+            ? planItem.planChannels.map((row) => row.channelAccountId)
+            : [planItem.channelAccountId],
+        );
+        setProtectionProfile(
+          (planItem.protectionPolicySnapshot?.profile as
+            | 'CONSERVATIVE'
+            | 'MODERATE'
+            | 'AGGRESSIVE') ?? 'MODERATE',
+        );
         setContent(planItem.content);
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
@@ -152,14 +169,28 @@ export default function DispatchPlanDetailPage() {
         name: name.trim(),
         description: description.trim() || undefined,
         segmentId,
-        channelAccountId,
+        channelAccountId: selectedChannelIds[0],
+        channels: selectedChannelIds.map((channelAccountId) => ({
+          channelAccountId,
+        })),
+        protectionProfile,
         content: content.trim(),
       });
       setPlan(updated);
       setName(updated.name);
       setDescription(updated.description ?? '');
       setSegmentId(updated.segmentId);
-      setChannelAccountId(updated.channelAccountId);
+      setSelectedChannelIds(
+        updated.planChannels?.length
+          ? updated.planChannels.map((row) => row.channelAccountId)
+          : [updated.channelAccountId],
+      );
+      setProtectionProfile(
+        (updated.protectionPolicySnapshot?.profile as
+          | 'CONSERVATIVE'
+          | 'MODERATE'
+          | 'AGGRESSIVE') ?? 'MODERATE',
+      );
       setContent(updated.content);
       setSuccess('Plano atualizado');
     } catch (err) {
@@ -250,9 +281,38 @@ export default function DispatchPlanDetailPage() {
     setName(updated.name);
     setDescription(updated.description ?? '');
     setSegmentId(updated.segmentId);
-    setChannelAccountId(updated.channelAccountId);
+    setSelectedChannelIds(
+      updated.planChannels?.length
+        ? updated.planChannels.map((row) => row.channelAccountId)
+        : [updated.channelAccountId],
+    );
+    setProtectionProfile(
+      (updated.protectionPolicySnapshot?.profile as
+        | 'CONSERVATIVE'
+        | 'MODERATE'
+        | 'AGGRESSIVE') ?? 'MODERATE',
+    );
     setContent(updated.content);
   }
+
+  const policy = plan?.protectionPolicySnapshot;
+  const multiInstanceConsolidated = useMemo((): MultiInstanceConsolidated | null => {
+    if (!plan) return null;
+    const approvalCapacity = plan.approvalSnapshot?.multiInstance?.capacity;
+    if (approvalCapacity) return approvalCapacity;
+    const simulationMulti = plan.simulationSnapshot?.multiInstance;
+    if (simulationMulti) return simulationMulti;
+    const capacityCheck = plan.validationSnapshot?.checks.find(
+      (check) => check.code === 'MULTI_INSTANCE_CAPACITY',
+    );
+    if (capacityCheck?.details) {
+      const details = capacityCheck.details as Record<string, unknown>;
+      if (typeof details.totalCapacity === 'number') {
+        return details as unknown as MultiInstanceConsolidated;
+      }
+    }
+    return null;
+  }, [plan]);
 
   return (
     <DashboardShell userName={user?.name}>
@@ -367,25 +427,59 @@ export default function DispatchPlanDetailPage() {
             </label>
 
             <label className="block text-sm text-[#24382b]">
-              Canal
+              Instancias WhatsApp
+              <div className="mt-1 space-y-2 rounded-md border border-[#c9c8c0] bg-white p-3 disabled:bg-[#eee]">
+                {evolutionChannels.map((channel) => (
+                  <label
+                    key={channel.id}
+                    className={`flex items-center gap-2 ${editable ? 'cursor-pointer' : ''}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedChannelIds.includes(channel.id)}
+                      disabled={!editable}
+                      onChange={(event) => {
+                        setSelectedChannelIds((current) =>
+                          event.target.checked
+                            ? [...current, channel.id]
+                            : current.filter((id) => id !== channel.id),
+                        );
+                      }}
+                    />
+                    <span>
+                      {channel.name} · {channel.status}
+                    </span>
+                  </label>
+                ))}
+                {!evolutionChannels.some((channel) =>
+                  selectedChannelIds.includes(channel.id),
+                ) &&
+                plan.channelAccount ? (
+                  <label className="flex items-center gap-2">
+                    <input type="checkbox" checked disabled readOnly />
+                    <span>
+                      {plan.channelAccount.name} · {plan.channelAccount.status}
+                    </span>
+                  </label>
+                ) : null}
+              </div>
+            </label>
+
+            <label className="block text-sm text-[#24382b]">
+              Perfil de blindagem
               <select
                 className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2 disabled:bg-[#eee]"
-                value={channelAccountId}
-                onChange={(event) => setChannelAccountId(event.target.value)}
+                value={protectionProfile}
                 disabled={!editable}
-                required
+                onChange={(event) =>
+                  setProtectionProfile(
+                    event.target.value as 'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE',
+                  )
+                }
               >
-                {evolutionChannels.map((channel) => (
-                  <option key={channel.id} value={channel.id}>
-                    {channel.name} · {channel.status}
-                  </option>
-                ))}
-                {!evolutionChannels.some((channel) => channel.id === channelAccountId) &&
-                plan.channelAccount ? (
-                  <option value={plan.channelAccountId}>
-                    {plan.channelAccount.name} · {plan.channelAccount.status}
-                  </option>
-                ) : null}
+                <option value="CONSERVATIVE">Conservador</option>
+                <option value="MODERATE">Moderado</option>
+                <option value="AGGRESSIVE">Agressivo</option>
               </select>
             </label>
 
@@ -407,7 +501,7 @@ export default function DispatchPlanDetailPage() {
               <button
                 className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 type="submit"
-                disabled={saving}
+                disabled={saving || selectedChannelIds.length === 0}
               >
                 {saving ? 'Salvando...' : 'Salvar alteracoes'}
               </button>
@@ -423,6 +517,139 @@ export default function DispatchPlanDetailPage() {
               </p>
             )}
           </form>
+
+          {policy ? (
+            <section className="mt-6 rounded-md border border-[#deddd4] bg-white p-4">
+              <h3 className="font-semibold text-[#151515]">
+                Politica de blindagem
+              </h3>
+              <dl className="mt-3 grid gap-3 text-sm md:grid-cols-2">
+                <div>
+                  <dt className="text-[#65655f]">Perfil</dt>
+                  <dd>{getProtectionProfileLabel(policy.profile)}</dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">Distribuicao</dt>
+                  <dd>
+                    {getDistributionStrategyLabel(policy.distributionStrategy)}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">Limite diario / instancia</dt>
+                  <dd>{policy.dailyLimitPerInstance} msg</dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">Janela operacional</dt>
+                  <dd>
+                    {policy.allowedStartTime}–{policy.allowedEndTime} (
+                    {policy.timezone})
+                  </dd>
+                </div>
+              </dl>
+              {plan.multiInstanceEnabled ? (
+                <p className="mt-2 text-xs text-[#65655f]">
+                  Multi-instancia ativo · {plan.planChannels?.length ?? 0}{' '}
+                  instancia(s) no pool.
+                </p>
+              ) : null}
+            </section>
+          ) : null}
+
+          {plan.planChannels && plan.planChannels.length > 0 ? (
+            <section className="mt-6 rounded-md border border-[#deddd4] bg-white p-4">
+              <h3 className="font-semibold text-[#151515]">
+                Pool de instancias (planChannels)
+              </h3>
+              <div className="mt-3 overflow-x-auto">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="border-b border-[#deddd4] text-[#65655f]">
+                    <tr>
+                      <th className="px-2 py-2 font-medium">Instancia</th>
+                      <th className="px-2 py-2 font-medium">Status</th>
+                      <th className="px-2 py-2 font-medium">Capacidade</th>
+                      <th className="px-2 py-2 font-medium">Atribuidos</th>
+                      <th className="px-2 py-2 font-medium">Saude</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {plan.planChannels.map((row) => {
+                      const health = row.healthSnapshot;
+                      return (
+                        <tr
+                          key={row.id}
+                          className="border-b border-[#f0efe8] text-[#24382b]"
+                        >
+                          <td className="px-2 py-2">
+                            {row.channelAccount.name}
+                          </td>
+                          <td className="px-2 py-2">{row.channelAccount.status}</td>
+                          <td className="px-2 py-2">
+                            {health?.effectiveDailyLimit ??
+                              row.assignedCapacity ??
+                              row.dailyLimit}
+                          </td>
+                          <td className="px-2 py-2">
+                            {row.assignedRecipients}
+                          </td>
+                          <td className="px-2 py-2 text-xs">
+                            {health ? (
+                              <>
+                                {health.blocked ? 'Bloqueado' : 'Elegivel'} ·{' '}
+                                {getPlanChannelStageLabel(health.stage)}
+                                {health.reasons.length > 0
+                                  ? ` · ${health.reasons.join(', ')}`
+                                  : ''}
+                              </>
+                            ) : (
+                              '—'
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          ) : null}
+
+          {multiInstanceConsolidated ? (
+            <section className="mt-6 rounded-md border border-[#deddd4] bg-white p-4">
+              <h3 className="font-semibold text-[#151515]">
+                Consolidado multi-instancia
+              </h3>
+              <dl className="mt-3 grid gap-3 text-sm md:grid-cols-2">
+                <div>
+                  <dt className="text-[#65655f]">Instancias elegiveis</dt>
+                  <dd>
+                    {multiInstanceConsolidated.eligibleInstances} /{' '}
+                    {multiInstanceConsolidated.selectedInstances}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">Capacidade total</dt>
+                  <dd>{multiInstanceConsolidated.totalCapacity}</dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">Publico elegivel</dt>
+                  <dd>{multiInstanceConsolidated.totalEligibleAudience}</dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">Deficit / nao atribuidos</dt>
+                  <dd>
+                    {multiInstanceConsolidated.capacityDeficit} /{' '}
+                    {multiInstanceConsolidated.unassignedRecipients}
+                  </dd>
+                </div>
+              </dl>
+              {!multiInstanceConsolidated.passed ? (
+                <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  Capacidade insuficiente para o publico elegivel.
+                </p>
+              ) : null}
+            </section>
+          ) : null}
+
           <DispatchPlanAudience
             campaignId={campaignId}
             plan={plan}

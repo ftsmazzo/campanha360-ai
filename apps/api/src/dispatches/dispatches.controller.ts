@@ -37,6 +37,19 @@ export class DispatchesController {
     return this.dispatchesService.create(user.id, campaignId, dto);
   }
 
+  @Post(':dispatchId/redistribute')
+  redistribute(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+  ) {
+    return this.dispatchesService.redistribute(
+      user.id,
+      campaignId,
+      dispatchId,
+    );
+  }
+
   @Post(':dispatchId/prepare')
   prepare(
     @CurrentUser() user: AuthUser,

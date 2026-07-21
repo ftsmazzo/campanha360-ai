@@ -151,3 +151,57 @@ export function getRecipientEligibilityLabel(status: string): string {
       return status;
   }
 }
+
+export function getProtectionProfileLabel(profile: string): string {
+  switch (profile) {
+    case 'CONSERVATIVE':
+      return 'Conservador';
+    case 'MODERATE':
+      return 'Moderado';
+    case 'AGGRESSIVE':
+      return 'Agressivo';
+    case 'CUSTOM':
+      return 'Personalizado';
+    default:
+      return profile;
+  }
+}
+
+export function getDistributionStrategyLabel(strategy: string): string {
+  switch (strategy) {
+    case 'CAPACITY_WEIGHTED':
+      return 'Capacidade ponderada';
+    default:
+      return strategy;
+  }
+}
+
+export function getPlanChannelStageLabel(stage: string): string {
+  switch (stage) {
+    case 'NEW_ACCOUNT':
+      return 'Conta nova';
+    case 'WARMUP':
+      return 'Aquecimento';
+    case 'NORMAL':
+      return 'Normal';
+    default:
+      return stage;
+  }
+}
+
+export function getDispatchChannelOperationalStatusLabel(status: string): string {
+  switch (status) {
+    case 'READY':
+      return 'Pronto';
+    case 'PAUSED':
+      return 'Pausado';
+    case 'COOLDOWN':
+      return 'Resfriamento';
+    case 'BLOCKED':
+      return 'Bloqueado';
+    case 'DISABLED':
+      return 'Desabilitado';
+    default:
+      return status;
+  }
+}

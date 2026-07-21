@@ -142,6 +142,24 @@ describe('dispatch-prepare.util', () => {
       }),
       false,
     );
+    assert.equal(
+      buildDispatchAllowedActionsForPrepare({
+        role: MembershipRole.OWNER,
+        status: DispatchStatus.READY,
+        totalItems: 10,
+        requiringRedistribution: false,
+      }).canQueue,
+      true,
+    );
+    assert.equal(
+      buildDispatchAllowedActionsForPrepare({
+        role: MembershipRole.OWNER,
+        status: DispatchStatus.READY,
+        totalItems: 10,
+        requiringRedistribution: true,
+      }).canQueue,
+      false,
+    );
   });
 
   it('rejeita plano nao APPROVED indiretamente via contagem divergente', () => {

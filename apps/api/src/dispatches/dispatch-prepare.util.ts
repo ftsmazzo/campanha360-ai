@@ -262,11 +262,18 @@ export function buildDispatchAllowedActionsForPrepare(input: {
   role: MembershipRole | string | null | undefined;
   status: DispatchStatus | string;
   totalItems: number;
+  requiringRedistribution?: boolean;
 }) {
+  const canQueue =
+    (input.status === DispatchStatus.READY || input.status === 'READY') &&
+    input.totalItems > 0 &&
+    !input.requiringRedistribution;
+
   return {
     canView: true,
     canPrepare: canPrepareDispatch(input),
-    canQueue: false,
+    canQueue,
+    canRedistribute: Boolean(input.requiringRedistribution),
     canStart: false,
     canPause: false,
     canResume: false,

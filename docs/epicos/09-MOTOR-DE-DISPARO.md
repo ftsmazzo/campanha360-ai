@@ -783,6 +783,67 @@ Migration: `prisma/migrations/20260721180000_dispatch_item_materialization`.
 
 ---
 
+## Extensao multi-instancia (motor)
+
+### Entidade DispatchChannel
+
+Materializada na criacao do `Dispatch` a partir de `DispatchPlanChannel`:
+
+- `dispatchPlanChannelId`, `channelAccountId`, `priority`, `weight`;
+- `effectiveDailyLimit`, `assignedItems`, contadores operacionais;
+- `operationalStatus` (`READY`, `PAUSED`, `COOLDOWN`, `BLOCKED`, `DISABLED`);
+- `cooldownUntil`, `consecutiveErrors`.
+
+Relacionamento: `Dispatch.channels[]`.
+
+### DispatchItem.dispatchChannelId
+
+Cada item materializado referencia o canal de execucao:
+
+- `dispatchChannelId` — instancia atual;
+- `originalDispatchChannelId` — instancia da distribuicao inicial;
+- `reassignmentCount`, `lastReassignedAt` — historico de failover.
+
+Distribuicao na preparacao: **CAPACITY_WEIGHTED** (mesma estrategia do Plano).
+
+### Flags no Dispatch
+
+- `multiInstance` — derivado do Plano (`multiInstanceEnabled` e nao legado);
+- `requiringRedistribution` — pool operacional desalinhado; **bloqueia enfileiramento** ate redistribuicao.
+
+### legacySingleChannel / requiringRedistribution
+
+- Planos `legacySingleChannel=true` com pool >1 instancia nao geram Dispatch multi-instancia sem reabertura;
+- `requiringRedistribution=true` apos materializacao legada READY (ou desalinhamento do pool) exige `POST .../dispatches/:id/redistribute` antes de enfileirar.
+
+### Failover (regras conceituais)
+
+Quando uma instancia entra em cooldown/bloqueio durante execucao:
+
+1. items pendentes podem ser reatribuidos a outra instancia elegivel do pool;
+2. respeita capacidade remanescente e prioridade/peso;
+3. incrementa `reassignmentCount`; preserva `originalDispatchChannelId`;
+4. se nenhuma instancia absorver, `requiringRedistribution=true`.
+
+**Nota:** failover automatico e Worker permanecem fora do escopo atual (sem BullMQ/Evolution send).
+
+### Web (09 multi-instancia)
+
+- detalhe do Dispatch: tabela `DispatchChannels`, contagem de items por instancia;
+- aviso destacado se `requiringRedistribution`;
+- botao Redistribuir (`POST .../redistribute`) — exibe erro se rota indisponivel.
+
+### Fora de escopo atual
+
+- Worker de envio;
+- adapter Evolution para disparo em massa;
+- fila BullMQ;
+- retry automatico entre instancias em producao.
+
+Migration adicional: `prisma/migrations/20260721190000_multi_instance_dispatch`.
+
+---
+
 # 9. Subetapa 09.3 — Preparação e Enfileiramento
 
 ## 9.1 Objetivo

@@ -32,7 +32,10 @@ export default function NewDispatchPlanPage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [segmentId, setSegmentId] = useState('');
-  const [channelAccountId, setChannelAccountId] = useState('');
+  const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>([]);
+  const [protectionProfile, setProtectionProfile] = useState<
+    'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE'
+  >('MODERATE');
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -112,7 +115,11 @@ export default function NewDispatchPlanPage() {
         name: name.trim(),
         description: description.trim() || undefined,
         segmentId,
-        channelAccountId,
+        channelAccountId: selectedChannelIds[0]!,
+        channels: selectedChannelIds.map((channelAccountId) => ({
+          channelAccountId,
+        })),
+        protectionProfile,
         content: content.trim(),
       });
       router.replace(
@@ -207,22 +214,40 @@ export default function NewDispatchPlanPage() {
               </select>
             </label>
 
-            <label className="block text-sm text-[#24382b]">
-              Canal (WhatsApp Evolution)
-              <select
-                className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2"
-                value={channelAccountId}
-                onChange={(event) => setChannelAccountId(event.target.value)}
-                required
-              >
-                <option value="">Selecione um canal</option>
+            <fieldset className="block text-sm text-[#24382b]">
+              <legend className="mb-2 font-medium">
+                Instancias WhatsApp (multi-selecao)
+              </legend>
+              <div className="space-y-2 rounded-md border border-[#c9c8c0] bg-white p-3">
                 {evolutionChannels.map((channel) => (
-                  <option key={channel.id} value={channel.id}>
-                    {channel.name} · {channel.status}
-                  </option>
+                  <label
+                    key={channel.id}
+                    className="flex cursor-pointer items-center gap-2"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedChannelIds.includes(channel.id)}
+                      onChange={(event) => {
+                        setSelectedChannelIds((current) =>
+                          event.target.checked
+                            ? [...current, channel.id]
+                            : current.filter((id) => id !== channel.id),
+                        );
+                      }}
+                    />
+                    <span>
+                      {channel.name} · {channel.status}
+                    </span>
+                  </label>
                 ))}
-              </select>
-            </label>
+              </div>
+              {selectedChannelIds.length > 1 ? (
+                <p className="mt-2 text-xs text-[#65655f]">
+                  Plano multi-instancia: {selectedChannelIds.length} instancias
+                  selecionadas.
+                </p>
+              ) : null}
+            </fieldset>
 
             {evolutionChannels.length === 0 ? (
               <p className="text-sm text-[#8a5a00]">
@@ -230,6 +255,23 @@ export default function NewDispatchPlanPage() {
                 plano.
               </p>
             ) : null}
+
+            <label className="block text-sm text-[#24382b]">
+              Perfil de blindagem
+              <select
+                className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2"
+                value={protectionProfile}
+                onChange={(event) =>
+                  setProtectionProfile(
+                    event.target.value as 'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE',
+                  )
+                }
+              >
+                <option value="CONSERVATIVE">Conservador</option>
+                <option value="MODERATE">Moderado (padrao)</option>
+                <option value="AGGRESSIVE">Agressivo</option>
+              </select>
+            </label>
 
             <label className="block text-sm text-[#24382b]">
               Conteudo textual inicial
@@ -251,7 +293,12 @@ export default function NewDispatchPlanPage() {
             <button
               className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
               type="submit"
-              disabled={saving || evolutionChannels.length === 0 || segments.length === 0}
+              disabled={
+                saving ||
+                evolutionChannels.length === 0 ||
+                segments.length === 0 ||
+                selectedChannelIds.length === 0
+              }
             >
               {saving ? 'Salvando...' : 'Criar rascunho'}
             </button>

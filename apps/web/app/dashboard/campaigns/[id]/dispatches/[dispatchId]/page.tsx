@@ -17,10 +17,12 @@ import {
   fetchMe,
   getStoredToken,
   prepareDispatch,
+  redistributeDispatch,
 } from '../../../../../../lib/api';
 import {
   formatDurationSeconds,
   formatZonedDateTime,
+  getDispatchChannelOperationalStatusLabel,
 } from '../../../../../../lib/dispatch-plans';
 import {
   getDispatchItemStatusLabel,
@@ -46,6 +48,7 @@ export default function DispatchDetailPage() {
   const [itemSearch, setItemSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [preparing, setPreparing] = useState(false);
+  const [redistributing, setRedistributing] = useState(false);
   const [showPrepareConfirm, setShowPrepareConfirm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -159,6 +162,28 @@ export default function DispatchDetailPage() {
     }
   }
 
+  async function onRedistribute() {
+    const token = getStoredToken();
+    if (!token) return;
+    setRedistributing(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const updated = await redistributeDispatch(token, campaignId, dispatchId);
+      setDispatch(updated);
+      setSuccess('Redistribuicao concluida.');
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel redistribuir os itens',
+      );
+    } finally {
+      setRedistributing(false);
+    }
+  }
+
   const configuration = dispatch?.configurationSnapshot;
   const content = dispatch?.contentSnapshot;
   const timezone = configuration?.timezone ?? 'America/Sao_Paulo';
@@ -255,6 +280,36 @@ export default function DispatchDetailPage() {
               </ol>
             </section>
 
+            {dispatch.requiringRedistribution ? (
+              <div className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
+                <p className="font-semibold">Redistribuicao necessaria</p>
+                <p className="mt-1">
+                  Este Disparo precisa ser redistribuido entre as instancias antes
+                  de enfileirar. O enfileiramento permanece bloqueado ate a
+                  redistribuicao.
+                </p>
+                {canApprove ? (
+                  <button
+                    type="button"
+                    className="mt-3 rounded-md bg-red-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    disabled={redistributing}
+                    onClick={onRedistribute}
+                  >
+                    {redistributing ? 'Redistribuindo...' : 'Redistribuir'}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+
+            {dispatch.multiInstance ? (
+              <p className="text-sm text-[#65655f]">
+                Modo multi-instancia ativo
+                {dispatch.channels?.length
+                  ? ` · ${dispatch.channels.length} canal(is) no pool`
+                  : ''}
+              </p>
+            ) : null}
+
             {dispatch.status === 'DRAFT' ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                 Este Disparo ainda nao possui destinatarios materializados.
@@ -345,7 +400,7 @@ export default function DispatchDetailPage() {
                   <dd>{campaign?.name ?? campaignId}</dd>
                 </div>
                 <div>
-                  <dt className="text-[#65655f]">Canal</dt>
+                  <dt className="text-[#65655f]">Canal primario</dt>
                   <dd>
                     {dispatch.channelAccount.name} ·{' '}
                     {dispatch.channelAccount.status}
@@ -360,6 +415,51 @@ export default function DispatchDetailPage() {
                 </div>
               </dl>
             </section>
+
+            {dispatch.channels && dispatch.channels.length > 0 ? (
+              <section className="rounded-md border border-[#deddd4] bg-white p-4">
+                <h3 className="font-semibold text-[#151515]">
+                  Pool de instancias (DispatchChannels)
+                </h3>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="min-w-full text-left text-sm">
+                    <thead className="border-b border-[#deddd4] text-[#65655f]">
+                      <tr>
+                        <th className="px-2 py-2 font-medium">Instancia</th>
+                        <th className="px-2 py-2 font-medium">Operacional</th>
+                        <th className="px-2 py-2 font-medium">Limite efetivo</th>
+                        <th className="px-2 py-2 font-medium">Items atribuidos</th>
+                        <th className="px-2 py-2 font-medium">Enviados / falhas</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {dispatch.channels.map((channel) => (
+                        <tr
+                          key={channel.id}
+                          className="border-b border-[#f0efe8] text-[#24382b]"
+                        >
+                          <td className="px-2 py-2">
+                            {channel.channelAccount.name}
+                          </td>
+                          <td className="px-2 py-2">
+                            {getDispatchChannelOperationalStatusLabel(
+                              channel.operationalStatus,
+                            )}
+                          </td>
+                          <td className="px-2 py-2">
+                            {channel.effectiveDailyLimit}
+                          </td>
+                          <td className="px-2 py-2">{channel.assignedItems}</td>
+                          <td className="px-2 py-2">
+                            {channel.sentItems} / {channel.failedItems}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ) : null}
 
             <section className="rounded-md border border-[#deddd4] bg-white p-4">
               <h3 className="font-semibold text-[#151515]">Conteudo aprovado</h3>
@@ -527,7 +627,12 @@ export default function DispatchDetailPage() {
               <button
                 type="button"
                 className="mt-3 rounded-md border border-[#c9c8c0] px-4 py-2 text-sm text-[#65655f]"
-                disabled
+                disabled={dispatch.requiringRedistribution === true}
+                title={
+                  dispatch.requiringRedistribution
+                    ? 'Redistribua antes de enfileirar'
+                    : undefined
+                }
               >
                 Enfileirar (indisponivel)
               </button>

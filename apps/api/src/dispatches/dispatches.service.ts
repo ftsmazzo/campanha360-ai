@@ -5,6 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
+  DispatchChannelOperationalStatus,
+  DispatchItemStatus,
   DispatchPlanRecipientEligibilityStatus,
   DispatchStatus,
   Prisma,
@@ -12,6 +14,20 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  distributeRecipientsCapacityWeighted,
+} from '../dispatch-plans/dispatch-plan-multi-instance.util';
+import {
+  buildReassignmentUpdate,
+  canReassignDispatchItem,
+} from './dispatch-channel-selection.util';
+import {
+  assertChannelReadyForDispatchCreation,
+  buildDispatchAllowedActions,
+  buildDispatchConfigurationSnapshot,
+  buildDispatchContentSnapshot,
+  canCreateDispatchFromPlan,
+} from './dispatch.util';
 import {
   assertChannelReadyForPrepare,
   assertDispatchContentSnapshotValid,
@@ -23,13 +39,6 @@ import {
   extractContactName,
   maskDestination,
 } from './dispatch-prepare.util';
-import {
-  assertChannelReadyForDispatchCreation,
-  buildDispatchAllowedActions,
-  buildDispatchConfigurationSnapshot,
-  buildDispatchContentSnapshot,
-  canCreateDispatchFromPlan,
-} from './dispatch.util';
 import { CreateDispatchDto } from './dto/create-dispatch.dto';
 import { ListDispatchItemsQueryDto } from './dto/list-dispatch-items-query.dto';
 import { ListDispatchesQueryDto } from './dto/list-dispatches-query.dto';
@@ -45,6 +54,8 @@ const listSelect = {
   sentItems: true,
   failedItems: true,
   preparedAt: true,
+  requiringRedistribution: true,
+  multiInstance: true,
   approvalSnapshot: true,
   createdAt: true,
   dispatchPlan: {
@@ -105,6 +116,8 @@ const detailSelect = {
   canceledAt: true,
   emergencyStoppedAt: true,
   lastProgressAt: true,
+  requiringRedistribution: true,
+  multiInstance: true,
   createdAt: true,
   updatedAt: true,
   dispatchPlan: {
@@ -231,23 +244,82 @@ export class DispatchesService {
 
     let created;
     try {
-      created = await this.prisma.dispatch.create({
-        data: {
-          organizationId: campaign.organizationId,
-          campaignId,
-          dispatchPlanId: plan.id,
-          channelAccountId: plan.channelAccountId,
-          name: plan.name,
-          description: plan.description,
-          channelType: plan.channelType,
-          contentSnapshot: contentSnapshot as unknown as Prisma.InputJsonValue,
-          configurationSnapshot:
-            configurationSnapshot as unknown as Prisma.InputJsonValue,
-          approvalSnapshot: plan.approvalSnapshot as Prisma.InputJsonValue,
-          status: DispatchStatus.DRAFT,
-          createdByUserId: userId,
-        },
-        select: detailSelect,
+      created = await this.prisma.$transaction(async (tx) => {
+        const dispatch = await tx.dispatch.create({
+          data: {
+            organizationId: campaign.organizationId,
+            campaignId,
+            dispatchPlanId: plan.id,
+            channelAccountId: plan.channelAccountId,
+            name: plan.name,
+            description: plan.description,
+            channelType: plan.channelType,
+            contentSnapshot:
+              contentSnapshot as unknown as Prisma.InputJsonValue,
+            configurationSnapshot:
+              configurationSnapshot as unknown as Prisma.InputJsonValue,
+            approvalSnapshot: plan.approvalSnapshot as Prisma.InputJsonValue,
+            status: DispatchStatus.DRAFT,
+            createdByUserId: userId,
+            multiInstance: !plan.legacySingleChannel && Boolean(plan.multiInstanceEnabled),
+            requiringRedistribution: false,
+          },
+          select: detailSelect,
+        });
+
+        const planChannels = await tx.dispatchPlanChannel.findMany({
+          where: {
+            dispatchPlanId: plan.id,
+            organizationId: campaign.organizationId,
+            campaignId,
+            enabled: true,
+          },
+          orderBy: [{ priority: 'asc' }, { weight: 'desc' }],
+        });
+
+        if (planChannels.length === 0) {
+          throw new BadRequestException(
+            'Plano aprovado sem DispatchPlanChannel; reabra o Plano',
+          );
+        }
+
+        if (plan.legacySingleChannel && planChannels.length > 1) {
+          throw new BadRequestException(
+            'Plano legado single-channel nao pode gerar Dispatch multi-instancia sem reabertura',
+          );
+        }
+
+        const policy =
+          (plan.protectionPolicySnapshot as {
+            dailyLimitPerInstance?: number;
+          } | null) ?? {};
+
+        await tx.dispatchChannel.createMany({
+          data: planChannels.map((row) => ({
+            organizationId: campaign.organizationId,
+            campaignId,
+            dispatchId: dispatch.id,
+            dispatchPlanChannelId: row.id,
+            channelAccountId: row.channelAccountId,
+            enabled: row.enabled,
+            priority: row.priority,
+            weight: row.weight,
+            effectiveDailyLimit:
+              row.assignedCapacity ||
+              row.dailyLimit ||
+              policy.dailyLimitPerInstance ||
+              200,
+            assignedItems: 0,
+            processedItems: 0,
+            sentItems: 0,
+            failedItems: 0,
+            consecutiveErrors: 0,
+            operationalStatus: 'READY',
+            configurationSnapshot: row.configurationSnapshot ?? undefined,
+          })),
+        });
+
+        return dispatch;
       });
     } catch (error) {
       if (
@@ -396,12 +468,47 @@ export class DispatchesService {
       _count: { _all: true },
     });
 
+    const channels = await this.prisma.dispatchChannel.findMany({
+      where: {
+        dispatchId: dispatch.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+      },
+      select: {
+        id: true,
+        channelAccountId: true,
+        dispatchPlanChannelId: true,
+        enabled: true,
+        priority: true,
+        weight: true,
+        effectiveDailyLimit: true,
+        assignedItems: true,
+        processedItems: true,
+        sentItems: true,
+        failedItems: true,
+        consecutiveErrors: true,
+        cooldownUntil: true,
+        operationalStatus: true,
+        channelAccount: {
+          select: {
+            id: true,
+            name: true,
+            provider: true,
+            status: true,
+          },
+        },
+      },
+      orderBy: [{ priority: 'asc' }, { weight: 'desc' }],
+    });
+
     return {
       ...dispatch,
+      channels,
       allowedActions: buildDispatchAllowedActionsForPrepare({
         role: membership.role,
         status: dispatch.status,
         totalItems: dispatch.totalItems,
+        requiringRedistribution: dispatch.requiringRedistribution,
       }),
       approvedAudience: this.extractApprovedAudience(dispatch.approvalSnapshot),
       itemSummary: buildItemStatusSummary(grouped),
@@ -598,7 +705,86 @@ export class DispatchesService {
         );
       }
 
-      const items = buildPreparedDispatchItems({
+      const dispatchChannels = await this.prisma.dispatchChannel.findMany({
+        where: {
+          dispatchId: dispatch.id,
+          organizationId: campaign.organizationId,
+          campaignId,
+          enabled: true,
+        },
+        include: {
+          channelAccount: {
+            select: {
+              id: true,
+              campaignId: true,
+              provider: true,
+              status: true,
+            },
+          },
+        },
+        orderBy: [{ priority: 'asc' }, { weight: 'desc' }],
+      });
+
+      if (dispatchChannels.length === 0) {
+        throw new BadRequestException(
+          'Dispatch sem canais materializados; recrie o Dispatch',
+        );
+      }
+
+      for (const row of dispatchChannels) {
+        try {
+          assertChannelReadyForPrepare({
+            channelExists: true,
+            channelBelongsToCampaign:
+              row.channelAccount.campaignId === campaignId,
+            channelMatchesDispatch: true,
+            provider: row.channelAccount.provider,
+            status: row.channelAccount.status,
+          });
+        } catch (error) {
+          throw new BadRequestException(
+            error instanceof Error
+              ? `Canal ${row.channelAccountId}: ${error.message}`
+              : 'Canal do pool invalido',
+          );
+        }
+      }
+
+      const distribution = distributeRecipientsCapacityWeighted({
+        totalEligible: recipients.length,
+        channels: dispatchChannels.map((row) => ({
+          id: row.id,
+          priority: row.priority,
+          weight: row.weight,
+          effectiveDailyLimit: row.effectiveDailyLimit,
+          enabled: row.enabled,
+          assignedRecipients: row.assignedItems,
+        })),
+      });
+
+      if (distribution.unassignedCount > 0) {
+        throw new BadRequestException(
+          `Capacidade insuficiente: ${distribution.unassignedCount} recipients sem canal`,
+        );
+      }
+
+      const channelById = new Map(
+        dispatchChannels.map((row) => [row.id, row]),
+      );
+      const assignedChannelIds: string[] = [];
+      for (const assignment of distribution.assignments) {
+        for (let i = 0; i < assignment.count; i += 1) {
+          assignedChannelIds.push(assignment.channelId);
+        }
+      }
+
+      if (assignedChannelIds.length !== recipients.length) {
+        throw new BadRequestException(
+          'Distribuicao CAPACITY_WEIGHTED inconsistente com destinatarios',
+        );
+      }
+
+      const baseItems = buildPreparedDispatchItems({
         recipients,
         dispatchId: dispatch.id,
         organizationId: campaign.organizationId,
@@ -606,6 +792,21 @@ export class DispatchesService {
         dispatchPlanId: dispatch.dispatchPlanId,
         channelAccountId: dispatch.channelAccountId,
         contentSnapshot,
+      });
+
+      const items = baseItems.map((item, index) => {
+        const dispatchChannelId = assignedChannelIds[index]!;
+        const channel = channelById.get(dispatchChannelId);
+        if (!channel) {
+          throw new BadRequestException('Canal de distribuicao invalido');
+        }
+        return {
+          ...item,
+          channelAccountId: channel.channelAccountId,
+          dispatchChannelId: channel.id,
+          originalDispatchChannelId: channel.id,
+          reassignmentCount: 0,
+        };
       });
 
       const preparedAt = new Date();
@@ -629,6 +830,15 @@ export class DispatchesService {
           );
         }
 
+        for (const assignment of distribution.assignments) {
+          await tx.dispatchChannel.update({
+            where: { id: assignment.channelId },
+            data: {
+              assignedItems: assignment.count,
+            },
+          });
+        }
+
         const updated = await tx.dispatch.updateMany({
           where: {
             id: dispatch.id,
@@ -649,6 +859,7 @@ export class DispatchesService {
             canceledItems: 0,
             preparedAt,
             lastProgressAt: preparedAt,
+            requiringRedistribution: false,
           },
         });
 
@@ -727,6 +938,224 @@ export class DispatchesService {
       });
 
       throw error;
+    }
+  }
+
+  /**
+   * Redistribui items PENDING de Dispatch legado (requiringRedistribution).
+   * Nao chama Evolution nem enfileira.
+   */
+  async redistribute(userId: string, campaignId: string, dispatchId: string) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    await this.organizationAccess.requireApproveAccess(
+      userId,
+      campaign.organizationId,
+    );
+
+    const dispatch = await this.prisma.dispatch.findFirst({
+      where: {
+        id: dispatchId,
+        organizationId: campaign.organizationId,
+        campaignId,
+      },
+    });
+
+    if (!dispatch) {
+      throw new NotFoundException('Dispatch nao encontrado');
+    }
+
+    if (!dispatch.requiringRedistribution) {
+      throw new BadRequestException(
+        'Dispatch nao exige redistribuicao',
+      );
+    }
+
+    if (dispatch.status !== DispatchStatus.READY) {
+      throw new BadRequestException(
+        'Somente Dispatch READY pode ser redistribuido',
+      );
+    }
+
+    const channels = await this.prisma.dispatchChannel.findMany({
+      where: {
+        dispatchId: dispatch.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+        enabled: true,
+      },
+      include: {
+        channelAccount: {
+          select: {
+            id: true,
+            status: true,
+            provider: true,
+          },
+        },
+      },
+      orderBy: [{ priority: 'asc' }, { weight: 'desc' }],
+    });
+
+    if (channels.length === 0) {
+      throw new BadRequestException('Dispatch sem canais para redistribuir');
+    }
+
+    for (const channel of channels) {
+      try {
+        assertChannelReadyForPrepare({
+          channelExists: true,
+          channelBelongsToCampaign: true,
+          channelMatchesDispatch: true,
+          provider: channel.channelAccount.provider,
+          status: channel.channelAccount.status,
+        });
+      } catch (error) {
+        throw new BadRequestException(
+          error instanceof Error
+            ? `Canal ${channel.channelAccountId}: ${error.message}`
+            : 'Canal invalido no pool',
+        );
+      }
+    }
+
+    const items = await this.prisma.dispatchItem.findMany({
+      where: {
+        dispatchId: dispatch.id,
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: DispatchItemStatus.PENDING,
+      },
+      select: {
+        id: true,
+        status: true,
+        dispatchChannelId: true,
+        originalDispatchChannelId: true,
+        channelAccountId: true,
+        reassignmentCount: true,
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+
+    const distribution = distributeRecipientsCapacityWeighted({
+      totalEligible: items.length,
+      channels: channels.map((row) => ({
+        id: row.id,
+        priority: row.priority,
+        weight: row.weight,
+        effectiveDailyLimit: row.effectiveDailyLimit,
+        enabled: row.enabled,
+        assignedRecipients: 0,
+      })),
+    });
+
+    if (distribution.unassignedCount > 0) {
+      throw new BadRequestException(
+        `Capacidade insuficiente para redistribuir: ${distribution.unassignedCount} items sem canal`,
+      );
+    }
+
+    const assignedChannelIds: string[] = [];
+    for (const assignment of distribution.assignments) {
+      for (let i = 0; i < assignment.count; i += 1) {
+        assignedChannelIds.push(assignment.channelId);
+      }
+    }
+
+    const channelById = new Map(channels.map((row) => [row.id, row]));
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index]!;
+        const targetId = assignedChannelIds[index]!;
+        const target = channelById.get(targetId);
+        if (!target) {
+          throw new BadRequestException('Canal de redistribuicao invalido');
+        }
+
+        if (!canReassignDispatchItem(item.status)) {
+          continue;
+        }
+
+        const update = buildReassignmentUpdate(
+          {
+            dispatchChannelId: item.dispatchChannelId,
+            originalDispatchChannelId: item.originalDispatchChannelId,
+            channelAccountId: item.channelAccountId,
+            reassignmentCount: item.reassignmentCount,
+            status: item.status,
+          },
+          {
+            id: target.id,
+            channelAccountId: target.channelAccountId,
+          },
+          now,
+        );
+
+        await tx.dispatchItem.update({
+          where: { id: item.id },
+          data: update,
+        });
+      }
+
+      for (const channel of channels) {
+        const assigned =
+          distribution.assignments.find((row) => row.channelId === channel.id)
+            ?.count ?? 0;
+        await tx.dispatchChannel.update({
+          where: { id: channel.id },
+          data: {
+            assignedItems: assigned,
+            operationalStatus: DispatchChannelOperationalStatus.READY,
+          },
+        });
+      }
+
+      await tx.dispatch.update({
+        where: { id: dispatch.id },
+        data: {
+          requiringRedistribution: false,
+          multiInstance: channels.length > 1,
+        },
+      });
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'DISPATCH_REDISTRIBUTED',
+      entityType: 'Dispatch',
+      entityId: dispatch.id,
+      metadata: {
+        dispatchId: dispatch.id,
+        totalItems: items.length,
+        channels: channels.length,
+        requiringRedistribution: false,
+      },
+    });
+
+    return this.getById(userId, campaignId, dispatch.id);
+  }
+
+  /**
+   * Gate futuro de enfileiramento: bloqueia legados sem redistribuicao.
+   * Worker/BullMQ ainda nao existem.
+   */
+  assertCanEnqueue(dispatch: {
+    status: DispatchStatus | string;
+    requiringRedistribution: boolean;
+    totalItems: number;
+  }): void {
+    if (dispatch.requiringRedistribution) {
+      throw new BadRequestException(
+        'Dispatch READY legado exige redistribuicao antes de enfileirar',
+      );
+    }
+    if (dispatch.status !== DispatchStatus.READY && dispatch.status !== 'READY') {
+      throw new BadRequestException('Somente Dispatch READY pode ser enfileirado');
+    }
+    if (dispatch.totalItems <= 0) {
+      throw new BadRequestException('Dispatch sem items nao pode ser enfileirado');
     }
   }
 

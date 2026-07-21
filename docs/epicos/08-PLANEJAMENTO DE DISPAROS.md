@@ -1492,6 +1492,87 @@ Fora desta subetapa / Epico 08 (intencional):
 - `Dispatch` / `DispatchItem`;
 - BullMQ, Worker, Evolution send, agendamento real.
 
+---
+
+## Extensao multi-instancia (planejamento)
+
+### Objetivo
+
+Permitir que um Plano de Disparo utilize **pool de instancias WhatsApp** (multi-instancia) com blindagem unificada e distribuicao **CAPACITY_WEIGHTED**, sem envio real neste epico.
+
+### Entidade DispatchPlanChannel
+
+Cada linha representa uma instancia no pool do Plano:
+
+- `channelAccountId`, `enabled`, `priority`, `weight`, `dailyLimit`;
+- limites derivados: `hourlyLimit`, `newAccountDailyLimit`, `warmupDailyLimit`;
+- `assignedCapacity`, `assignedRecipients` (pos-distribuicao);
+- `configurationSnapshot`, `healthSnapshot` (JSON).
+
+Relacionamento: `DispatchPlan.planChannels[]`.
+
+### protectionPolicySnapshot
+
+JSON imutavel congelado na criacao/edicao relevante do Plano. Defaults alinhados ao **MassFlow** (`shielding.py` / presets Shielding.tsx):
+
+- perfis: `CONSERVATIVE`, `MODERATE` (padrao), `AGGRESSIVE`, `CUSTOM`;
+- limites diarios/horarios, janela operacional, delays, lotes, pausas;
+- regras de conta nova, warmup, rotacao, pausa em 403/429;
+- `distributionStrategy`: **`CAPACITY_WEIGHTED`**.
+
+Campo no `DispatchPlan`: `protectionPolicySnapshot`.
+
+Flags de compatibilidade:
+
+- `legacySingleChannel` — plano criado como canal unico (compatibilidade);
+- `multiInstanceEnabled` — pool com mais de uma instancia.
+
+### API (create/update)
+
+Payload aceita:
+
+```json
+{
+  "channels": [{ "channelAccountId": "...", "priority": 100, "weight": 100, "dailyLimit": 200 }],
+  "protectionProfile": "MODERATE",
+  "channelAccountId": "..." 
+}
+```
+
+`channelAccountId` permanece como **canal primario** (primeiro do pool) para compatibilidade.
+
+### Blindagem / validacao multi-instancia
+
+Na validacao (`POST .../validate`):
+
+- avalia saude de cada `DispatchPlanChannel` (conta nova, warmup, canal desconectado, cooldown);
+- consolida capacidade total vs publico elegivel;
+- check `MULTI_INSTANCE_CAPACITY` (ERROR se deficit);
+- detalhes incluem `eligibleInstances`, `blockedInstances`, `capacityDeficit`, `unassignedRecipients`.
+
+### Simulacao multi-instancia
+
+Simulacao persiste `simulationSnapshot`; quando multi-instancia, pode incluir consolidado por canal (throughput, lotes, fim estimado por instancia). Alteracao de pool ou perfil invalida validacao/simulacao.
+
+### Aprovacao multi-instancia
+
+`approvalSnapshot` estende com:
+
+- `protectionPolicy` (copia do snapshot);
+- `distributionStrategy`;
+- `multiInstance`: pool, `capacity` consolidada e referencia a simulacao.
+
+### Web (08)
+
+- criar plano: multiselect de instancias + select de perfil;
+- detalhe: tabela `planChannels`, resumo de politica, consolidado de validacao/aprovacao.
+
+### Fora de escopo (multi-instancia no 08)
+
+- Worker, Evolution send, BullMQ;
+- failover em tempo de execucao (Epico 09);
+- redistribuicao operacional de items (Epico 09).
+
 ## Proxima etapa
 
 Iniciar o Epico 09 — Motor de Disparo, apenas apos validacao deste fechamento.

@@ -650,6 +650,119 @@ export function deleteSegment(token: string, campaignId: string, segmentId: stri
   );
 }
 
+export type ProtectionProfile =
+  | 'CONSERVATIVE'
+  | 'MODERATE'
+  | 'AGGRESSIVE'
+  | 'CUSTOM';
+
+export type DistributionStrategy = 'CAPACITY_WEIGHTED';
+
+export type DispatchPlanChannelInput = {
+  channelAccountId: string;
+  priority?: number;
+  weight?: number;
+  dailyLimit?: number;
+};
+
+export type ProtectionPolicySnapshot = {
+  profile: ProtectionProfile;
+  dailyLimitPerInstance: number;
+  hourlyLimit: number;
+  allowedStartTime: string;
+  allowedEndTime: string;
+  timezone: string;
+  minDelaySeconds: number;
+  maxDelaySeconds: number;
+  batchSize: number;
+  pauseBetweenBatchesSeconds: number;
+  longPauseEveryMessages: number;
+  longPauseMinutes: number;
+  consecutiveErrorsBeforePause: number;
+  errorPauseMinutes: number;
+  newAccountMaxPerDay: number;
+  newAccountDays: number;
+  warmupEnabled: boolean;
+  warmupDays: number;
+  warmupMaxPerDay: number;
+  rotationEnabled: boolean;
+  rotateEveryMessages: number;
+  pauseOn403: boolean;
+  pauseOn429: boolean;
+  validateWhatsAppNumber: boolean;
+  optOutKeywords: string[];
+  repetitionWarningPercentage: number;
+  distributionStrategy: DistributionStrategy;
+};
+
+export type PlanChannelHealthSnapshot = {
+  channelId: string;
+  channelAccountId: string;
+  enabled: boolean;
+  eligible: boolean;
+  blocked: boolean;
+  reasons: string[];
+  effectiveDailyLimit: number;
+  remainingCapacity: number;
+  stage: 'NEW_ACCOUNT' | 'WARMUP' | 'NORMAL';
+  assignedRecipients: number;
+};
+
+export type MultiInstanceConsolidated = {
+  selectedInstances: number;
+  eligibleInstances: number;
+  blockedInstances: number;
+  totalCapacity: number;
+  totalEligibleAudience: number;
+  capacityDeficit: number;
+  unassignedRecipients: number;
+  passed: boolean;
+  channels: PlanChannelHealthSnapshot[];
+  distribution: Array<{ channelId: string; assignedRecipients: number }>;
+};
+
+export type DispatchPlanChannelItem = {
+  id: string;
+  channelAccountId: string;
+  enabled: boolean;
+  priority: number;
+  weight: number;
+  dailyLimit: number;
+  hourlyLimit: number | null;
+  newAccountDailyLimit: number;
+  warmupDailyLimit: number;
+  assignedCapacity: number;
+  assignedRecipients: number;
+  configurationSnapshot: Record<string, unknown> | null;
+  healthSnapshot: PlanChannelHealthSnapshot | null;
+  channelAccount: {
+    id: string;
+    name: string;
+    provider: string;
+    status: string;
+    createdAt?: string;
+  };
+};
+
+export type DispatchPlanMultiInstanceSnapshot = {
+  enabled: boolean;
+  legacySingleChannel: boolean;
+  channels: Array<{
+    dispatchPlanChannelId: string;
+    channelAccountId: string;
+    name: string;
+    provider: string;
+    status: string;
+    enabled: boolean;
+    priority: number;
+    weight: number;
+    dailyLimit: number;
+    assignedRecipients: number;
+  }>;
+  capacity: MultiInstanceConsolidated | null;
+  simulation?: DispatchPlanSimulationSnapshot | null;
+};
+
 export type DispatchPlanStatus =
   | 'DRAFT'
   | 'VALIDATING'
@@ -760,6 +873,9 @@ export type DispatchPlanApprovalSnapshot = {
     hash: string;
     body: string;
   };
+  protectionPolicy?: ProtectionPolicySnapshot;
+  distributionStrategy?: DistributionStrategy;
+  multiInstance?: DispatchPlanMultiInstanceSnapshot;
 };
 
 export type DispatchPlanSimulationWarning = {
@@ -798,6 +914,7 @@ export type DispatchPlanSimulationSnapshot = {
     estimatedEndAt: string;
   };
   warnings: DispatchPlanSimulationWarning[];
+  multiInstance?: MultiInstanceConsolidated | null;
 };
 
 export type SimulateDispatchPlanPayload = {
@@ -823,6 +940,10 @@ export type DispatchPlanItem = {
   description: string | null;
   channelType: string;
   content: string;
+  protectionPolicySnapshot?: ProtectionPolicySnapshot | null;
+  legacySingleChannel?: boolean;
+  multiInstanceEnabled?: boolean;
+  planChannels?: DispatchPlanChannelItem[];
   status: DispatchPlanStatus;
   version: number;
   totalEvaluated: number;
@@ -943,10 +1064,35 @@ export type DispatchApprovedAudience = {
   totalExcluded: number;
 };
 
+export type DispatchChannelItem = {
+  id: string;
+  channelAccountId: string;
+  dispatchPlanChannelId: string;
+  enabled: boolean;
+  priority: number;
+  weight: number;
+  effectiveDailyLimit: number;
+  assignedItems: number;
+  processedItems: number;
+  sentItems: number;
+  failedItems: number;
+  consecutiveErrors: number;
+  cooldownUntil: string | null;
+  operationalStatus: string;
+  channelAccount: {
+    id: string;
+    name: string;
+    provider: string;
+    status: string;
+  };
+};
+
 export type DispatchListItem = {
   id: string;
   name: string;
   status: DispatchStatus;
+  requiringRedistribution?: boolean;
+  multiInstance?: boolean;
   dispatchPlanId: string;
   dispatchPlan: {
     id: string;
@@ -984,6 +1130,9 @@ export type DispatchDetail = {
   configurationSnapshot: DispatchConfigurationSnapshot;
   approvalSnapshot: DispatchPlanApprovalSnapshot;
   status: DispatchStatus;
+  requiringRedistribution?: boolean;
+  multiInstance?: boolean;
+  channels?: DispatchChannelItem[];
   totalItems: number;
   pendingItems: number;
   queuedItems: number;
@@ -1107,7 +1256,10 @@ export type CreateDispatchPlanPayload = {
   name: string;
   description?: string;
   segmentId: string;
+  /** Compatibilidade: canal primario (primeiro do pool). */
   channelAccountId: string;
+  channels?: DispatchPlanChannelInput[];
+  protectionProfile?: ProtectionProfile;
   content: string;
 };
 
@@ -1116,6 +1268,8 @@ export type UpdateDispatchPlanPayload = {
   description?: string;
   segmentId?: string;
   channelAccountId?: string;
+  channels?: DispatchPlanChannelInput[];
+  protectionProfile?: ProtectionProfile;
   content?: string;
 };
 
@@ -1171,6 +1325,18 @@ export function prepareDispatch(
 ) {
   return request<PrepareDispatchResponse>(
     `/campaigns/${campaignId}/dispatches/${dispatchId}/prepare`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function redistributeDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<DispatchDetail>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/redistribute`,
     { method: 'POST' },
     token,
   );

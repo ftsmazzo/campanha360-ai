@@ -169,6 +169,27 @@ enum DispatchItemErrorCategory {
   UNKNOWN
 }
 
+enum ProtectionProfile {
+  CONSERVATIVE
+  MODERATE
+  AGGRESSIVE
+  CUSTOM
+}
+
+enum DistributionStrategy {
+  CAPACITY_WEIGHTED
+}
+
+enum DispatchChannelOperationalStatus {
+  READY
+  COOLDOWN
+  DISCONNECTED
+  ARCHIVED
+  CAPACITY_EXHAUSTED
+  BLOCKED
+  DISABLED
+}
+
 enum MessageDirection {
   INBOUND
   OUTBOUND
@@ -210,8 +231,10 @@ model Organization {
   campaigns   Campaign[]
   dispatchPlans DispatchPlan[]
   dispatchPlanRecipients DispatchPlanRecipient[]
+  dispatchPlanChannels DispatchPlanChannel[]
   dispatches Dispatch[]
   dispatchItems DispatchItem[]
+  dispatchChannels DispatchChannel[]
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 }
@@ -243,8 +266,10 @@ model Campaign {
   contacts       Contact[]
   dispatchPlans  DispatchPlan[]
   dispatchPlanRecipients DispatchPlanRecipient[]
+  dispatchPlanChannels DispatchPlanChannel[]
   dispatches     Dispatch[]
   dispatchItems  DispatchItem[]
+  dispatchChannels DispatchChannel[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
@@ -412,8 +437,10 @@ model ChannelAccount {
   externalAccountId String?
   config            Json?
   dispatchPlans     DispatchPlan[]
+  dispatchPlanChannels DispatchPlanChannel[]
   dispatches        Dispatch[]
   dispatchItems     DispatchItem[]
+  dispatchChannels  DispatchChannel[]
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
@@ -529,8 +556,12 @@ model DispatchPlan {
   rejectedBy       User?              @relation("DispatchPlanRejectedBy", fields: [rejectedByUserId], references: [id])
   canceledBy       User?              @relation("DispatchPlanCanceledBy", fields: [canceledByUserId], references: [id])
   recipients       DispatchPlanRecipient[]
+  planChannels     DispatchPlanChannel[]
   dispatches       Dispatch[]
   dispatchItems    DispatchItem[]
+  protectionPolicySnapshot Json?
+  legacySingleChannel Boolean           @default(true)
+  multiInstanceEnabled Boolean          @default(false)
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
@@ -541,6 +572,37 @@ model DispatchPlan {
   @@index([approvedByUserId])
   @@index([rejectedByUserId])
   @@index([canceledByUserId])
+}
+
+model DispatchPlanChannel {
+  id                   String   @id @default(cuid())
+  organizationId       String
+  campaignId           String
+  dispatchPlanId       String
+  channelAccountId     String
+  enabled              Boolean  @default(true)
+  priority             Int      @default(100)
+  weight               Int      @default(100)
+  dailyLimit           Int      @default(200)
+  hourlyLimit          Int?
+  newAccountDailyLimit Int      @default(50)
+  warmupDailyLimit     Int      @default(20)
+  assignedCapacity     Int      @default(0)
+  assignedRecipients   Int      @default(0)
+  configurationSnapshot Json?
+  healthSnapshot       Json?
+  organization         Organization   @relation(fields: [organizationId], references: [id])
+  campaign             Campaign       @relation(fields: [campaignId], references: [id])
+  dispatchPlan         DispatchPlan   @relation(fields: [dispatchPlanId], references: [id], onDelete: Cascade)
+  channelAccount       ChannelAccount @relation(fields: [channelAccountId], references: [id])
+  dispatchChannels     DispatchChannel[]
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@unique([dispatchPlanId, channelAccountId])
+  @@index([dispatchPlanId])
+  @@index([organizationId, campaignId])
+  @@index([channelAccountId])
 }
 
 model DispatchPlanRecipient {
@@ -612,6 +674,9 @@ model Dispatch {
   channelAccount        ChannelAccount @relation(fields: [channelAccountId], references: [id])
   createdBy             User           @relation("DispatchCreatedBy", fields: [createdByUserId], references: [id])
   items                 DispatchItem[]
+  channels              DispatchChannel[]
+  requiringRedistribution Boolean      @default(false)
+  multiInstance         Boolean        @default(false)
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt
 
@@ -620,6 +685,42 @@ model Dispatch {
   @@index([dispatchPlanId])
   @@index([channelAccountId])
   @@index([status, createdAt])
+}
+
+model DispatchChannel {
+  id                    String                          @id @default(cuid())
+  organizationId        String
+  campaignId            String
+  dispatchId            String
+  dispatchPlanChannelId String
+  channelAccountId      String
+  enabled               Boolean                         @default(true)
+  priority              Int                             @default(100)
+  weight                Int                             @default(100)
+  effectiveDailyLimit   Int                             @default(0)
+  assignedItems         Int                             @default(0)
+  processedItems        Int                             @default(0)
+  sentItems             Int                             @default(0)
+  failedItems           Int                             @default(0)
+  consecutiveErrors     Int                             @default(0)
+  cooldownUntil         DateTime?
+  operationalStatus     DispatchChannelOperationalStatus @default(READY)
+  configurationSnapshot Json?
+  organization          Organization                    @relation(fields: [organizationId], references: [id])
+  campaign              Campaign                        @relation(fields: [campaignId], references: [id])
+  dispatch              Dispatch                        @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  dispatchPlanChannel   DispatchPlanChannel             @relation(fields: [dispatchPlanChannelId], references: [id])
+  channelAccount        ChannelAccount                  @relation(fields: [channelAccountId], references: [id])
+  items                 DispatchItem[]                  @relation("DispatchItemChannel")
+  originalItems         DispatchItem[]                  @relation("DispatchItemOriginalChannel")
+  createdAt             DateTime                        @default(now())
+  updatedAt             DateTime                        @updatedAt
+
+  @@unique([dispatchId, channelAccountId])
+  @@index([dispatchId])
+  @@index([organizationId, campaignId])
+  @@index([channelAccountId])
+  @@index([operationalStatus])
 }
 
 model DispatchItem {
@@ -631,6 +732,10 @@ model DispatchItem {
   dispatchPlanRecipientId String
   contactId               String
   channelAccountId        String
+  dispatchChannelId       String?
+  originalDispatchChannelId String?
+  reassignmentCount       Int                        @default(0)
+  lastReassignedAt        DateTime?
   destination             String
   normalizedDestination   String
   contactSnapshot         Json
@@ -665,6 +770,8 @@ model DispatchItem {
   dispatchPlanRecipient   DispatchPlanRecipient      @relation(fields: [dispatchPlanRecipientId], references: [id])
   contact                 Contact                    @relation(fields: [contactId], references: [id])
   channelAccount          ChannelAccount             @relation(fields: [channelAccountId], references: [id])
+  dispatchChannel         DispatchChannel?           @relation("DispatchItemChannel", fields: [dispatchChannelId], references: [id])
+  originalDispatchChannel DispatchChannel?           @relation("DispatchItemOriginalChannel", fields: [originalDispatchChannelId], references: [id])
   createdAt               DateTime                   @default(now())
   updatedAt               DateTime                   @updatedAt
 
@@ -674,6 +781,7 @@ model DispatchItem {
   @@index([dispatchId, status])
   @@index([organizationId, campaignId])
   @@index([channelAccountId, status])
+  @@index([dispatchChannelId])
   @@index([contactId])
   @@index([normalizedDestination])
   @@index([providerMessageId])
