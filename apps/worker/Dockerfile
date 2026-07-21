@@ -18,6 +18,7 @@ ENV NODE_ENV=production
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/packages/shared ./packages/shared
 COPY --from=build /app/apps/worker/dist ./apps/worker/dist
 COPY --from=build /app/apps/worker/package.json ./apps/worker/package.json
 CMD ["node", "apps/worker/dist/main.js"]
