@@ -1211,6 +1211,15 @@ export type DispatchItemStatus =
   | 'CANCELED'
   | 'UNKNOWN_PROVIDER_STATE';
 
+export type DispatchItemChannelSummary = {
+  id: string;
+  channelAccountId: string;
+  operationalStatus: string;
+  channelAccountName: string;
+  externalAccountId: string | null;
+  channelAccountStatus: string;
+};
+
 export type DispatchItemListEntry = {
   id: string;
   contactId: string;
@@ -1230,10 +1239,33 @@ export type DispatchItemListEntry = {
   skippedAt: string | null;
   technicalValidatedAt?: string | null;
   queueJobId?: string | null;
+  providerMessageIdMasked?: string | null;
+  providerStatus?: string | null;
   errorCategory: string | null;
   errorCode: string | null;
+  errorMessage?: string | null;
+  lastAttemptAt?: string | null;
+  nextRetryAt?: string | null;
+  dispatchChannel?: DispatchItemChannelSummary | null;
   contentHash: string | null;
   createdAt: string;
+};
+
+export type DispatchItemDetail = DispatchItemListEntry & {
+  organizationId: string;
+  campaignId: string;
+  dispatchId: string;
+  dispatchPlanId: string;
+  dispatchPlanRecipientId: string;
+  channelAccountId: string;
+  lockedAt: string | null;
+  deliveredAt: string | null;
+  readAt: string | null;
+  canceledAt: string | null;
+  queueName: string | null;
+  queueCreatedAt: string | null;
+  lastQueueError: string | null;
+  updatedAt: string;
 };
 
 export type QueueDispatchResponse = {
@@ -1442,6 +1474,19 @@ export function fetchDispatchItems(
   const suffix = query.toString() ? `?${query.toString()}` : '';
   return request<ListDispatchItemsResponse>(
     `/campaigns/${campaignId}/dispatches/${dispatchId}/items${suffix}`,
+    {},
+    token,
+  );
+}
+
+export function fetchDispatchItem(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  dispatchItemId: string,
+) {
+  return request<DispatchItemDetail>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/items/${dispatchItemId}`,
     {},
     token,
   );

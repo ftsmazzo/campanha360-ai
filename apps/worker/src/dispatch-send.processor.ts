@@ -121,7 +121,8 @@ export type DispatchSendProcessAction =
   | 'SENT'
   | 'RETRY_SCHEDULED'
   | 'FAILED'
-  | 'UNKNOWN_PROVIDER_STATE';
+  | 'UNKNOWN_PROVIDER_STATE'
+  | 'BLOCKED_SEND_DISABLED';
 
 export type DispatchSendProcessResult = {
   action: DispatchSendProcessAction;
@@ -241,8 +242,53 @@ export async function processDispatchSendJob(
     return { action: 'DEFERRED_REDISTRIBUTION', send: false, dispatchItemId: item.id };
   }
 
+  const sendEnabled = isDispatchSendEnabled();
+
+  /**
+   * Protecao critica: com DISPATCH_SEND_ENABLED=false, jamais chamar Evolution.
+   * Items ja em RETRY_SCHEDULED/FAILED/UNKNOWN/SENT nao entram no path tecnico
+   * (que so clama QUEUED/SCHEDULED) — retorno explicito para preservar estado
+   * e, se houver nextRetryAt futuro, reinsere o job delayed sem envio.
+   */
+  if (!sendEnabled) {
+    const blockedStatuses = new Set<string>([
+      DispatchItemStatus.RETRY_SCHEDULED,
+      DispatchItemStatus.FAILED,
+      DispatchItemStatus.UNKNOWN_PROVIDER_STATE,
+      DispatchItemStatus.SENT,
+      DispatchItemStatus.DELIVERED,
+      DispatchItemStatus.READ,
+      DispatchItemStatus.SKIPPED,
+      DispatchItemStatus.CANCELED,
+    ]);
+
+    if (blockedStatuses.has(String(item.status))) {
+      const nextRetryAtRaw = (item as { nextRetryAt?: Date | string | null })
+        .nextRetryAt;
+      if (
+        String(item.status) === DispatchItemStatus.RETRY_SCHEDULED &&
+        nextRetryAtRaw
+      ) {
+        const nextRetryAt = new Date(nextRetryAtRaw);
+        if (
+          Number.isFinite(nextRetryAt.getTime()) &&
+          nextRetryAt.getTime() > now().getTime()
+        ) {
+          await tryMoveToDelayed(job, nextRetryAt);
+        }
+      }
+
+      return {
+        action: 'BLOCKED_SEND_DISABLED',
+        send: false,
+        dispatchItemId: item.id,
+        reason: 'DISPATCH_SEND_ENABLED_FALSE',
+      };
+    }
+  }
+
   const realSendMode =
-    dispatch.status === DispatchStatus.RUNNING && isDispatchSendEnabled();
+    dispatch.status === DispatchStatus.RUNNING && sendEnabled;
 
   if (!realSendMode) {
     return runTechnicalValidation({ job, dispatch, item, prisma, now });

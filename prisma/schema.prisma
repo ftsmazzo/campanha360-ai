@@ -466,6 +466,9 @@ model ConversationThread {
   updatedAt          DateTime  @updatedAt
 
   @@index([organizationId, campaignId, channelAccountId, contactId])
+  // Unicidade efetiva (channelAccountId NOT NULL) via migration parcial
+  // 20260722143000_conversation_thread_channel_unique — evita misturar
+  // o mesmo contato em instancias Evolution distintas na mesma thread.
 }
 
 model Message {

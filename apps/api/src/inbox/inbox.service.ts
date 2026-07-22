@@ -18,6 +18,11 @@ import {
 } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
+import {
+  INBOX_INSTANCE_DISCONNECTED_MESSAGE,
+  isEvolutionDisconnectErrorMessage,
+  mapEvolutionConnectionStateToStatus,
+} from '../evolution/evolution-connection.util';
 import { EvolutionAdapter } from '../evolution/evolution.adapter';
 import { EvolutionApiException } from '../evolution/evolution.errors';
 import { PrismaService } from '../prisma/prisma.service';
@@ -403,7 +408,10 @@ export class InboxService {
         auditAction: 'INBOX_MANUAL_REPLY_SENT',
       });
     } catch (error) {
-      const friendly = this.toFriendlySendError(error);
+      const friendly = await this.toFriendlySendError(
+        error,
+        context.channelAccount.id,
+      );
       const failed = await this.persistOutboundMessage({
         userId,
         context,
@@ -528,7 +536,10 @@ export class InboxService {
         },
       };
     } catch (error) {
-      const friendly = this.toFriendlySendError(error);
+      const friendly = await this.toFriendlySendError(
+        error,
+        context.channelAccount.id,
+      );
       await this.prisma.message.update({
         where: { id: existing.id },
         data: {
@@ -643,17 +654,28 @@ export class InboxService {
       throw new BadRequestException('Canal arquivado. Envio nao permitido.');
     }
 
-    if (channelAccount.status !== ChannelAccountStatus.CONNECTED) {
-      throw new BadRequestException(
-        'Canal WhatsApp nao esta conectado. Conecte o canal antes de enviar.',
-      );
-    }
-
     const instanceName = channelAccount.externalAccountId?.trim();
     if (!instanceName) {
       throw new BadRequestException(
         'Canal sem instancia Evolution. Prepare a conexao novamente.',
       );
+    }
+
+    // Refresh controlado: valida estado real na Evolution antes do envio
+    // manual, sincroniza o ChannelAccount desta conversa e nunca faz failover.
+    const syncedStatus = await this.refreshConversationChannelStatus(
+      channelAccount.id,
+      instanceName,
+      channelAccount.status,
+    );
+
+    if (
+      syncedStatus === ChannelAccountStatus.DISCONNECTED ||
+      syncedStatus === ChannelAccountStatus.ERROR ||
+      syncedStatus === ChannelAccountStatus.CONNECTING ||
+      syncedStatus !== ChannelAccountStatus.CONNECTED
+    ) {
+      throw new BadRequestException(INBOX_INSTANCE_DISCONNECTED_MESSAGE);
     }
 
     const number = resolveWhatsAppDestination({
@@ -675,10 +697,54 @@ export class InboxService {
         channelAccountId: thread.channelAccountId,
       },
       contact,
-      channelAccount,
+      channelAccount: {
+        ...channelAccount,
+        status: syncedStatus,
+      },
       instanceName,
       number,
     };
+  }
+
+  /**
+   * Consulta connectionState apenas do ChannelAccount da conversa.
+   * Nao escolhe outro canal. Em falha de rede, preserva o status local
+   * (exceto quando a Evolution confirma instancia ausente).
+   */
+  private async refreshConversationChannelStatus(
+    channelAccountId: string,
+    instanceName: string,
+    currentStatus: ChannelAccountStatus,
+  ): Promise<ChannelAccountStatus> {
+    try {
+      const connection =
+        await this.evolutionAdapter.getConnectionState(instanceName);
+      const mapped = mapEvolutionConnectionStateToStatus(connection.state);
+      if (!mapped || mapped === currentStatus) {
+        return mapped ?? currentStatus;
+      }
+
+      await this.prisma.channelAccount.update({
+        where: { id: channelAccountId },
+        data: { status: mapped },
+      });
+      return mapped;
+    } catch (error) {
+      if (
+        error instanceof EvolutionApiException &&
+        (error.getStatus() === HttpStatus.NOT_FOUND ||
+          isEvolutionDisconnectErrorMessage(error.message))
+      ) {
+        await this.prisma.channelAccount.update({
+          where: { id: channelAccountId },
+          data: { status: ChannelAccountStatus.DISCONNECTED },
+        });
+        return ChannelAccountStatus.DISCONNECTED;
+      }
+      // Falha transitória de consulta: nao inventa desconexao; o envio
+      // subsequente ainda usa apenas este ChannelAccount.
+      return currentStatus;
+    }
   }
 
   private async persistOutboundMessage(input: {
@@ -771,25 +837,44 @@ export class InboxService {
     };
   }
 
-  private toFriendlySendError(error: unknown): string {
+  private async toFriendlySendError(
+    error: unknown,
+    channelAccountId: string,
+  ): Promise<string> {
+    let message = 'Nao foi possivel entregar a mensagem no WhatsApp. Tente novamente.';
+
     if (error instanceof EvolutionApiException) {
       const payload = error.getResponse();
       if (typeof payload === 'object' && payload && 'message' in payload) {
-        const message = (payload as { message?: unknown }).message;
-        if (typeof message === 'string' && message.trim()) {
-          return message;
+        const value = (payload as { message?: unknown }).message;
+        if (typeof value === 'string' && value.trim()) {
+          message = value;
         }
+      } else if (error.message.trim()) {
+        message = error.message;
       }
-    }
-    if (error instanceof HttpException) {
+    } else if (error instanceof HttpException) {
       const payload = error.getResponse();
-      if (typeof payload === 'string' && payload.trim()) return payload;
+      if (typeof payload === 'string' && payload.trim()) message = payload;
       if (typeof payload === 'object' && payload && 'message' in payload) {
-        const message = (payload as { message?: unknown }).message;
-        if (typeof message === 'string' && message.trim()) return message;
+        const value = (payload as { message?: unknown }).message;
+        if (typeof value === 'string' && value.trim()) message = value;
       }
     }
-    return 'Nao foi possivel entregar a mensagem no WhatsApp. Tente novamente.';
+
+    if (isEvolutionDisconnectErrorMessage(message)) {
+      try {
+        await this.prisma.channelAccount.update({
+          where: { id: channelAccountId },
+          data: { status: ChannelAccountStatus.DISCONNECTED },
+        });
+      } catch {
+        // Nao mascara o erro original do envio.
+      }
+      return INBOX_INSTANCE_DISCONNECTED_MESSAGE;
+    }
+
+    return message;
   }
 
   private isOptOutActive(contact: {

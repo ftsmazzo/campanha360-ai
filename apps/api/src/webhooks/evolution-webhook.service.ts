@@ -25,8 +25,13 @@ import {
 } from './evolution-webhook.auth';
 import {
   NormalizedEvolutionInbound,
+  extractEvolutionConnectionState,
+  isConnectionUpdateEvent,
   normalizeEvolutionWebhookPayload,
 } from './evolution-webhook.normalizer';
+import {
+  mapEvolutionConnectionStateToStatus,
+} from '../evolution/evolution-connection.util';
 
 type ProcessResult = {
   ok: true;
@@ -68,6 +73,18 @@ export class EvolutionWebhookService {
     this.assertWebhookAuth(authHeaders);
 
     const account = await this.findActiveEvolutionAccount(channelAccountId);
+
+    const root =
+      payload && typeof payload === 'object' && !Array.isArray(payload)
+        ? (payload as Record<string, unknown>)
+        : null;
+    const eventRaw =
+      (typeof root?.event === 'string' ? root.event : null) ??
+      (typeof root?.type === 'string' ? root.type : null);
+
+    if (isConnectionUpdateEvent(eventRaw)) {
+      return this.handleConnectionUpdate(account, payload, eventRaw);
+    }
 
     const normalizedItems = normalizeEvolutionWebhookPayload(payload);
     const inboundItems = normalizedItems.filter((item) => item.isInboundMessage && !item.fromMe);
@@ -121,6 +138,65 @@ export class EvolutionWebhookService {
       processed,
       duplicates,
       skippedOutbound,
+    };
+  }
+
+  private async handleConnectionUpdate(
+    account: {
+      id: string;
+      organizationId: string;
+      campaignId: string;
+      provider: ChannelProvider;
+      status: ChannelAccountStatus;
+    },
+    payload: unknown,
+    event: string | null,
+  ): Promise<ProcessResult> {
+    const evolutionState = extractEvolutionConnectionState(payload);
+    const nextStatus = mapEvolutionConnectionStateToStatus(evolutionState);
+
+    if (!nextStatus) {
+      this.logger.warn(
+        `Webhook connection.update ignorado channelAccountId=${account.id} state=${evolutionState ?? 'n/a'}`,
+      );
+      await this.safeAudit(account, 'CHANNEL_EVOLUTION_CONNECTION_IGNORED', {
+        reason: 'unmapped_state',
+        event,
+        evolutionState,
+      });
+      return {
+        ok: true,
+        ignored: true,
+        reason: 'unmapped_connection_state',
+        processed: 0,
+        duplicates: 0,
+        skippedOutbound: 0,
+      };
+    }
+
+    if (nextStatus !== account.status) {
+      await this.prisma.channelAccount.update({
+        where: { id: account.id },
+        data: { status: nextStatus },
+      });
+    }
+
+    await this.safeAudit(account, 'CHANNEL_EVOLUTION_CONNECTION_UPDATED', {
+      event,
+      evolutionState,
+      previousStatus: account.status,
+      status: nextStatus,
+    });
+
+    this.logger.log(
+      `Webhook connection.update channelAccountId=${account.id} ${account.status} -> ${nextStatus} state=${evolutionState ?? 'n/a'}`,
+    );
+
+    return {
+      ok: true,
+      processed: nextStatus !== account.status ? 1 : 0,
+      duplicates: 0,
+      skippedOutbound: 0,
     };
   }
 

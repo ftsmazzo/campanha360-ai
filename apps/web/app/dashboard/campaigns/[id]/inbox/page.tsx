@@ -209,7 +209,12 @@ export default function CampaignInboxPage() {
   );
 
   const sendBlocked = Boolean(threadDetail?.contact.optOutActive);
-  const canCompose = canWrite && !sendBlocked && !sending;
+  const instanceDisconnected = Boolean(
+    threadDetail?.channelAccount &&
+      threadDetail.channelAccount.status !== 'CONNECTED',
+  );
+  const canCompose =
+    canWrite && !sendBlocked && !instanceDisconnected && !sending;
 
   useEffect(() => {
     async function load() {
@@ -569,6 +574,12 @@ export default function CampaignInboxPage() {
                             ? ` · ${thread.contact.phoneNumber}`
                             : ''}
                         </p>
+                        {thread.channelAccount &&
+                        thread.channelAccount.status !== 'CONNECTED' ? (
+                          <span className="mt-1 inline-block rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-900">
+                            Instancia desconectada
+                          </span>
+                        ) : null}
                         <p className="mt-1 line-clamp-2 text-sm text-[#34342f]">
                           {thread.lastMessage?.direction === 'OUTBOUND' ? 'Voce: ' : ''}
                           {previewBody(thread.lastMessage?.body)}
@@ -623,12 +634,26 @@ export default function CampaignInboxPage() {
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-2">
+                      {threadDetail.channelAccount &&
+                      threadDetail.channelAccount.status !== 'CONNECTED' ? (
+                        <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+                          Instancia desconectada
+                        </span>
+                      ) : null}
                       {threadDetail.contact.optOutActive ? (
                         <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
                           {threadDetail.contact.optOutReason === 'BLOCKED'
                             ? 'Bloqueado'
                             : 'Opt-out ativo'}
                         </span>
+                      ) : null}
+                      {threadDetail.channelAccountId ? (
+                        <Link
+                          className="rounded-md border border-[#c9c8c0] px-2 py-1 text-xs font-medium text-[#24382b]"
+                          href={`/dashboard/campaigns/${campaignId}/channels`}
+                        >
+                          Reconectar instancia
+                        </Link>
                       ) : null}
                       <Link
                         className="rounded-md border border-[#c9c8c0] px-2 py-1 text-xs font-medium text-[#24382b]"
@@ -709,6 +734,24 @@ export default function CampaignInboxPage() {
                     </p>
                   ) : null}
 
+                  {instanceDisconnected ? (
+                    <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                      <p>
+                        A instancia desta conversa esta desconectada. Reconecte-a
+                        para responder. O envio nao sera redirecionado para outra
+                        instancia.
+                      </p>
+                      {threadDetail.channelAccountId ? (
+                        <Link
+                          className="inline-block font-medium underline"
+                          href={`/dashboard/campaigns/${campaignId}/channels`}
+                        >
+                          Abrir / reconectar instancia
+                        </Link>
+                      ) : null}
+                    </div>
+                  ) : null}
+
                   {canWrite && !sendBlocked ? (
                     <form className="space-y-2" onSubmit={(event) => void handleSendReply(event)}>
                       <label className="block">
@@ -723,11 +766,11 @@ export default function CampaignInboxPage() {
                           }}
                           placeholder="Escreva a mensagem para enviar pelo WhatsApp"
                           maxLength={4000}
-                          disabled={sending}
+                          disabled={sending || instanceDisconnected}
                           onKeyDown={(event) => {
                             if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
                               event.preventDefault();
-                              void handleSendReply();
+                              if (!instanceDisconnected) void handleSendReply();
                             }
                           }}
                         />
@@ -753,6 +796,13 @@ export default function CampaignInboxPage() {
                         </p>
                       ) : null}
                     </form>
+                  ) : null}
+
+                  {canWrite && instanceDisconnected && replyBody.trim() ? (
+                    <p className="text-xs text-[#65655f]">
+                      Texto preservado. Apos reconectar a instancia, voce podera
+                      enviar nesta mesma conversa.
+                    </p>
                   ) : null}
 
                   {!canWrite ? (

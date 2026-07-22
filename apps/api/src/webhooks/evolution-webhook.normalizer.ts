@@ -106,6 +106,37 @@ function isMessageEvent(event: string | null): boolean {
   );
 }
 
+export function isConnectionUpdateEvent(event: string | null): boolean {
+  if (!event) return false;
+  const normalized = event.toLowerCase().replace(/_/g, '.');
+  return normalized.includes('connection.update') || normalized === 'connection';
+}
+
+/**
+ * Extrai o estado de conexao de payloads connection.update da Evolution
+ * (variacoes comuns entre versoes da API).
+ */
+export function extractEvolutionConnectionState(
+  payload: unknown,
+): string | null {
+  const root = asRecord(payload);
+  if (!root) return null;
+
+  const data = asRecord(root.data);
+  const instance = asRecord(root.instance);
+
+  return (
+    asString(data?.state) ??
+    asString(data?.status) ??
+    asString(data?.connection) ??
+    asString(asRecord(data?.instance)?.state) ??
+    asString(root.state) ??
+    asString(root.status) ??
+    asString(instance?.state) ??
+    null
+  );
+}
+
 export function normalizeEvolutionWebhookPayload(
   payload: unknown,
 ): NormalizedEvolutionInbound[] {

@@ -358,6 +358,16 @@ export function maskDestination(destination: string | null | undefined): string 
   return `${'*'.repeat(Math.max(4, value.length - 4))}${visible}`;
 }
 
+/** Mascara providerMessageId para resposta API/UI (diagnostico seguro). */
+export function maskProviderMessageId(
+  providerMessageId: string | null | undefined,
+): string | null {
+  const value = (providerMessageId ?? '').trim();
+  if (!value) return null;
+  if (value.length <= 8) return `${value.slice(0, 2)}…`;
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
 export function extractContactName(contactSnapshot: unknown): string | null {
   const snapshot = contactSnapshot as { name?: unknown } | null;
   return typeof snapshot?.name === 'string' && snapshot.name.trim()

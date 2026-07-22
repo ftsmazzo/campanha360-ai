@@ -15,6 +15,7 @@ import {
   clearStoredToken,
   fetchCampaign,
   fetchDispatch,
+  fetchDispatchItem,
   fetchDispatchItems,
   fetchMe,
   getStoredToken,
@@ -29,6 +30,8 @@ import {
   getDispatchChannelOperationalStatusLabel,
 } from '../../../../../../lib/dispatch-plans';
 import {
+  getDispatchItemDiagnosticNote,
+  getDispatchItemErrorCategoryLabel,
   getDispatchItemStatusLabel,
   getDispatchProgressSteps,
   getDispatchStatusBadgeClass,
@@ -66,6 +69,33 @@ export default function DispatchDetailPage() {
   );
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const [selectedItem, setSelectedItem] =
+    useState<DispatchItemListEntry | null>(null);
+  const [itemDetailLoading, setItemDetailLoading] = useState(false);
+
+  const openItemDetails = async (item: DispatchItemListEntry) => {
+    setSelectedItem(item);
+    setItemDetailLoading(true);
+    try {
+      const token = getStoredToken();
+      if (!token) return;
+      const detail = await fetchDispatchItem(
+        token,
+        campaignId,
+        dispatchId,
+        item.id,
+      );
+      setSelectedItem(detail);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel carregar o detalhe do item.',
+      );
+    } finally {
+      setItemDetailLoading(false);
+    }
+  };
 
   const canApprove = campaign
     ? canApproveRole(
@@ -812,11 +842,13 @@ export default function DispatchDetailPage() {
                         <th className="px-2 py-2 font-medium">Contato</th>
                         <th className="px-2 py-2 font-medium">Destino</th>
                         <th className="px-2 py-2 font-medium">Status</th>
+                        <th className="px-2 py-2 font-medium">Diagnostico</th>
                         <th className="px-2 py-2 font-medium">Instancia</th>
                         <th className="px-2 py-2 font-medium">Realocacoes</th>
                         <th className="px-2 py-2 font-medium">Agendado</th>
                         <th className="px-2 py-2 font-medium">Fila</th>
                         <th className="px-2 py-2 font-medium">Tecnico</th>
+                        <th className="px-2 py-2 font-medium">Acoes</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -834,10 +866,16 @@ export default function DispatchDetailPage() {
                           <td className="px-2 py-2">
                             {getDispatchItemStatusLabel(item.status)}
                           </td>
-                          <td className="px-2 py-2 font-mono text-xs">
-                            {item.dispatchChannelId
-                              ? `${item.dispatchChannelId.slice(0, 8)}…`
+                          <td className="px-2 py-2 text-xs text-[#65655f]">
+                            {item.errorCode || item.errorCategory
+                              ? `${item.errorCategory ?? '—'} / ${item.errorCode ?? '—'}`
                               : '—'}
+                          </td>
+                          <td className="px-2 py-2 font-mono text-xs">
+                            {item.dispatchChannel?.channelAccountName ??
+                              (item.dispatchChannelId
+                                ? `${item.dispatchChannelId.slice(0, 8)}…`
+                                : '—')}
                             {item.originalDispatchChannelId &&
                             item.originalDispatchChannelId !==
                               item.dispatchChannelId
@@ -864,11 +902,148 @@ export default function DispatchDetailPage() {
                                 ).toLocaleString('pt-BR')
                               : '—'}
                           </td>
+                          <td className="px-2 py-2">
+                            <button
+                              type="button"
+                              className="rounded border border-[#c9c8c0] px-2 py-1 text-xs text-[#24382b] hover:bg-[#f7f6f1]"
+                              onClick={() => void openItemDetails(item)}
+                            >
+                              Detalhes
+                            </button>
+                          </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
+
+                {selectedItem ? (
+                  <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
+                    <div className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-md border border-[#deddd4] bg-white p-4 shadow-lg">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <h4 className="font-semibold text-[#151515]">
+                            Detalhe do item
+                          </h4>
+                          <p className="mt-1 text-xs text-[#65655f]">
+                            {selectedItem.contactName ?? 'Contato'} ·{' '}
+                            {selectedItem.destinationMasked}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="rounded border border-[#c9c8c0] px-2 py-1 text-xs"
+                          onClick={() => setSelectedItem(null)}
+                        >
+                          Fechar
+                        </button>
+                      </div>
+
+                      {itemDetailLoading ? (
+                        <p className="mt-4 text-sm text-[#65655f]">
+                          Carregando diagnostico…
+                        </p>
+                      ) : (
+                        <dl className="mt-4 space-y-2 text-sm text-[#24382b]">
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Status</dt>
+                            <dd>
+                              {getDispatchItemStatusLabel(selectedItem.status)}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Instancia</dt>
+                            <dd>
+                              {selectedItem.dispatchChannel
+                                ?.channelAccountName ??
+                                selectedItem.dispatchChannelId?.slice(0, 8) ??
+                                '—'}
+                              {selectedItem.dispatchChannel?.externalAccountId
+                                ? ` (${selectedItem.dispatchChannel.externalAccountId})`
+                                : ''}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Tentativa</dt>
+                            <dd>
+                              {selectedItem.attemptCount}/
+                              {selectedItem.maxAttempts}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Categoria</dt>
+                            <dd>
+                              {getDispatchItemErrorCategoryLabel(
+                                selectedItem.errorCategory,
+                              )}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Codigo</dt>
+                            <dd className="font-mono text-xs">
+                              {selectedItem.errorCode ?? '—'}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-[#65655f]">
+                              Mensagem operacional
+                            </dt>
+                            <dd className="mt-1 rounded bg-[#f7f6f1] p-2 text-xs">
+                              {selectedItem.errorMessage ?? '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Ultima tentativa</dt>
+                            <dd className="text-xs">
+                              {selectedItem.lastAttemptAt
+                                ? new Date(
+                                    selectedItem.lastAttemptAt,
+                                  ).toLocaleString('pt-BR')
+                                : '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Proxima tentativa</dt>
+                            <dd className="text-xs">
+                              {selectedItem.nextRetryAt
+                                ? new Date(
+                                    selectedItem.nextRetryAt,
+                                  ).toLocaleString('pt-BR')
+                                : '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Provider status</dt>
+                            <dd>{selectedItem.providerStatus ?? '—'}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">
+                              providerMessageId
+                            </dt>
+                            <dd className="font-mono text-xs">
+                              {selectedItem.providerMessageIdMasked ?? '—'}
+                            </dd>
+                          </div>
+                          {getDispatchItemDiagnosticNote(selectedItem.status) ? (
+                            <p
+                              className={`mt-3 rounded border p-2 text-xs ${
+                                selectedItem.status === 'UNKNOWN_PROVIDER_STATE'
+                                  ? 'border-red-200 bg-red-50 text-red-800'
+                                  : selectedItem.status === 'RETRY_SCHEDULED'
+                                    ? 'border-amber-200 bg-amber-50 text-amber-900'
+                                    : 'border-[#deddd4] bg-[#f7f6f1] text-[#24382b]'
+                              }`}
+                            >
+                              {getDispatchItemDiagnosticNote(
+                                selectedItem.status,
+                              )}
+                            </p>
+                          ) : null}
+                        </dl>
+                      )}
+                    </div>
+                  </div>
+                ) : null}
 
                 {itemsTotal > 20 ? (
                   <div className="mt-3 flex gap-2">

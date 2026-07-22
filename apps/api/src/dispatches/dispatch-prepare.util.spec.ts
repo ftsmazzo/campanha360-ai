@@ -19,6 +19,7 @@ import {
   canPrepareDispatch,
   isDispatchStartWithinPilotLimit,
   maskDestination,
+  maskProviderMessageId,
 } from './dispatch-prepare.util';
 
 const START_FLAG_KEYS = [
@@ -131,6 +132,8 @@ describe('dispatch-prepare.util', () => {
 
   it('mascara destination e controla canPrepare', () => {
     assert.match(maskDestination('5511999990001'), /\*{4,}0001$/);
+    assert.equal(maskProviderMessageId(null), null);
+    assert.equal(maskProviderMessageId('ABCDEF1234567890'), 'ABCDEF…7890');
     assert.equal(
       canPrepareDispatch({
         role: MembershipRole.OWNER,

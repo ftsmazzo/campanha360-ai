@@ -660,6 +660,87 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
     );
     assert.equal(result.action, 'SENT');
   });
+
+  it('SEND=false + RETRY_SCHEDULED: BLOCKED_SEND_DISABLED sem chamar Evolution e preserva status', async () => {
+    enableFlags();
+    delete process.env.DISPATCH_SEND_ENABLED;
+    const futureRetry = new Date(INSIDE_WINDOW_NOW.getTime() + 5 * 60_000);
+    const harness = createRealSendHarness({
+      item: realSendItem({
+        status: 'RETRY_SCHEDULED',
+        attemptCount: 1,
+        nextRetryAt: futureRetry,
+        errorCategory: 'TRANSIENT_NETWORK',
+        errorCode: 'NETWORK_ERROR',
+        errorMessage: 'Falha de rede antes de resposta do provider',
+      }),
+    });
+    let called = false;
+    let delayedTo: number | null = null;
+    const result = await processDispatchSendJob(
+      {
+        data: basePayload(),
+        moveToDelayed: async (timestamp: number) => {
+          delayedTo = timestamp;
+        },
+      },
+      {
+        prisma: harness.prisma,
+        now: () => INSIDE_WINDOW_NOW,
+        sendText: async () => {
+          called = true;
+          return {
+            success: true,
+            providerMessageId: 'should-not',
+            providerStatus: null,
+            httpStatus: 200,
+          };
+        },
+      },
+    );
+
+    assert.equal(result.action, 'BLOCKED_SEND_DISABLED');
+    assert.equal(result.send, false);
+    assert.equal(called, false);
+    const item = harness.getItem()!;
+    assert.equal(item.status, 'RETRY_SCHEDULED');
+    assert.equal(item.errorCode, 'NETWORK_ERROR');
+    assert.equal(delayedTo, futureRetry.getTime());
+  });
+
+  it('SEND=false + FAILED: BLOCKED_SEND_DISABLED sem reenvio', async () => {
+    enableFlags();
+    delete process.env.DISPATCH_SEND_ENABLED;
+    const harness = createRealSendHarness({
+      item: realSendItem({
+        status: 'FAILED',
+        attemptCount: 1,
+        errorCategory: 'CONTENT_REJECTED',
+        errorCode: 'HTTP_400',
+        failedAt: INSIDE_WINDOW_NOW,
+      }),
+    });
+    let called = false;
+    const result = await processDispatchSendJob(
+      { data: basePayload() },
+      {
+        prisma: harness.prisma,
+        now: () => INSIDE_WINDOW_NOW,
+        sendText: async () => {
+          called = true;
+          return {
+            success: true,
+            providerMessageId: 'x',
+            providerStatus: null,
+            httpStatus: 200,
+          };
+        },
+      },
+    );
+    assert.equal(result.action, 'BLOCKED_SEND_DISABLED');
+    assert.equal(called, false);
+    assert.equal(harness.getItem()?.status, 'FAILED');
+  });
 });
 
 describe('processDispatchSendJob (worker 09.3)', () => {

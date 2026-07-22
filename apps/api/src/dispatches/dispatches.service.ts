@@ -38,6 +38,7 @@ import {
   buildPreparedDispatchItems,
   extractContactName,
   maskDestination,
+  maskProviderMessageId,
 } from './dispatch-prepare.util';
 import { CreateDispatchDto } from './dto/create-dispatch.dto';
 import { ListDispatchItemsQueryDto } from './dto/list-dispatch-items-query.dto';
@@ -1226,11 +1227,31 @@ export class DispatchesService {
           sentAt: true,
           failedAt: true,
           skippedAt: true,
+          providerMessageId: true,
+          providerStatus: true,
           errorCategory: true,
           errorCode: true,
+          errorMessage: true,
+          lastAttemptAt: true,
+          nextRetryAt: true,
           technicalValidatedAt: true,
           queueJobId: true,
           createdAt: true,
+          dispatchChannel: {
+            select: {
+              id: true,
+              channelAccountId: true,
+              operationalStatus: true,
+              channelAccount: {
+                select: {
+                  id: true,
+                  name: true,
+                  externalAccountId: true,
+                  status: true,
+                },
+              },
+            },
+          },
         },
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         skip: (page - 1) * limit,
@@ -1259,10 +1280,26 @@ export class DispatchesService {
           sentAt: item.sentAt,
           failedAt: item.failedAt,
           skippedAt: item.skippedAt,
+          providerMessageIdMasked: maskProviderMessageId(item.providerMessageId),
+          providerStatus: item.providerStatus,
           errorCategory: item.errorCategory,
           errorCode: item.errorCode,
+          errorMessage: item.errorMessage,
+          lastAttemptAt: item.lastAttemptAt,
+          nextRetryAt: item.nextRetryAt,
           technicalValidatedAt: item.technicalValidatedAt,
           queueJobId: item.queueJobId,
+          dispatchChannel: item.dispatchChannel
+            ? {
+                id: item.dispatchChannel.id,
+                channelAccountId: item.dispatchChannel.channelAccountId,
+                operationalStatus: item.dispatchChannel.operationalStatus,
+                channelAccountName: item.dispatchChannel.channelAccount.name,
+                externalAccountId:
+                  item.dispatchChannel.channelAccount.externalAccountId,
+                channelAccountStatus: item.dispatchChannel.channelAccount.status,
+              }
+            : null,
           contentHash:
             typeof content?.hash === 'string' ? content.hash : null,
           createdAt: item.createdAt,
@@ -1349,6 +1386,21 @@ export class DispatchesService {
             eligibilityStatus: true,
           },
         },
+        dispatchChannel: {
+          select: {
+            id: true,
+            channelAccountId: true,
+            operationalStatus: true,
+            channelAccount: {
+              select: {
+                id: true,
+                name: true,
+                externalAccountId: true,
+                status: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -1385,7 +1437,7 @@ export class DispatchesService {
       failedAt: item.failedAt,
       skippedAt: item.skippedAt,
       canceledAt: item.canceledAt,
-      providerMessageId: item.providerMessageId,
+      providerMessageIdMasked: maskProviderMessageId(item.providerMessageId),
       providerStatus: item.providerStatus,
       errorCategory: item.errorCategory,
       errorCode: item.errorCode,
@@ -1400,6 +1452,17 @@ export class DispatchesService {
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       dispatchPlanRecipient: item.dispatchPlanRecipient,
+      dispatchChannel: item.dispatchChannel
+        ? {
+            id: item.dispatchChannel.id,
+            channelAccountId: item.dispatchChannel.channelAccountId,
+            operationalStatus: item.dispatchChannel.operationalStatus,
+            channelAccountName: item.dispatchChannel.channelAccount.name,
+            externalAccountId:
+              item.dispatchChannel.channelAccount.externalAccountId,
+            channelAccountStatus: item.dispatchChannel.channelAccount.status,
+          }
+        : null,
     };
   }
 

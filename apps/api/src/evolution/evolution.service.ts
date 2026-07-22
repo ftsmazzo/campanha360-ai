@@ -14,6 +14,7 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { mapEvolutionConnectionStateToStatus } from './evolution-connection.util';
 import {
   EVOLUTION_INSTANCE_NOT_FOUND_MESSAGE,
   EvolutionAdapter,
@@ -438,26 +439,7 @@ export class EvolutionService {
   }
 
   private mapEvolutionStateToStatus(state?: string | null): ChannelAccountStatus | null {
-    if (!state) return null;
-    const normalized = state.trim().toLowerCase();
-
-    if (['open', 'connected', 'authenticated'].includes(normalized)) {
-      return ChannelAccountStatus.CONNECTED;
-    }
-
-    if (['connecting', 'pairing', 'qr', 'qrcode', 'timeout'].includes(normalized)) {
-      return ChannelAccountStatus.CONNECTING;
-    }
-
-    if (['close', 'closed', 'disconnected', 'logout'].includes(normalized)) {
-      return ChannelAccountStatus.DISCONNECTED;
-    }
-
-    if (['error', 'failed', 'conflict'].includes(normalized)) {
-      return ChannelAccountStatus.ERROR;
-    }
-
-    return null;
+    return mapEvolutionConnectionStateToStatus(state);
   }
 
   private async markAccountDisconnected(

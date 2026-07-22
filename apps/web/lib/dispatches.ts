@@ -95,6 +95,54 @@ export function getDispatchItemStatusLabel(status: string): string {
   }
 }
 
+export function getDispatchItemErrorCategoryLabel(
+  category: string | null | undefined,
+): string {
+  if (!category) return '—';
+  switch (category) {
+    case 'TRANSIENT_NETWORK':
+      return 'Rede transitória';
+    case 'PROVIDER_RATE_LIMIT':
+      return 'Limite de taxa (429)';
+    case 'PROVIDER_UNAVAILABLE':
+      return 'Provider indisponível';
+    case 'PROVIDER_TIMEOUT':
+      return 'Timeout do provider';
+    case 'CHANNEL_DISCONNECTED':
+      return 'Canal desconectado';
+    case 'AUTHENTICATION_ERROR':
+      return 'Autenticação';
+    case 'INVALID_DESTINATION':
+      return 'Destino inválido';
+    case 'CONTENT_REJECTED':
+      return 'Conteúdo rejeitado';
+    case 'CONTACT_OPT_OUT':
+      return 'Opt-out';
+    case 'CONTACT_BLOCKED':
+      return 'Contato bloqueado';
+    case 'CONTACT_DELETED':
+      return 'Contato excluído';
+    case 'UNKNOWN':
+      return 'Desconhecido';
+    default:
+      return category;
+  }
+}
+
+/** Aviso operacional para o painel de detalhes do item (diagnóstico seguro). */
+export function getDispatchItemDiagnosticNote(status: string): string | null {
+  switch (status) {
+    case 'FAILED':
+      return 'Este item falhou de forma definitiva. Não haverá retry automático.';
+    case 'RETRY_SCHEDULED':
+      return 'Há uma próxima tentativa agendada. Enquanto DISPATCH_SEND_ENABLED=false, o Worker não chamará a Evolution.';
+    case 'UNKNOWN_PROVIDER_STATE':
+      return 'Estado do provider é incerto. Não reenvie automaticamente — revise logs e o providerMessageId antes de qualquer ação manual.';
+    default:
+      return null;
+  }
+}
+
 export type DispatchProgressStep = {
   id: 'creation' | 'preparation' | 'queue' | 'execution' | 'completion';
   label: string;
