@@ -122,7 +122,7 @@ describe('dispatch-operational.util (09.5)', () => {
     assert.equal(adminPaused.canPause, false);
   });
 
-  it('contadores: agrega SCHEDULED/RETRY e UNKNOWN em failed', () => {
+  it('contadores: agrega SCHEDULED/RETRY; UNKNOWN separado de failed', () => {
     const counts = computeDispatchCountersFromStatusMap({
       PENDING: 1,
       QUEUED: 2,
@@ -139,7 +139,8 @@ describe('dispatch-operational.util (09.5)', () => {
     assert.equal(counts.queuedItems, 4);
     assert.equal(counts.processingItems, 1);
     assert.equal(counts.sentItems, 3);
-    assert.equal(counts.failedItems, 2);
+    assert.equal(counts.failedItems, 1);
+    assert.equal(counts.unknownItems, 1);
     assert.equal(counts.canceledItems, 2);
   });
 });

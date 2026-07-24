@@ -166,7 +166,24 @@ enum DispatchItemErrorCategory {
   DISPATCH_CANCELED
   OUTSIDE_WINDOW
   DUPLICATE_PREVENTED
+  ADMIN_CONFIRMED_NOT_SENT
+  UNKNOWN_ABANDONED
   UNKNOWN
+}
+
+enum DispatchRetryMode {
+  AUTOMATIC
+  MANUAL
+  RECOVERY
+}
+
+enum DispatchItemAttemptOutcome {
+  SENT
+  FAILED
+  RETRY_SCHEDULED
+  UNKNOWN_PROVIDER_STATE
+  SKIPPED
+  CANCELED
 }
 
 enum ProtectionProfile {
@@ -217,6 +234,7 @@ model User {
   pausedDispatches Dispatch[] @relation("DispatchPausedBy")
   canceledDispatches Dispatch[] @relation("DispatchCanceledBy")
   emergencyStoppedDispatches Dispatch[] @relation("DispatchEmergencyStoppedBy")
+  retryRequestedDispatchItems DispatchItem[] @relation("DispatchItemRetryRequestedBy")
   contactNotes ContactNote[]
   createdContactTasks ContactTask[] @relation("ContactTaskCreatedBy")
   assignedContactTasks ContactTask[] @relation("ContactTaskAssignedTo")
@@ -237,6 +255,7 @@ model Organization {
   dispatchPlanChannels DispatchPlanChannel[]
   dispatches Dispatch[]
   dispatchItems DispatchItem[]
+  dispatchItemAttempts DispatchItemAttempt[]
   dispatchChannels DispatchChannel[]
   dispatchChannelUsageDaily DispatchChannelUsageDaily[]
   createdAt   DateTime           @default(now())
@@ -273,6 +292,7 @@ model Campaign {
   dispatchPlanChannels DispatchPlanChannel[]
   dispatches     Dispatch[]
   dispatchItems  DispatchItem[]
+  dispatchItemAttempts DispatchItemAttempt[]
   dispatchChannels DispatchChannel[]
   dispatchChannelUsageDaily DispatchChannelUsageDaily[]
   createdAt      DateTime           @default(now())
@@ -665,6 +685,7 @@ model Dispatch {
   failedItems           Int            @default(0)
   skippedItems          Int            @default(0)
   canceledItems         Int            @default(0)
+  unknownItems          Int            @default(0)
   createdByUserId       String
   preparedAt            DateTime?
   queuedAt              DateTime?
@@ -693,6 +714,7 @@ model Dispatch {
   canceledBy            User?          @relation("DispatchCanceledBy", fields: [canceledByUserId], references: [id])
   emergencyStoppedBy    User?          @relation("DispatchEmergencyStoppedBy", fields: [emergencyStoppedByUserId], references: [id])
   items                 DispatchItem[]
+  itemAttempts          DispatchItemAttempt[]
   channels              DispatchChannel[]
   requiringRedistribution Boolean      @default(false)
   multiInstance         Boolean        @default(false)
@@ -820,6 +842,10 @@ model DispatchItem {
   queueCreatedAt          DateTime?
   technicalValidatedAt    DateTime?
   lastQueueError          String?
+  retryMode               DispatchRetryMode?
+  retryRequestedAt        DateTime?
+  retryReason             String?
+  retryRequestedByUserId  String?
   metadata                Json?
   organization            Organization               @relation(fields: [organizationId], references: [id])
   campaign                Campaign                   @relation(fields: [campaignId], references: [id])
@@ -830,6 +856,8 @@ model DispatchItem {
   channelAccount          ChannelAccount             @relation(fields: [channelAccountId], references: [id])
   dispatchChannel         DispatchChannel?           @relation("DispatchItemChannel", fields: [dispatchChannelId], references: [id])
   originalDispatchChannel DispatchChannel?           @relation("DispatchItemOriginalChannel", fields: [originalDispatchChannelId], references: [id])
+  retryRequestedBy        User?                      @relation("DispatchItemRetryRequestedBy", fields: [retryRequestedByUserId], references: [id])
+  attempts                DispatchItemAttempt[]
   createdAt               DateTime                   @default(now())
   updatedAt               DateTime                   @updatedAt
 
@@ -847,4 +875,44 @@ model DispatchItem {
   @@index([lockedAt])
   @@index([createdAt])
   @@index([queueJobId])
+  @@index([retryRequestedByUserId])
+}
+
+/**
+ * Historico de tentativas de envio (09.6). Uma linha por attemptNumber
+ * do item — nao sobrescreve o resultado anterior.
+ */
+model DispatchItemAttempt {
+  id                 String                      @id @default(cuid())
+  organizationId     String
+  campaignId         String
+  dispatchId         String
+  dispatchItemId     String
+  attemptNumber      Int
+  channelAccountId   String?
+  dispatchChannelId  String?
+  startedAt          DateTime
+  completedAt        DateTime?
+  outcome            DispatchItemAttemptOutcome?
+  providerStatus     String?
+  providerMessageId  String?
+  httpStatus         Int?
+  errorCategory      DispatchItemErrorCategory?
+  errorCode          String?
+  errorMessage       String?
+  ambiguous          Boolean                     @default(false)
+  manual             Boolean                     @default(false)
+  retryMode          DispatchRetryMode?
+  organization       Organization                @relation(fields: [organizationId], references: [id])
+  campaign           Campaign                    @relation(fields: [campaignId], references: [id])
+  dispatch           Dispatch                    @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  dispatchItem       DispatchItem                @relation(fields: [dispatchItemId], references: [id], onDelete: Cascade)
+  createdAt          DateTime                    @default(now())
+  updatedAt          DateTime                    @updatedAt
+
+  @@unique([dispatchItemId, attemptNumber])
+  @@index([dispatchId])
+  @@index([dispatchItemId])
+  @@index([organizationId, campaignId])
+  @@index([outcome])
 }

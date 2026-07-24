@@ -195,6 +195,7 @@ export type DispatchCounterCounts = {
   failedItems: number;
   skippedItems: number;
   canceledItems: number;
+  unknownItems: number;
 };
 
 export function computeDispatchCountersFromStatusMap(
@@ -209,9 +210,8 @@ export function computeDispatchCountersFromStatusMap(
   const sentItems = counts[DispatchItemStatus.SENT] ?? 0;
   const deliveredItems = counts[DispatchItemStatus.DELIVERED] ?? 0;
   const readItems = counts[DispatchItemStatus.READ] ?? 0;
-  const failedItems =
-    (counts[DispatchItemStatus.FAILED] ?? 0) +
-    (counts[DispatchItemStatus.UNKNOWN_PROVIDER_STATE] ?? 0);
+  const failedItems = counts[DispatchItemStatus.FAILED] ?? 0;
+  const unknownItems = counts[DispatchItemStatus.UNKNOWN_PROVIDER_STATE] ?? 0;
   const skippedItems = counts[DispatchItemStatus.SKIPPED] ?? 0;
   const canceledItems = counts[DispatchItemStatus.CANCELED] ?? 0;
 
@@ -225,6 +225,7 @@ export function computeDispatchCountersFromStatusMap(
     failedItems,
     skippedItems,
     canceledItems,
+    unknownItems,
   };
 }
 

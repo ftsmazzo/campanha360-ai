@@ -40,6 +40,10 @@ import {
   maskDestination,
   maskProviderMessageId,
 } from './dispatch-prepare.util';
+import {
+  evaluateManualRetryEligibility,
+  isDispatchSendEnabled,
+} from '@campanha360/shared';
 import { CreateDispatchDto } from './dto/create-dispatch.dto';
 import { ListDispatchItemsQueryDto } from './dto/list-dispatch-items-query.dto';
 import { ListDispatchesQueryDto } from './dto/list-dispatches-query.dto';
@@ -105,6 +109,7 @@ const detailSelect = {
   failedItems: true,
   skippedItems: true,
   canceledItems: true,
+  unknownItems: true,
   createdByUserId: true,
   preparedAt: true,
   queuedAt: true,
@@ -1341,7 +1346,11 @@ export class DispatchesService {
     dispatchItemId: string,
   ) {
     const campaign = await this.getCampaignContext(userId, campaignId);
-    await this.requireDispatch(
+    const membership = await this.organizationAccess.requireMembership(
+      userId,
+      campaign.organizationId,
+    );
+    const dispatch = await this.requireDispatch(
       campaign.organizationId,
       campaignId,
       dispatchId,
@@ -1376,6 +1385,8 @@ export class DispatchesService {
         queuedAt: true,
         lockedAt: true,
         startedAt: true,
+        providerRequestStartedAt: true,
+        providerRequestCompletedAt: true,
         sentAt: true,
         deliveredAt: true,
         readAt: true,
@@ -1424,6 +1435,22 @@ export class DispatchesService {
       throw new NotFoundException('DispatchItem nao encontrado');
     }
 
+    const canApprove =
+      membership.role === 'OWNER' || membership.role === 'ADMIN';
+    const isOwner = membership.role === 'OWNER';
+    const dispatchOk =
+      dispatch.status === 'RUNNING' || dispatch.status === 'PAUSED';
+    const retryEval = evaluateManualRetryEligibility({
+      status: item.status,
+      providerMessageId: item.providerMessageId,
+      sentAt: item.sentAt,
+      errorCategory: item.errorCategory,
+      attemptCount: item.attemptCount,
+      maxAttempts: item.maxAttempts,
+      allowExtraManualAttempt: true,
+    });
+    const isUnknown = item.status === 'UNKNOWN_PROVIDER_STATE';
+
     return {
       id: item.id,
       organizationId: item.organizationId,
@@ -1447,6 +1474,8 @@ export class DispatchesService {
       queuedAt: item.queuedAt,
       lockedAt: item.lockedAt,
       startedAt: item.startedAt,
+      providerRequestStartedAt: item.providerRequestStartedAt,
+      providerRequestCompletedAt: item.providerRequestCompletedAt,
       sentAt: item.sentAt,
       deliveredAt: item.deliveredAt,
       readAt: item.readAt,
@@ -1479,6 +1508,15 @@ export class DispatchesService {
             channelAccountStatus: item.dispatchChannel.channelAccount.status,
           }
         : null,
+      allowedActions: {
+        canRetryManually:
+          canApprove && dispatchOk && retryEval.allowed && isDispatchSendEnabled(),
+        canResolveUnknown: isOwner && isUnknown,
+        canConfirmSent: isOwner && isUnknown,
+        canConfirmNotSent: isOwner && isUnknown,
+        canAbandonUnknown: isOwner && isUnknown,
+        retryBlockedReason: retryEval.allowed ? null : retryEval.reason,
+      },
     };
   }
 

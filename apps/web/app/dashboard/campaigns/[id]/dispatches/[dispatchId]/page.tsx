@@ -10,24 +10,32 @@ import {
   CampaignItem,
   DispatchDetail,
   DispatchItemListEntry,
+  DispatchItemDetail,
   QueueDispatchResponse,
   StartDispatchResponse,
   clearStoredToken,
   fetchCampaign,
   fetchDispatch,
   fetchDispatchItem,
+  fetchDispatchItemAttempts,
   fetchDispatchItems,
+  fetchDispatchRecovery,
   fetchMe,
   getStoredToken,
   pauseDispatch,
   prepareDispatch,
   queueDispatch,
+  recoverDispatch,
   redistributeDispatch,
   reconcileDispatchQueue,
+  resolveUnknownDispatchItem,
   resumeDispatch,
+  retryDispatchItem,
+  retryFailedDispatchItems,
   cancelDispatch,
   emergencyStopDispatch,
   startDispatch,
+  type DispatchRecoveryInspection,
 } from '../../../../../../lib/api';
 import {
   formatDurationSeconds,
@@ -75,6 +83,28 @@ export default function DispatchDetailPage() {
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [showEmergencyConfirm, setShowEmergencyConfirm] = useState(false);
   const [operationalReason, setOperationalReason] = useState('');
+  const [recovery, setRecovery] = useState<DispatchRecoveryInspection | null>(
+    null,
+  );
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [recovering, setRecovering] = useState(false);
+  const [showRecoverConfirm, setShowRecoverConfirm] = useState(false);
+  const [itemAttempts, setItemAttempts] = useState<
+    Array<{
+      id: string;
+      attemptNumber: number;
+      startedAt: string;
+      completedAt: string | null;
+      outcome: string | null;
+      errorCategory: string | null;
+      errorCode: string | null;
+      ambiguous: boolean;
+      manual: boolean;
+      providerMessageIdMasked: string | null;
+    }>
+  >([]);
+  const [retryReason, setRetryReason] = useState('');
+  const [resolveReason, setResolveReason] = useState('');
   const [queueResult, setQueueResult] = useState<QueueDispatchResponse | null>(
     null,
   );
@@ -84,12 +114,13 @@ export default function DispatchDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] =
-    useState<DispatchItemListEntry | null>(null);
+    useState<DispatchItemListEntry | DispatchItemDetail | null>(null);
   const [itemDetailLoading, setItemDetailLoading] = useState(false);
 
   const openItemDetails = async (item: DispatchItemListEntry) => {
     setSelectedItem(item);
     setItemDetailLoading(true);
+    setItemAttempts([]);
     try {
       const token = getStoredToken();
       if (!token) return;
@@ -100,6 +131,17 @@ export default function DispatchDetailPage() {
         item.id,
       );
       setSelectedItem(detail);
+      try {
+        const attempts = await fetchDispatchItemAttempts(
+          token,
+          campaignId,
+          dispatchId,
+          item.id,
+        );
+        setItemAttempts(attempts.attempts);
+      } catch {
+        setItemAttempts([]);
+      }
     } catch (err) {
       setError(
         err instanceof ApiError
@@ -413,6 +455,130 @@ export default function DispatchDetailPage() {
     }
   }
 
+  async function onAnalyzeRecovery() {
+    const token = getStoredToken();
+    if (!token) return;
+    setRecoveryLoading(true);
+    setError(null);
+    try {
+      const result = await fetchDispatchRecovery(token, campaignId, dispatchId);
+      setRecovery(result);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel analisar a recuperacao',
+      );
+    } finally {
+      setRecoveryLoading(false);
+    }
+  }
+
+  async function onRecoverSafe() {
+    const token = getStoredToken();
+    if (!token) return;
+    setRecovering(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await recoverDispatch(
+        token,
+        campaignId,
+        dispatchId,
+        operationalReason.trim() || 'Recuperacao tecnica segura',
+      );
+      setShowRecoverConfirm(false);
+      setSuccess(
+        `Recuperacao: ${result.requeued} republicado(s), ${result.markedUnknown} marcado(s) UNKNOWN, ${result.skipped} ignorado(s).`,
+      );
+      await onAnalyzeRecovery();
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel recuperar itens',
+      );
+    } finally {
+      setRecovering(false);
+    }
+  }
+
+  async function onRetryItem() {
+    if (!selectedItem) return;
+    const token = getStoredToken();
+    if (!token) return;
+    setError(null);
+    try {
+      await retryDispatchItem(
+        token,
+        campaignId,
+        dispatchId,
+        selectedItem.id,
+        retryReason.trim(),
+      );
+      setRetryReason('');
+      setSuccess('Nova tentativa solicitada. Historico anterior preservado.');
+      await openItemDetails(selectedItem);
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : 'Falha no retry manual',
+      );
+    }
+  }
+
+  async function onResolveUnknown(
+    resolution: 'CONFIRMED_SENT' | 'CONFIRMED_NOT_SENT' | 'ABANDONED',
+  ) {
+    if (!selectedItem) return;
+    const token = getStoredToken();
+    if (!token) return;
+    setError(null);
+    try {
+      await resolveUnknownDispatchItem(
+        token,
+        campaignId,
+        dispatchId,
+        selectedItem.id,
+        { resolution, reason: resolveReason.trim() },
+      );
+      setResolveReason('');
+      setSuccess('Estado desconhecido resolvido.');
+      setSelectedItem(null);
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Falha ao resolver estado desconhecido',
+      );
+    }
+  }
+
+  async function onRetryFailedBatch() {
+    const token = getStoredToken();
+    if (!token) return;
+    setError(null);
+    try {
+      const result = await retryFailedDispatchItems(
+        token,
+        campaignId,
+        dispatchId,
+        'Retry em lote de falhas elegiveis',
+        20,
+      );
+      setSuccess(
+        `Retry em lote: ${result.republished} de ${result.requested} republicado(s).`,
+      );
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError ? err.message : 'Falha no retry em lote',
+      );
+    }
+  }
+
   async function onQueue() {
     const token = getStoredToken();
     if (!token) return;
@@ -464,6 +630,12 @@ export default function DispatchDetailPage() {
     canApprove && (dispatch?.allowedActions?.canCancel ?? false);
   const canEmergencyStopAction =
     canApprove && (dispatch?.allowedActions?.canEmergencyStop ?? false);
+  const canViewRecoveryAction =
+    canApprove && (dispatch?.allowedActions?.canViewRecovery ?? true);
+  const canRecoverAction =
+    canApprove && (dispatch?.allowedActions?.canRecover ?? false);
+  const canRetryFailedBatchAction =
+    canApprove && (dispatch?.allowedActions?.canRetryFailedBatch ?? false);
 
   return (
     <DashboardShell userName={user?.name}>
@@ -471,7 +643,7 @@ export default function DispatchDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-sm font-medium uppercase tracking-wide text-[#65655f]">
-              Etapa 09.5 — controle operacional do disparo
+              Etapa 09.6 — recuperacao e retry seguro
             </p>
             <h2 className="mt-2 text-2xl font-semibold text-[#151515]">
               {dispatch?.name ?? 'Disparo'}
@@ -847,6 +1019,112 @@ export default function DispatchDetailPage() {
                 </button>
               ) : null}
             </div>
+
+            {canViewRecoveryAction ? (
+              <section className="rounded-md border border-[#deddd4] bg-white p-4">
+                <h3 className="font-semibold text-[#151515]">
+                  Recuperacao e tentativas
+                </h3>
+                <p className="mt-1 text-sm text-[#65655f]">
+                  Analise locks expirados, jobs ausentes, retries elegiveis e
+                  estados desconhecidos. UNKNOWN nunca e reenviado automaticamente.
+                </p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md border border-[#1e3a5f] px-3 py-2 text-sm font-medium text-[#1e3a5f]"
+                    disabled={recoveryLoading}
+                    onClick={() => void onAnalyzeRecovery()}
+                  >
+                    {recoveryLoading ? 'Analisando...' : 'Analisar recuperacao'}
+                  </button>
+                  {canRecoverAction ? (
+                    <button
+                      type="button"
+                      className="rounded-md bg-[#1e3a5f] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                      disabled={recovering}
+                      onClick={() => {
+                        setOperationalReason('Recuperacao tecnica segura');
+                        setShowRecoverConfirm(true);
+                      }}
+                    >
+                      Recuperar itens seguros
+                    </button>
+                  ) : null}
+                  {canRetryFailedBatchAction ? (
+                    <button
+                      type="button"
+                      className="rounded-md border border-[#24382b] px-3 py-2 text-sm font-medium text-[#24382b]"
+                      onClick={() => void onRetryFailedBatch()}
+                    >
+                      Retry manual em lote (max 20)
+                    </button>
+                  ) : null}
+                </div>
+                {recovery ? (
+                  <dl className="mt-4 grid gap-2 text-sm md:grid-cols-3">
+                    <div>
+                      <dt className="text-[#65655f]">Seguros (requeue)</dt>
+                      <dd>{recovery.summary.safeRequeue}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Retry elegivel</dt>
+                      <dd>{recovery.summary.safeRetry}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Locks expirados</dt>
+                      <dd>{recovery.summary.staleLocks}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Jobs ausentes</dt>
+                      <dd>{recovery.summary.missingJobs}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">UNKNOWN</dt>
+                      <dd>{recovery.summary.unknownProviderState}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Revisao manual</dt>
+                      <dd>{recovery.summary.manualReview}</dd>
+                    </div>
+                  </dl>
+                ) : null}
+                {showRecoverConfirm ? (
+                  <div className="mt-4 rounded-md border border-[#1e3a5f] bg-[#f7f9fc] p-3">
+                    <p className="text-sm text-[#24382b]">
+                      Apenas itens classificados como seguros serao republicados.
+                      PROCESSING ambiguo ira para UNKNOWN_PROVIDER_STATE.
+                    </p>
+                    <label className="mt-2 block text-sm text-[#65655f]">
+                      Motivo
+                      <textarea
+                        className="mt-1 w-full rounded-md border border-[#c9c8c0] px-3 py-2 text-sm"
+                        rows={2}
+                        value={operationalReason}
+                        onChange={(e) => setOperationalReason(e.target.value)}
+                      />
+                    </label>
+                    <div className="mt-3 flex gap-2">
+                      <button
+                        type="button"
+                        className="rounded-md bg-[#1e3a5f] px-3 py-2 text-sm font-semibold text-white"
+                        disabled={recovering || operationalReason.trim().length < 10}
+                        onClick={() => void onRecoverSafe()}
+                      >
+                        {recovering ? 'Recuperando...' : 'Confirmar recuperacao'}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm"
+                        onClick={() => setShowRecoverConfirm(false)}
+                      >
+                        Voltar
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
 
             {showPrepareConfirm ? (
               <div className="rounded-md border border-[#24382b] bg-white p-4">
@@ -1436,10 +1714,113 @@ export default function DispatchDetailPage() {
                                     : 'border-[#deddd4] bg-[#f7f6f1] text-[#24382b]'
                               }`}
                             >
-                              {getDispatchItemDiagnosticNote(
-                                selectedItem.status,
-                              )}
+                              {selectedItem.status === 'UNKNOWN_PROVIDER_STATE'
+                                ? 'Nao ha confirmacao confiavel se o provedor recebeu a mensagem. Reenviar diretamente pode gerar duplicidade.'
+                                : getDispatchItemDiagnosticNote(
+                                    selectedItem.status,
+                                  )}
                             </p>
+                          ) : null}
+
+                          {itemAttempts.length > 0 ? (
+                            <div className="mt-4">
+                              <h5 className="text-sm font-semibold text-[#151515]">
+                                Historico de tentativas
+                              </h5>
+                              <ul className="mt-2 space-y-2 text-xs text-[#24382b]">
+                                {itemAttempts.map((attempt) => (
+                                  <li
+                                    key={attempt.id}
+                                    className="rounded border border-[#deddd4] px-2 py-1"
+                                  >
+                                    #{attempt.attemptNumber} ·{' '}
+                                    {attempt.outcome ?? 'em andamento'}
+                                    {attempt.ambiguous ? ' · ambiguo' : ''}
+                                    {attempt.manual ? ' · manual' : ''}
+                                    {attempt.errorCode
+                                      ? ` · ${attempt.errorCode}`
+                                      : ''}
+                                    {attempt.providerMessageIdMasked
+                                      ? ` · id ${attempt.providerMessageIdMasked}`
+                                      : ''}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          ) : null}
+
+                          {'allowedActions' in selectedItem &&
+                          selectedItem.allowedActions &&
+                          selectedItem.allowedActions.canRetryManually ? (
+                            <div className="mt-4 space-y-2">
+                              <p className="text-xs text-[#65655f]">
+                                Uma nova tentativa sera criada. O historico
+                                anterior sera preservado.
+                              </p>
+                              <textarea
+                                className="w-full rounded-md border border-[#c9c8c0] px-2 py-1 text-sm"
+                                rows={2}
+                                placeholder="Motivo do retry (min. 10 caracteres)"
+                                value={retryReason}
+                                onChange={(e) => setRetryReason(e.target.value)}
+                              />
+                              <button
+                                type="button"
+                                className="rounded-md bg-[#24382b] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                                disabled={retryReason.trim().length < 10}
+                                onClick={() => void onRetryItem()}
+                              >
+                                Solicitar nova tentativa
+                              </button>
+                            </div>
+                          ) : null}
+
+                          {'allowedActions' in selectedItem &&
+                          selectedItem.allowedActions &&
+                          selectedItem.allowedActions.canResolveUnknown ? (
+                            <div className="mt-4 space-y-2">
+                              <textarea
+                                className="w-full rounded-md border border-[#c9c8c0] px-2 py-1 text-sm"
+                                rows={2}
+                                placeholder="Motivo da resolucao (obrigatorio)"
+                                value={resolveReason}
+                                onChange={(e) =>
+                                  setResolveReason(e.target.value)
+                                }
+                              />
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  className="rounded-md border border-green-700 px-2 py-1 text-xs font-medium text-green-800 disabled:opacity-60"
+                                  disabled={resolveReason.trim().length < 10}
+                                  onClick={() =>
+                                    void onResolveUnknown('CONFIRMED_SENT')
+                                  }
+                                >
+                                  Confirmar como enviada
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded-md border border-amber-700 px-2 py-1 text-xs font-medium text-amber-900 disabled:opacity-60"
+                                  disabled={resolveReason.trim().length < 10}
+                                  onClick={() =>
+                                    void onResolveUnknown('CONFIRMED_NOT_SENT')
+                                  }
+                                >
+                                  Confirmar que nao foi enviada
+                                </button>
+                                <button
+                                  type="button"
+                                  className="rounded-md border border-red-700 px-2 py-1 text-xs font-medium text-red-800 disabled:opacity-60"
+                                  disabled={resolveReason.trim().length < 10}
+                                  onClick={() =>
+                                    void onResolveUnknown('ABANDONED')
+                                  }
+                                >
+                                  Abandonar sem reenvio
+                                </button>
+                              </div>
+                            </div>
                           ) : null}
                         </dl>
                       )}
@@ -1484,9 +1865,9 @@ export default function DispatchDetailPage() {
             <section className="rounded-md border border-[#deddd4] bg-white p-4">
               <h3 className="font-semibold text-[#151515]">Proximas etapas</h3>
               <p className="mt-2 text-sm text-[#65655f]">
-                O envio real (Worker Evolution) foi implementado na subetapa
-                09.4. Pausar/retomar/cancelar em execucao permanecem para
-                subetapas futuras.
+                Recuperacao tecnica, retry manual e resolucao administrativa de
+                UNKNOWN estao disponiveis na 09.6. Homologar com
+                DISPATCH_SEND_ENABLED=false antes do piloto real.
               </p>
             </section>
           </div>

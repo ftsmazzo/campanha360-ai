@@ -2764,19 +2764,15 @@ O Épico 10 não deve alterar as garantias do Motor de Disparo.
 
 ## 45. Próxima ação prática
 
-A **09.1 — Entidade Dispatch**, a **09.2 — Materialização dos DispatchItems**, a **09.3 — Preparação e Enfileiramento**, a **09.4 — Worker de Envio** e a **09.5 — Controle Operacional** estão concluídas.
+A **09.1 — Entidade Dispatch**, a **09.2 — Materialização dos DispatchItems**, a **09.3 — Preparação e Enfileiramento**, a **09.4 — Worker de Envio**, a **09.5 — Controle Operacional** e a **09.6 — Recuperação / Retry Manual / UNKNOWN** estão concluídas.
 
-### Resultado da 09.5
+### Resultado da 09.6
 
-- Rotas: `POST .../pause`, `.../resume`, `.../cancel`, `.../emergency-stop` (OWNER/ADMIN).
-- Máquina de estados: `RUNNING→PAUSING→PAUSED`, `PAUSED→RUNNING`, canceláveis até `CANCELED`, emergência → `EMERGENCY_STOPPED` (sem retomada nesta etapa).
-- Worker bloqueia Evolution em `PAUSING`/`PAUSED`/`CANCELED`/`EMERGENCY_STOPPED` (`BLOCKED_DISPATCH_*`); `providerRequestStartedAt` marca início da chamada externa.
-- Contadores recomputados por `groupBy` após ações; AuditLog: `DISPATCH_PAUSE_REQUESTED`, `DISPATCH_PAUSED`, `DISPATCH_RESUMED`, `DISPATCH_CANCELED`, `DISPATCH_EMERGENCY_STOPPED`.
-- Web: botões/confirmações conforme `allowedActions`; motivos e responsáveis exibidos.
-- `DISPATCH_SEND_ENABLED` permanece default `false` (resume exige `true` em homologação).
+- Classificador puro `classifyDispatchItemRecovery` (shared) + inspeção `GET .../recovery`.
+- `POST .../recover` (SAFE_ONLY), `POST .../items/:id/retry`, `POST .../retry-failed` (máx. 20), `POST .../items/:id/resolve-unknown` (OWNER).
+- Model `DispatchItemAttempt` + `unknownItems` no Dispatch; Worker grava tentativa antes/depois da Evolution.
+- Reconcile marca PROCESSING ambíguo como UNKNOWN (não volta a QUEUED).
+- UI: painel Recuperação, histórico de tentativas, retry/resolução no detalhe do item.
+- `DISPATCH_SEND_ENABLED` permanece default `false`.
 
-A próxima implementação deve ser apenas:
-
-**09.6 — Retry, Idempotência e Recuperação** (aprofundamento além do já existente na 09.4)
-
-ou conforme prioridade do épico.
+A próxima implementação deve ser apenas conforme prioridade do épico (ex.: 09.7/09.8).

@@ -16,11 +16,18 @@ import { DispatchesService } from './dispatches.service';
 import { DispatchQueueService } from './dispatch-queue.service';
 import { DispatchStartService } from './dispatch-start.service';
 import { DispatchOperationalService } from './dispatch-operational.service';
+import { DispatchRecoveryService } from './dispatch-recovery.service';
 import {
   CancelDispatchDto,
   EmergencyStopDispatchDto,
   PauseDispatchDto,
 } from './dto/operational-dispatch.dto';
+import {
+  RecoverDispatchDto,
+  ResolveUnknownDto,
+  RetryDispatchItemDto,
+  RetryFailedBatchDto,
+} from './dto/recovery-dispatch.dto';
 
 @Controller('campaigns/:campaignId/dispatches')
 @UseGuards(JwtAuthGuard)
@@ -30,6 +37,7 @@ export class DispatchesController {
     private readonly dispatchQueueService: DispatchQueueService,
     private readonly dispatchStartService: DispatchStartService,
     private readonly dispatchOperationalService: DispatchOperationalService,
+    private readonly dispatchRecoveryService: DispatchRecoveryService,
   ) {}
 
   @Get()
@@ -158,6 +166,108 @@ export class DispatchesController {
       campaignId,
       dispatchId,
       dto.reason,
+    );
+  }
+
+  @Get(':dispatchId/recovery')
+  inspectRecovery(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+  ) {
+    return this.dispatchRecoveryService.inspect(
+      user.id,
+      campaignId,
+      dispatchId,
+    );
+  }
+
+  @Post(':dispatchId/recover')
+  recover(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Body() dto: RecoverDispatchDto,
+  ) {
+    return this.dispatchRecoveryService.recover(
+      user.id,
+      campaignId,
+      dispatchId,
+      { mode: dto.mode, reason: dto.reason },
+    );
+  }
+
+  @Post(':dispatchId/retry-failed')
+  retryFailed(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Body() dto: RetryFailedBatchDto,
+  ) {
+    return this.dispatchRecoveryService.retryFailedBatch(
+      user.id,
+      campaignId,
+      dispatchId,
+      {
+        reason: dto.reason,
+        itemIds: dto.itemIds,
+        maxItems: dto.maxItems,
+        errorCategories: dto.errorCategories,
+      },
+    );
+  }
+
+  @Post(':dispatchId/items/:dispatchItemId/retry')
+  retryItem(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Param('dispatchItemId') dispatchItemId: string,
+    @Body() dto: RetryDispatchItemDto,
+  ) {
+    return this.dispatchRecoveryService.retryItem(
+      user.id,
+      campaignId,
+      dispatchId,
+      dispatchItemId,
+      dto.reason,
+    );
+  }
+
+  @Post(':dispatchId/items/:dispatchItemId/resolve-unknown')
+  resolveUnknown(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Param('dispatchItemId') dispatchItemId: string,
+    @Body() dto: ResolveUnknownDto,
+  ) {
+    return this.dispatchRecoveryService.resolveUnknown(
+      user.id,
+      campaignId,
+      dispatchId,
+      dispatchItemId,
+      {
+        resolution: dto.resolution,
+        reason: dto.reason,
+        providerMessageId: dto.providerMessageId,
+        evidence: dto.evidence,
+      },
+    );
+  }
+
+  @Get(':dispatchId/items/:dispatchItemId/attempts')
+  listAttempts(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Param('dispatchItemId') dispatchItemId: string,
+  ) {
+    return this.dispatchRecoveryService.listAttempts(
+      user.id,
+      campaignId,
+      dispatchId,
+      dispatchItemId,
     );
   }
 

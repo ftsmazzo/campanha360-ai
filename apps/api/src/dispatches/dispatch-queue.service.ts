@@ -10,7 +10,7 @@ import {
   DispatchStatus,
   Prisma,
 } from '@prisma/client';
-import { assertDispatchQueueAllowed } from '@campanha360/shared';
+import { assertDispatchQueueAllowed, classifyDispatchItemRecovery } from '@campanha360/shared';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -48,6 +48,7 @@ export type DispatchQueueReconcileResult = {
   dispatchId: string;
   itemsRequeued: number;
   itemsUnlocked: number;
+  itemsMarkedUnknown?: number;
   candidatesWithoutJob: number;
   candidatesStaleLock: number;
 };
@@ -547,14 +548,83 @@ export class DispatchQueueService {
         status: DispatchItemStatus.PROCESSING,
         lockExpiresAt: { lt: now },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        status: true,
+        providerRequestStartedAt: true,
+        providerRequestCompletedAt: true,
+        providerMessageId: true,
+        sentAt: true,
+        attemptCount: true,
+        maxAttempts: true,
+        nextRetryAt: true,
+        errorCategory: true,
+        errorCode: true,
+        queueJobId: true,
+        lockExpiresAt: true,
+      },
       take: RECONCILE_BATCH_LIMIT,
     });
 
     let itemsUnlocked = 0;
+    let itemsMarkedUnknown = 0;
+    const safeRequeueIds: string[] = [];
+
     for (const item of staleProcessingItems) {
+      const classified = classifyDispatchItemRecovery(
+        {
+          status: item.status,
+          lockExpiresAt: item.lockExpiresAt,
+          providerRequestStartedAt: item.providerRequestStartedAt,
+          providerRequestCompletedAt: item.providerRequestCompletedAt,
+          providerMessageId: item.providerMessageId,
+          sentAt: item.sentAt,
+          attemptCount: item.attemptCount,
+          maxAttempts: item.maxAttempts,
+          nextRetryAt: item.nextRetryAt,
+          errorCategory: item.errorCategory,
+          errorCode: item.errorCode,
+          queueJobId: item.queueJobId,
+          dispatchStatus: dispatch.status,
+        },
+        now,
+      );
+
+      if (classified.classification === 'MARK_UNKNOWN') {
+        const marked = await this.prisma.dispatchItem.updateMany({
+          where: {
+            id: item.id,
+            status: DispatchItemStatus.PROCESSING,
+            providerRequestStartedAt: { not: null },
+            providerRequestCompletedAt: null,
+          },
+          data: {
+            status: DispatchItemStatus.UNKNOWN_PROVIDER_STATE,
+            failedAt: now,
+            nextRetryAt: null,
+            lockedAt: null,
+            lockToken: null,
+            lockExpiresAt: null,
+            errorCode: 'STALE_LOCK_AMBIGUOUS',
+            errorMessage:
+              'Lock expirado apos inicio de chamada externa sem conclusao',
+            lastQueueError: 'MARKED_UNKNOWN_BY_RECONCILE',
+          },
+        });
+        if (marked.count === 1) itemsMarkedUnknown += 1;
+        continue;
+      }
+
+      if (classified.classification !== 'SAFE_REQUEUE') {
+        continue;
+      }
+
       const reset = await this.prisma.dispatchItem.updateMany({
-        where: { id: item.id, status: DispatchItemStatus.PROCESSING },
+        where: {
+          id: item.id,
+          status: DispatchItemStatus.PROCESSING,
+          providerRequestStartedAt: null,
+        },
         data: {
           status: DispatchItemStatus.QUEUED,
           lockedAt: null,
@@ -564,6 +634,7 @@ export class DispatchQueueService {
       });
       if (reset.count === 1) {
         itemsUnlocked += 1;
+        safeRequeueIds.push(item.id);
       }
     }
 
@@ -571,7 +642,7 @@ export class DispatchQueueService {
     const toEnqueue = [
       ...missingJobItems,
       ...runningQueuedItems,
-      ...staleProcessingItems,
+      ...safeRequeueIds.map((id) => ({ id })),
     ];
     const seen = new Set<string>();
 
@@ -601,8 +672,6 @@ export class DispatchQueueService {
             lastQueueError: null,
           },
         });
-        // Conta republicacao efetiva: novo enqueue ou remocao de job
-        // completed/failed + re-add (ensureJob.requeued).
         const requeuedFlag =
           'requeued' in result ? Boolean(result.requeued) : false;
         if (result.status === 'enqueued' || requeuedFlag) {
@@ -632,6 +701,7 @@ export class DispatchQueueService {
         dispatchId: dispatch.id,
         itemsRequeued,
         itemsUnlocked,
+        itemsMarkedUnknown,
         candidatesWithoutJob: missingJobItems.length,
         candidatesStaleLock: staleProcessingItems.length,
       },
@@ -641,6 +711,7 @@ export class DispatchQueueService {
       dispatchId: dispatch.id,
       itemsRequeued,
       itemsUnlocked,
+      itemsMarkedUnknown,
       candidatesWithoutJob: missingJobItems.length,
       candidatesStaleLock: staleProcessingItems.length,
     };

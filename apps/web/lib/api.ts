@@ -1103,6 +1103,9 @@ export type DispatchAllowedActions = {
   canEmergencyStop: boolean;
   canReconcile: boolean;
   canRetryFailedItems: boolean;
+  canViewRecovery?: boolean;
+  canRecover?: boolean;
+  canRetryFailedBatch?: boolean;
 };
 
 export type DispatchApprovedAudience = {
@@ -1190,6 +1193,7 @@ export type DispatchDetail = {
   failedItems: number;
   skippedItems: number;
   canceledItems: number;
+  unknownItems?: number;
   createdByUserId: string;
   preparedAt: string | null;
   queuedAt: string | null;
@@ -1307,6 +1311,16 @@ export type DispatchItemDetail = DispatchItemListEntry & {
   queueCreatedAt: string | null;
   lastQueueError: string | null;
   updatedAt: string;
+  providerRequestStartedAt?: string | null;
+  providerRequestCompletedAt?: string | null;
+  allowedActions?: {
+    canRetryManually: boolean;
+    canResolveUnknown: boolean;
+    canConfirmSent: boolean;
+    canConfirmNotSent: boolean;
+    canAbandonUnknown: boolean;
+    retryBlockedReason: string | null;
+  };
 };
 
 export type QueueDispatchResponse = {
@@ -1560,6 +1574,164 @@ export function emergencyStopDispatch(
       method: 'POST',
       body: JSON.stringify({ reason }),
     },
+    token,
+  );
+}
+
+export type DispatchRecoveryInspection = {
+  dispatchId: string;
+  status: DispatchStatus;
+  summary: {
+    totalItems: number;
+    safeRequeue: number;
+    safeRetry: number;
+    waitingLock: number;
+    unknownProviderState: number;
+    manualReview: number;
+    terminal: number;
+    invalid: number;
+    missingJobs: number;
+    staleLocks: number;
+    orphanJobs: number;
+  };
+  items: Array<{
+    id: string;
+    contactName: string | null;
+    destinationMasked: string;
+    status: string;
+    attemptCount: number;
+    maxAttempts: number;
+    errorCategory: string | null;
+    errorCode: string | null;
+    recoveryClassification: string;
+    recoveryReason: string;
+    channelAccountName: string | null;
+  }>;
+  allowedActions: {
+    canViewRecovery: boolean;
+    canRecover: boolean;
+    canRetryFailedBatch: boolean;
+  };
+};
+
+export function fetchDispatchRecovery(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<DispatchRecoveryInspection>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/recovery`,
+    {},
+    token,
+  );
+}
+
+export function recoverDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  reason: string,
+) {
+  return request<{
+    dispatchId: string;
+    inspected: number;
+    requeued: number;
+    markedUnknown: number;
+    skipped: number;
+    errors: number;
+  }>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/recover`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'SAFE_ONLY', reason }),
+    },
+    token,
+  );
+}
+
+export function retryDispatchItem(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  itemId: string,
+  reason: string,
+) {
+  return request<{ dispatchItemId: string; status: string }>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/items/${itemId}/retry`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    },
+    token,
+  );
+}
+
+export function retryFailedDispatchItems(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  reason: string,
+  maxItems = 20,
+) {
+  return request<{
+    dispatchId: string;
+    requested: number;
+    republished: number;
+  }>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/retry-failed`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reason, maxItems }),
+    },
+    token,
+  );
+}
+
+export function resolveUnknownDispatchItem(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  itemId: string,
+  body: {
+    resolution: 'CONFIRMED_SENT' | 'CONFIRMED_NOT_SENT' | 'ABANDONED';
+    reason: string;
+    providerMessageId?: string;
+    evidence?: string;
+  },
+) {
+  return request<{ dispatchItemId: string; status: string }>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/items/${itemId}/resolve-unknown`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+    token,
+  );
+}
+
+export function fetchDispatchItemAttempts(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  itemId: string,
+) {
+  return request<{
+    dispatchItemId: string;
+    attempts: Array<{
+      id: string;
+      attemptNumber: number;
+      startedAt: string;
+      completedAt: string | null;
+      outcome: string | null;
+      errorCategory: string | null;
+      errorCode: string | null;
+      ambiguous: boolean;
+      manual: boolean;
+      providerMessageIdMasked: string | null;
+    }>;
+  }>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/items/${itemId}/attempts`,
+    {},
     token,
   );
 }

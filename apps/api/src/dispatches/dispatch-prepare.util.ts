@@ -330,6 +330,40 @@ export function buildDispatchAllowedActionsForPrepare(input: {
     totalItems: input.totalItems,
   });
 
+  const canViewRecovery =
+    canApprove &&
+    [
+      DispatchStatus.QUEUED,
+      DispatchStatus.RUNNING,
+      DispatchStatus.PAUSED,
+      DispatchStatus.PAUSING,
+      DispatchStatus.COMPLETED,
+      DispatchStatus.COMPLETED_WITH_ERRORS,
+      'QUEUED',
+      'RUNNING',
+      'PAUSED',
+      'PAUSING',
+      'COMPLETED',
+      'COMPLETED_WITH_ERRORS',
+    ].includes(input.status as never);
+
+  const canRecover =
+    canApprove &&
+    (input.status === DispatchStatus.QUEUED ||
+      input.status === 'QUEUED' ||
+      input.status === DispatchStatus.RUNNING ||
+      input.status === 'RUNNING' ||
+      input.status === DispatchStatus.PAUSED ||
+      input.status === 'PAUSED');
+
+  const canRetryFailedBatch =
+    canApprove &&
+    (input.status === DispatchStatus.RUNNING ||
+      input.status === 'RUNNING' ||
+      input.status === DispatchStatus.PAUSED ||
+      input.status === 'PAUSED') &&
+    isDispatchSendEnabled();
+
   return {
     canView: true,
     canPrepare: canPrepareDispatch(input),
@@ -341,7 +375,10 @@ export function buildDispatchAllowedActionsForPrepare(input: {
     canCancel: operational.canCancel,
     canEmergencyStop: operational.canEmergencyStop,
     canReconcile,
-    canRetryFailedItems: false,
+    canRetryFailedItems: canRetryFailedBatch,
+    canViewRecovery,
+    canRecover,
+    canRetryFailedBatch,
   };
 }
 

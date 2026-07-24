@@ -848,6 +848,22 @@ async function runRealSend(input: {
       data: { providerRequestStartedAt: requestStartedAt },
     });
 
+    const attemptNumber = (item.attemptCount ?? 0) + 1;
+    const attemptId = await beginDispatchItemAttempt(prisma, {
+      organizationId: String(
+        (item as { organizationId?: string }).organizationId ?? '',
+      ),
+      campaignId: String((item as { campaignId?: string }).campaignId ?? ''),
+      dispatchId: dispatch.id,
+      dispatchItemId: item.id,
+      attemptNumber,
+      channelAccountId: selectedChannel.channelAccountId,
+      dispatchChannelId: selectedChannel.id,
+      startedAt: requestStartedAt,
+      manual: String((item as { retryMode?: string }).retryMode ?? '') === 'MANUAL',
+      retryMode: (item as { retryMode?: string | null }).retryMode ?? null,
+    });
+
     const sendFn = deps.sendText ?? sendEvolutionText;
     const result = await sendFn({
       baseUrl: deps.evolutionBaseUrl ?? process.env.EVOLUTION_API_URL ?? '',
@@ -865,7 +881,7 @@ async function runRealSend(input: {
       data: { providerRequestCompletedAt: now() },
     });
 
-    const attemptCount = (item.attemptCount ?? 0) + 1;
+    const attemptCount = attemptNumber;
     const maxAttempts = item.maxAttempts ?? 3;
 
     if (result.success) {
@@ -873,6 +889,14 @@ async function runRealSend(input: {
         providerMessageId: result.providerMessageId,
         providerStatus: result.providerStatus,
         attemptCount,
+      });
+      await completeDispatchItemAttempt(prisma, attemptId, {
+        completedAt: now(),
+        outcome: 'SENT',
+        providerStatus: result.providerStatus,
+        providerMessageId: result.providerMessageId,
+        httpStatus: result.httpStatus ?? null,
+        ambiguous: false,
       });
       await prisma.dispatchChannel.updateMany({
         where: { id: selectedChannel.id },
@@ -896,6 +920,23 @@ async function runRealSend(input: {
     }
 
     const failure = result;
+
+    if (failure.ambiguous) {
+      await finalizeUnknown(prisma, item, now(), attemptCount, failure);
+      await completeDispatchItemAttempt(prisma, attemptId, {
+        completedAt: now(),
+        outcome: 'UNKNOWN_PROVIDER_STATE',
+        providerStatus: null,
+        providerMessageId: null,
+        httpStatus: failure.httpStatus ?? null,
+        errorCategory: null,
+        errorCode: failure.errorCode,
+        errorMessage: failure.errorMessage,
+        ambiguous: true,
+      });
+      await recomputeDispatchProgress(prisma, dispatch, now());
+      return { action: 'UNKNOWN_PROVIDER_STATE', send: true, dispatchItemId: item.id };
+    }
 
     if (
       (failure.category === 'PROVIDER_RATE_LIMIT' && policy.pauseOn429) ||
@@ -949,18 +990,23 @@ async function runRealSend(input: {
         });
       }
       await recomputeDispatchProgress(prisma, dispatch, now());
+      await completeDispatchItemAttempt(prisma, attemptId, {
+        completedAt: now(),
+        outcome: 'RETRY_SCHEDULED',
+        providerStatus: null,
+        providerMessageId: null,
+        httpStatus: failure.httpStatus ?? null,
+        errorCategory: mapEvolutionCategoryToErrorCategory(failure.category),
+        errorCode: failure.errorCode,
+        errorMessage: failure.errorMessage,
+        ambiguous: false,
+      });
       return {
         action: 'DEFERRED_CHANNEL_COOLDOWN',
         send: true,
         dispatchItemId: item.id,
         delayUntil: resumeAt,
       };
-    }
-
-    if (failure.ambiguous) {
-      await finalizeUnknown(prisma, item, now(), attemptCount, failure);
-      await recomputeDispatchProgress(prisma, dispatch, now());
-      return { action: 'UNKNOWN_PROVIDER_STATE', send: true, dispatchItemId: item.id };
     }
 
     const isTransient =
@@ -971,6 +1017,17 @@ async function runRealSend(input: {
     if (isTransient && !isDispatchRetryExhausted(attemptCount, maxAttempts)) {
       const nextRetryAt = computeDispatchNextRetryAt(now(), attemptCount);
       await finalizeRetryScheduled(prisma, item, now(), attemptCount, nextRetryAt, failure);
+      await completeDispatchItemAttempt(prisma, attemptId, {
+        completedAt: now(),
+        outcome: 'RETRY_SCHEDULED',
+        providerStatus: null,
+        providerMessageId: null,
+        httpStatus: failure.httpStatus ?? null,
+        errorCategory: mapEvolutionCategoryToErrorCategory(failure.category),
+        errorCode: failure.errorCode,
+        errorMessage: failure.errorMessage,
+        ambiguous: false,
+      });
       await recomputeDispatchProgress(prisma, dispatch, now());
       return {
         action: 'RETRY_SCHEDULED',
@@ -989,6 +1046,17 @@ async function runRealSend(input: {
       failure.errorMessage,
       attemptCount,
     );
+    await completeDispatchItemAttempt(prisma, attemptId, {
+      completedAt: now(),
+      outcome: 'FAILED',
+      providerStatus: null,
+      providerMessageId: null,
+      httpStatus: failure.httpStatus ?? null,
+      errorCategory: mapEvolutionCategoryToErrorCategory(failure.category),
+      errorCode: failure.errorCode,
+      errorMessage: failure.errorMessage,
+      ambiguous: false,
+    });
     await recomputeDispatchProgress(prisma, dispatch, now());
     return { action: 'FAILED', send: true, dispatchItemId: item.id };
   } catch (error) {
@@ -1009,6 +1077,103 @@ async function runRealSend(input: {
 // ---------------------------------------------------------------------------
 // Helpers de finalizacao de item
 // ---------------------------------------------------------------------------
+
+async function beginDispatchItemAttempt(
+  prisma: PrismaClient,
+  input: {
+    organizationId: string;
+    campaignId: string;
+    dispatchId: string;
+    dispatchItemId: string;
+    attemptNumber: number;
+    channelAccountId: string | null;
+    dispatchChannelId: string | null;
+    startedAt: Date;
+    manual: boolean;
+    retryMode: string | null;
+  },
+): Promise<string | null> {
+  if (!input.organizationId || !input.campaignId) return null;
+  try {
+    const created = await (prisma as unknown as {
+      dispatchItemAttempt: {
+        upsert: (args: unknown) => Promise<{ id: string }>;
+      };
+    }).dispatchItemAttempt.upsert({
+      where: {
+        dispatchItemId_attemptNumber: {
+          dispatchItemId: input.dispatchItemId,
+          attemptNumber: input.attemptNumber,
+        },
+      },
+      create: {
+        organizationId: input.organizationId,
+        campaignId: input.campaignId,
+        dispatchId: input.dispatchId,
+        dispatchItemId: input.dispatchItemId,
+        attemptNumber: input.attemptNumber,
+        channelAccountId: input.channelAccountId,
+        dispatchChannelId: input.dispatchChannelId,
+        startedAt: input.startedAt,
+        manual: input.manual,
+        retryMode: input.retryMode,
+        ambiguous: false,
+      },
+      update: {
+        startedAt: input.startedAt,
+        channelAccountId: input.channelAccountId,
+        dispatchChannelId: input.dispatchChannelId,
+        manual: input.manual,
+        retryMode: input.retryMode,
+        completedAt: null,
+        outcome: null,
+      },
+    });
+    return created.id;
+  } catch {
+    return null;
+  }
+}
+
+async function completeDispatchItemAttempt(
+  prisma: PrismaClient,
+  attemptId: string | null,
+  data: {
+    completedAt: Date;
+    outcome: string;
+    providerStatus?: string | null;
+    providerMessageId?: string | null;
+    httpStatus?: number | null;
+    errorCategory?: DispatchItemErrorCategory | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    ambiguous: boolean;
+  },
+): Promise<void> {
+  if (!attemptId) return;
+  try {
+    await (prisma as unknown as {
+      dispatchItemAttempt: {
+        update: (args: unknown) => Promise<unknown>;
+      };
+    }).dispatchItemAttempt.update({
+      where: { id: attemptId },
+      data: {
+        completedAt: data.completedAt,
+        outcome: data.outcome,
+        providerStatus: data.providerStatus ?? null,
+        providerMessageId: data.providerMessageId ?? null,
+        httpStatus: data.httpStatus ?? null,
+        errorCategory: data.errorCategory ?? null,
+        errorCode: data.errorCode ?? null,
+        errorMessage: data.errorMessage ?? null,
+        ambiguous: data.ambiguous,
+      },
+    });
+  } catch {
+    // historico e diagnostico; nao falha o envio
+  }
+}
 
 async function finalizeSkip(
   prisma: PrismaClient,
@@ -1197,13 +1362,12 @@ async function recomputeDispatchProgress(
   const sentItems = counts[DispatchItemStatus.SENT] ?? 0;
   const deliveredItems = counts[DispatchItemStatus.DELIVERED] ?? 0;
   const readItems = counts[DispatchItemStatus.READ] ?? 0;
-  const failedItems =
-    (counts[DispatchItemStatus.FAILED] ?? 0) +
-    (counts[DispatchItemStatus.UNKNOWN_PROVIDER_STATE] ?? 0);
+  const failedItems = counts[DispatchItemStatus.FAILED] ?? 0;
+  const unknownItems = counts[DispatchItemStatus.UNKNOWN_PROVIDER_STATE] ?? 0;
   const skippedItems = counts[DispatchItemStatus.SKIPPED] ?? 0;
   const canceledItems = counts[DispatchItemStatus.CANCELED] ?? 0;
 
-  const unresolved = pendingItems + queuedItems + processingItems;
+  const unresolved = pendingItems + queuedItems + processingItems + unknownItems;
   const data: Record<string, unknown> = {
     pendingItems,
     queuedItems,
@@ -1214,6 +1378,7 @@ async function recomputeDispatchProgress(
     failedItems,
     skippedItems,
     canceledItems,
+    unknownItems,
     lastProgressAt: now,
   };
 

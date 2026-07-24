@@ -238,6 +238,9 @@ export function buildDispatchAllowedActions(input?: {
     canEmergencyStop: false,
     canReconcile: false,
     canRetryFailedItems: false,
+    canViewRecovery: false,
+    canRecover: false,
+    canRetryFailedBatch: false,
   };
 }
 
