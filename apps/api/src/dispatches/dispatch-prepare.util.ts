@@ -303,7 +303,10 @@ export function buildDispatchAllowedActionsForPrepare(input: {
 
   const canReconcile =
     canApprove &&
-    (input.status === DispatchStatus.QUEUED || input.status === 'QUEUED');
+    (input.status === DispatchStatus.QUEUED ||
+      input.status === 'QUEUED' ||
+      input.status === DispatchStatus.RUNNING ||
+      input.status === 'RUNNING');
 
   // 09.4: iniciar o envio real exige OWNER/ADMIN, Dispatch QUEUED com ao
   // menos um item QUEUED, sem pendencia de redistribuicao, as tres flags

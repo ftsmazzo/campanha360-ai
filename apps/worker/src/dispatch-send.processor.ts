@@ -246,9 +246,8 @@ export async function processDispatchSendJob(
 
   /**
    * Protecao critica: com DISPATCH_SEND_ENABLED=false, jamais chamar Evolution.
-   * Items ja em RETRY_SCHEDULED/FAILED/UNKNOWN/SENT nao entram no path tecnico
-   * (que so clama QUEUED/SCHEDULED) — retorno explicito para preservar estado
-   * e, se houver nextRetryAt futuro, reinsere o job delayed sem envio.
+   * Se o Dispatch ja esta RUNNING, nao fingir validacao tecnica "ok" — marcar
+   * lastQueueError e preservar QUEUED para o operador republicar apos ligar SEND.
    */
   if (!sendEnabled) {
     const blockedStatuses = new Set<string>([
@@ -283,6 +282,36 @@ export async function processDispatchSendJob(
         send: false,
         dispatchItemId: item.id,
         reason: 'DISPATCH_SEND_ENABLED_FALSE',
+      };
+    }
+
+    if (dispatch.status === DispatchStatus.RUNNING) {
+      await prisma.dispatchItem.updateMany({
+        where: {
+          id: item.id,
+          status: {
+            in: [
+              DispatchItemStatus.QUEUED,
+              DispatchItemStatus.SCHEDULED,
+              DispatchItemStatus.RETRY_SCHEDULED,
+              DispatchItemStatus.PROCESSING,
+            ],
+          },
+        },
+        data: {
+          status: DispatchItemStatus.QUEUED,
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          lastQueueError: 'DISPATCH_SEND_ENABLED_FALSE',
+        },
+      });
+
+      return {
+        action: 'BLOCKED_SEND_DISABLED',
+        send: false,
+        dispatchItemId: item.id,
+        reason: 'DISPATCH_SEND_ENABLED_FALSE_WHILE_RUNNING',
       };
     }
   }

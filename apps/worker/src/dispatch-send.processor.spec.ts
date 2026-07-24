@@ -30,7 +30,7 @@ function basePayload(overrides: Record<string, unknown> = {}) {
 function baseDispatch(overrides: Record<string, unknown> = {}) {
   return {
     id: 'dispatch-1',
-    status: 'RUNNING',
+    status: 'QUEUED',
     requiringRedistribution: false,
     approvalSnapshot: {
       protectionPolicy: {
@@ -168,6 +168,7 @@ function contactRow(overrides: Record<string, unknown> = {}) {
 
 function realSendDispatch(overrides: Record<string, unknown> = {}) {
   return baseDispatch({
+    status: 'RUNNING',
     totalItems: 1,
     approvalSnapshot: {
       protectionPolicy: {
@@ -847,15 +848,20 @@ describe('processDispatchSendJob (worker 09.3)', () => {
     assert.equal(harness.getItem()?.providerMessageId ?? null, null);
   });
 
-  it('Dispatch RUNNING mas DISPATCH_SEND_ENABLED=false: mantem path tecnico (nao envia)', async () => {
+  it('Dispatch RUNNING mas DISPATCH_SEND_ENABLED=false: BLOCKED_SEND_DISABLED sem envio', async () => {
     enableFlags();
-    const harness = createFakePrisma({});
+    delete process.env.DISPATCH_SEND_ENABLED;
+    const harness = createFakePrisma({
+      dispatch: baseDispatch({ status: 'RUNNING' }),
+    });
     const result = await processDispatchSendJob(
       { data: basePayload() },
       { prisma: harness.prisma, now: () => INSIDE_WINDOW_NOW },
     );
-    assert.equal(result.action, 'TECHNICAL_VALIDATED');
+    assert.equal(result.action, 'BLOCKED_SEND_DISABLED');
     assert.equal(result.send, false);
+    assert.equal(harness.getItem()?.status, 'QUEUED');
+    assert.equal(harness.getItem()?.lastQueueError, 'DISPATCH_SEND_ENABLED_FALSE');
     assert.equal(harness.getItem()?.providerMessageId ?? null, null);
   });
 

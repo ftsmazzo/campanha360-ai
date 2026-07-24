@@ -22,6 +22,7 @@ import {
   prepareDispatch,
   queueDispatch,
   redistributeDispatch,
+  reconcileDispatchQueue,
   startDispatch,
 } from '../../../../../../lib/api';
 import {
@@ -58,6 +59,7 @@ export default function DispatchDetailPage() {
   const [redistributing, setRedistributing] = useState(false);
   const [queuing, setQueuing] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const [showPrepareConfirm, setShowPrepareConfirm] = useState(false);
   const [showQueueConfirm, setShowQueueConfirm] = useState(false);
   const [showStartConfirm, setShowStartConfirm] = useState(false);
@@ -225,6 +227,33 @@ export default function DispatchDetailPage() {
       );
     } finally {
       setRedistributing(false);
+    }
+  }
+
+  async function onReconcileQueue() {
+    const token = getStoredToken();
+    if (!token) return;
+    setReconciling(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await reconcileDispatchQueue(
+        token,
+        campaignId,
+        dispatchId,
+      );
+      setSuccess(
+        `Fila republicada: ${result.itemsRequeued} job(s), ${result.itemsUnlocked} lock(s) liberado(s).`,
+      );
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel republicar a fila',
+      );
+    } finally {
+      setReconciling(false);
     }
   }
 
@@ -479,8 +508,11 @@ export default function DispatchDetailPage() {
               <div className="rounded-md border border-[#1e3a5f] bg-[#eef4fc] px-4 py-3 text-sm text-[#1e3a5f]">
                 <p className="font-semibold">Envio real em execucao</p>
                 <p className="mt-1">
-                  O Worker esta processando os itens elegiveis e chamando a
-                  Evolution API. Acompanhe o progresso na tabela abaixo.
+                  O Worker processa os itens elegiveis. Se ficar parado em
+                  Enfileirado com 0 enviados, confira no EasyPanel se o{' '}
+                  <strong>Worker</strong> tem{' '}
+                  <code>DISPATCH_SEND_ENABLED=true</code> (alem da API) e use
+                  Republicar fila.
                 </p>
                 <p className="mt-2">
                   Enviados: {dispatch.sentItems} · Falhas: {dispatch.failedItems}{' '}
@@ -495,6 +527,16 @@ export default function DispatchDetailPage() {
                     Jobs republicados: {startResult.jobsRepublished} · Items
                     elegiveis: {startResult.itemsEligible}
                   </p>
+                ) : null}
+                {canApprove ? (
+                  <button
+                    type="button"
+                    className="mt-3 rounded-md border border-[#1e3a5f] bg-white px-3 py-1.5 text-xs font-semibold text-[#1e3a5f] disabled:opacity-60"
+                    disabled={reconciling}
+                    onClick={() => void onReconcileQueue()}
+                  >
+                    {reconciling ? 'Republicando...' : 'Republicar fila'}
+                  </button>
                 ) : null}
               </div>
             ) : null}

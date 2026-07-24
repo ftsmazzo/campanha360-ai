@@ -498,6 +498,7 @@ export class DispatchQueueService {
     }
 
     const now = new Date();
+    const isRunning = String(dispatch.status) === DispatchStatus.RUNNING;
 
     const missingJobItems = await this.prisma.dispatchItem.findMany({
       where: {
@@ -510,6 +511,33 @@ export class DispatchQueueService {
       select: { id: true },
       take: RECONCILE_BATCH_LIMIT,
     });
+
+    /**
+     * Em RUNNING, jobs ja podem ter sido consumidos pelo Worker em modo
+     * tecnico (SEND=false) e o item permanece QUEUED com queueJobId antigo.
+     * Republica via ensureJob para retomar o envio apos habilitar SEND.
+     */
+    const runningQueuedItems = isRunning
+      ? await this.prisma.dispatchItem.findMany({
+          where: {
+            dispatchId: dispatch.id,
+            organizationId: campaign.organizationId,
+            campaignId,
+            status: {
+              in: [
+                DispatchItemStatus.QUEUED,
+                DispatchItemStatus.SCHEDULED,
+                DispatchItemStatus.RETRY_SCHEDULED,
+              ],
+            },
+            ...(missingJobItems.length
+              ? { id: { notIn: missingJobItems.map((item) => item.id) } }
+              : {}),
+          },
+          select: { id: true },
+          take: RECONCILE_BATCH_LIMIT,
+        })
+      : [];
 
     const staleProcessingItems = await this.prisma.dispatchItem.findMany({
       where: {
@@ -540,15 +568,30 @@ export class DispatchQueueService {
     }
 
     let itemsRequeued = 0;
-    const toEnqueue = [...missingJobItems, ...staleProcessingItems];
+    const toEnqueue = [
+      ...missingJobItems,
+      ...runningQueuedItems,
+      ...staleProcessingItems,
+    ];
+    const seen = new Set<string>();
+
     for (const item of toEnqueue) {
+      if (seen.has(item.id)) continue;
+      seen.add(item.id);
       try {
-        const result = await this.dispatchSendProducer.enqueueItem({
-          dispatchId: dispatch.id,
-          dispatchItemId: item.id,
-          organizationId: campaign.organizationId,
-          campaignId,
-        });
+        const result = isRunning
+          ? await this.dispatchSendProducer.ensureJob({
+              dispatchId: dispatch.id,
+              dispatchItemId: item.id,
+              organizationId: campaign.organizationId,
+              campaignId,
+            })
+          : await this.dispatchSendProducer.enqueueItem({
+              dispatchId: dispatch.id,
+              dispatchItemId: item.id,
+              organizationId: campaign.organizationId,
+              campaignId,
+            });
         await this.prisma.dispatchItem.update({
           where: { id: item.id },
           data: {
@@ -558,7 +601,13 @@ export class DispatchQueueService {
             lastQueueError: null,
           },
         });
-        itemsRequeued += 1;
+        // Conta republicacao efetiva: novo enqueue ou remocao de job
+        // completed/failed + re-add (ensureJob.requeued).
+        const requeuedFlag =
+          'requeued' in result ? Boolean(result.requeued) : false;
+        if (result.status === 'enqueued' || requeuedFlag) {
+          itemsRequeued += 1;
+        }
       } catch (error) {
         await this.prisma.dispatchItem
           .update({
