@@ -677,14 +677,8 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
       }),
     });
     let called = false;
-    let delayedTo: number | null = null;
     const result = await processDispatchSendJob(
-      {
-        data: basePayload(),
-        moveToDelayed: async (timestamp: number) => {
-          delayedTo = timestamp;
-        },
-      },
+      { data: basePayload() },
       {
         prisma: harness.prisma,
         now: () => INSIDE_WINDOW_NOW,
@@ -706,7 +700,7 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
     const item = harness.getItem()!;
     assert.equal(item.status, 'RETRY_SCHEDULED');
     assert.equal(item.errorCode, 'NETWORK_ERROR');
-    assert.equal(delayedTo, futureRetry.getTime());
+    assert.equal(result.delayUntil?.getTime(), futureRetry.getTime());
   });
 
   it('SEND=false + FAILED: BLOCKED_SEND_DISABLED sem reenvio', async () => {

@@ -129,6 +129,12 @@ export type DispatchSendProcessResult = {
   send: boolean;
   dispatchItemId?: string;
   reason?: string;
+  /**
+   * Quando definido, o Worker BullMQ deve chamar `job.moveToDelayed(delayUntil, token)`
+   * e em seguida lançar `DelayedError` — sem isso o BullMQ tenta `moveToFinished`
+   * com o lock já consumido ("Missing lock").
+   */
+  delayUntil?: Date;
 };
 
 export type DispatchSendProtectionPolicy = {
@@ -273,7 +279,13 @@ export async function processDispatchSendJob(
           Number.isFinite(nextRetryAt.getTime()) &&
           nextRetryAt.getTime() > now().getTime()
         ) {
-          await tryMoveToDelayed(job, nextRetryAt);
+          return {
+            action: 'BLOCKED_SEND_DISABLED',
+            send: false,
+            dispatchItemId: item.id,
+            reason: 'DISPATCH_SEND_ENABLED_FALSE',
+            delayUntil: nextRetryAt,
+          };
         }
       }
 
@@ -438,9 +450,12 @@ async function runTechnicalValidation(input: {
         },
       });
 
-      await tryMoveToDelayed(job, nextStart);
-
-      return { action: 'DEFERRED_OUTSIDE_WINDOW', send: false, dispatchItemId: item.id };
+      return {
+        action: 'DEFERRED_OUTSIDE_WINDOW',
+        send: false,
+        dispatchItemId: item.id,
+        delayUntil: nextStart,
+      };
     }
 
     await prisma.dispatchItem.update({
@@ -658,8 +673,12 @@ async function runRealSend(input: {
           lockExpiresAt: null,
         },
       });
-      await tryMoveToDelayed(job, nextStart);
-      return { action: 'DEFERRED_OUTSIDE_WINDOW', send: false, dispatchItemId: item.id };
+      return {
+        action: 'DEFERRED_OUTSIDE_WINDOW',
+        send: false,
+        dispatchItemId: item.id,
+        delayUntil: nextStart,
+      };
     }
 
     // --- Delay minimo/batch/pausa longa por canal ---
@@ -696,8 +715,12 @@ async function runRealSend(input: {
             lockExpiresAt: null,
           },
         });
-        await tryMoveToDelayed(job, resumeAt);
-        return { action: 'DEFERRED_CHANNEL_DELAY', send: false, dispatchItemId: item.id };
+        return {
+          action: 'DEFERRED_CHANNEL_DELAY',
+          send: false,
+          dispatchItemId: item.id,
+          delayUntil: resumeAt,
+        };
       }
     }
 
@@ -815,9 +838,13 @@ async function runRealSend(input: {
           },
         });
       }
-      await tryMoveToDelayed(job, resumeAt);
       await recomputeDispatchProgress(prisma, dispatch, now());
-      return { action: 'DEFERRED_CHANNEL_COOLDOWN', send: true, dispatchItemId: item.id };
+      return {
+        action: 'DEFERRED_CHANNEL_COOLDOWN',
+        send: true,
+        dispatchItemId: item.id,
+        delayUntil: resumeAt,
+      };
     }
 
     if (failure.ambiguous) {
@@ -834,9 +861,13 @@ async function runRealSend(input: {
     if (isTransient && !isDispatchRetryExhausted(attemptCount, maxAttempts)) {
       const nextRetryAt = computeDispatchNextRetryAt(now(), attemptCount);
       await finalizeRetryScheduled(prisma, item, now(), attemptCount, nextRetryAt, failure);
-      await tryMoveToDelayed(job, nextRetryAt);
       await recomputeDispatchProgress(prisma, dispatch, now());
-      return { action: 'RETRY_SCHEDULED', send: true, dispatchItemId: item.id };
+      return {
+        action: 'RETRY_SCHEDULED',
+        send: true,
+        dispatchItemId: item.id,
+        delayUntil: nextRetryAt,
+      };
     }
 
     await finalizeFailed(
@@ -1284,16 +1315,6 @@ export function mapEvolutionCategoryToErrorCategory(
       return DispatchItemErrorCategory.CONTENT_REJECTED;
     default:
       return DispatchItemErrorCategory.UNKNOWN;
-  }
-}
-
-async function tryMoveToDelayed(job: DispatchSendJobLike, at: Date): Promise<void> {
-  if (!job.moveToDelayed) return;
-  try {
-    await job.moveToDelayed(at.getTime(), job.token);
-  } catch {
-    // Se o BullMQ nao permitir mover (ex.: fora de contexto de teste),
-    // o item ja foi atualizado no banco e o reconcile/producer cuidam depois.
   }
 }
 

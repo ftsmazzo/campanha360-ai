@@ -1,4 +1,4 @@
-import { Worker } from 'bullmq';
+import { DelayedError, Worker } from 'bullmq';
 import {
   DISPATCH_SEND_QUEUE_NAME,
   isDispatchEngineEnabled,
@@ -27,8 +27,8 @@ async function bootstrap(): Promise<void> {
 
   const worker = new Worker(
     DISPATCH_SEND_QUEUE_NAME,
-    async (job) =>
-      processDispatchSendJob(job, {
+    async (job, token) => {
+      const result = await processDispatchSendJob(job, {
         prisma,
         // Injetado explicitamente (em vez do default interno do processor)
         // para deixar claro o ponto unico de integracao com a Evolution.
@@ -36,7 +36,18 @@ async function bootstrap(): Promise<void> {
         sendText: sendEvolutionText,
         evolutionBaseUrl: process.env.EVOLUTION_API_URL,
         evolutionApiKey: process.env.EVOLUTION_API_KEY,
-      }),
+      });
+
+      // Padrao oficial BullMQ: moveToDelayed + DelayedError.
+      // Sem o throw, o Worker tenta moveToFinished com o lock ja consumido
+      // ("Missing lock for job ... moveToFinished / moveToDelayed").
+      if (result.delayUntil) {
+        await job.moveToDelayed(result.delayUntil.getTime(), token);
+        throw new DelayedError();
+      }
+
+      return result;
+    },
     {
       connection,
       concurrency: 5,
@@ -55,6 +66,7 @@ async function bootstrap(): Promise<void> {
   });
 
   worker.on('failed', (job, error) => {
+    if (error instanceof DelayedError) return;
     console.error(`[worker] job falhou id=${job?.id ?? 'desconhecido'} erro=${error.message}`);
   });
 
@@ -67,8 +79,8 @@ async function bootstrap(): Promise<void> {
       await worker.close();
     } finally {
       await Promise.allSettled([prisma.$disconnect(), connection.quit()]);
-      process.exit(0);
     }
+    process.exit(0);
   };
 
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
