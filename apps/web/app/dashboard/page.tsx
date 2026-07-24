@@ -11,16 +11,22 @@ import {
 import {
   ApiError,
   AuthUser,
+  HardResetResponse,
   OrganizationItem,
   clearStoredToken,
   createOrganization,
   fetchMe,
   fetchOrganizations,
   getStoredToken,
+  hardResetOrganizations,
 } from '../../lib/api';
-import { setActiveOrganizationId } from '../../lib/organization';
+import {
+  clearActiveOrganizationId,
+  setActiveOrganizationId,
+} from '../../lib/organization';
 
 const plannedModules = ['Eleitores', 'Segmentos', 'Inbox', 'Canais', 'IA', 'Compliance'];
+const HARD_RESET_PHRASE = 'HARD RESET';
 
 export default function DashboardPage() {
   const router = useRouter();
@@ -31,6 +37,12 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [hardResetOpen, setHardResetOpen] = useState(false);
+  const [hardResetConfirmation, setHardResetConfirmation] = useState('');
+  const [hardResetting, setHardResetting] = useState(false);
+  const [hardResetResult, setHardResetResult] = useState<HardResetResponse | null>(null);
+
+  const isOwnerSomewhere = organizations.some((item) => item.role === 'OWNER');
 
   useEffect(() => {
     async function load() {
@@ -83,6 +95,37 @@ export default function DashboardPage() {
     }
   }
 
+  async function handleHardReset() {
+    const token = getStoredToken();
+    if (!token) {
+      router.replace('/login');
+      return;
+    }
+
+    setHardResetting(true);
+    setError(null);
+    setHardResetResult(null);
+
+    try {
+      const result = await hardResetOrganizations(token, hardResetConfirmation);
+      setHardResetResult(result);
+      clearActiveOrganizationId();
+      setActiveOrganizationIdState(null);
+      setHardResetConfirmation('');
+      setHardResetOpen(false);
+      const orgs = await fetchOrganizations(token);
+      setOrganizations(orgs);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel executar o Hard reset',
+      );
+    } finally {
+      setHardResetting(false);
+    }
+  }
+
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-[#f7f7f5]">
@@ -99,6 +142,19 @@ export default function DashboardPage() {
           <p className="mt-2 text-sm text-[#65655f]">
             Selecione a organizacao ativa para operar campanhas e candidatos.
           </p>
+
+          {hardResetResult ? (
+            <div className="mt-4 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900">
+              <p className="font-medium">{hardResetResult.message}</p>
+              <p className="mt-1 text-xs">
+                Removidos: {hardResetResult.counts.organizations} org(s),{' '}
+                {hardResetResult.counts.campaigns} campanha(s),{' '}
+                {hardResetResult.counts.contacts} contato(s),{' '}
+                {hardResetResult.counts.dispatches} disparo(s),{' '}
+                {hardResetResult.counts.messages} mensagem(ns).
+              </p>
+            </div>
+          ) : null}
 
           <div className="mt-6">
             <OrganizationSelector
@@ -119,7 +175,10 @@ export default function DashboardPage() {
             </div>
           ) : null}
 
-          <form className="mt-6 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleCreateOrganization}>
+          <form
+            className="mt-6 rounded-md border border-[#deddd4] bg-white p-4"
+            onSubmit={handleCreateOrganization}
+          >
             <h3 className="font-medium text-[#24382b]">Nova organizacao</h3>
             <label className="mt-3 block">
               <span className="text-sm font-medium text-[#34342f]">Nome</span>
@@ -163,6 +222,71 @@ export default function DashboardPage() {
               </article>
             ))}
           </div>
+
+          {isOwnerSomewhere ? (
+            <section className="mt-8 rounded-md border border-red-200 bg-red-50 p-4">
+              <h3 className="font-semibold text-red-900">Zona de perigo</h3>
+              <p className="mt-2 text-sm text-red-900/90">
+                Hard reset apaga todas as organizacoes em que voce e OWNER e o
+                conteudo de teste (campanhas, contatos, inbox, canais, planos e
+                disparos). A conta de login e preservada. Instancias Evolution
+                remotas nao sao removidas.
+              </p>
+              {!hardResetOpen ? (
+                <button
+                  type="button"
+                  className="mt-4 rounded-md bg-red-800 px-4 py-2 text-sm font-semibold text-white"
+                  onClick={() => {
+                    setHardResetOpen(true);
+                    setError(null);
+                    setHardResetResult(null);
+                  }}
+                >
+                  Hard reset
+                </button>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  <p className="text-sm text-red-900">
+                    Digite exatamente{' '}
+                    <code className="rounded bg-white px-1">{HARD_RESET_PHRASE}</code>{' '}
+                    para confirmar.
+                  </p>
+                  <input
+                    className="w-full rounded-md border border-red-300 bg-white px-3 py-2 text-sm"
+                    value={hardResetConfirmation}
+                    onChange={(event) => setHardResetConfirmation(event.target.value)}
+                    placeholder={HARD_RESET_PHRASE}
+                    autoComplete="off"
+                    disabled={hardResetting}
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="rounded-md bg-red-800 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                      disabled={
+                        hardResetting ||
+                        hardResetConfirmation.trim() !== HARD_RESET_PHRASE
+                      }
+                      onClick={() => void handleHardReset()}
+                    >
+                      {hardResetting ? 'Apagando...' : 'Confirmar Hard reset'}
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md border border-red-300 bg-white px-4 py-2 text-sm text-red-900"
+                      disabled={hardResetting}
+                      onClick={() => {
+                        setHardResetOpen(false);
+                        setHardResetConfirmation('');
+                      }}
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              )}
+            </section>
+          ) : null}
         </div>
 
         <aside className="lg:w-80">
