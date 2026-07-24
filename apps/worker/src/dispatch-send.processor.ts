@@ -15,6 +15,7 @@ import {
   computeDispatchNextRetryAt,
   detectProtectionIntervalViolation,
   extractFullSendProtectionPolicy,
+  hashDestinationForCache,
   isDispatchDestinationAllowed,
   isDispatchEngineEnabled,
   isDispatchQueueEnabled,
@@ -24,11 +25,13 @@ import {
   resolveNextOperationalWindowStart,
   selectNextEligibleDispatchChannel,
   sendEvolutionText,
+  validateWhatsAppNumber,
   type EvolutionSendCategory,
   type EvolutionSendInput,
   type EvolutionSendResult,
   type OperationalWindowConfig,
   type SelectableDispatchChannel,
+  type ValidateWhatsAppNumberResult,
 } from '@campanha360/shared';
 import {
   confirmChannelAccountSendSuccessAtomic,
@@ -117,7 +120,10 @@ export type DispatchSendProcessAction =
   | 'DEFERRED_HOURLY_LIMIT'
   | 'DEFERRED_DAILY_LIMIT'
   | 'DEFERRED_PROTECTION_COOLDOWN'
+  | 'DEFERRED_WHATSAPP_VALIDATION'
   | 'SKIPPED_FLAG_DISABLED'
+  | 'BLOCKED_LAST_MILE_UNAVAILABLE'
+  | 'FAILED_WHATSAPP_NUMBER_INVALID'
   | 'SKIPPED_CLAIM_LOST'
   | 'SKIPPED_CONTACT_DELETED'
   | 'SKIPPED_CONTACT_BLOCKED'
@@ -164,6 +170,10 @@ export type DispatchSendProcessorDeps = {
   now?: () => Date;
   /** Injetavel para testes; default = cliente real (fetch nativo). */
   sendText?: (input: EvolutionSendInput) => Promise<EvolutionSendResult>;
+  /** Injetavel para testes de validateWhatsAppNumber. */
+  validateNumber?: (
+    input: Parameters<typeof validateWhatsAppNumber>[0],
+  ) => Promise<ValidateWhatsAppNumberResult>;
   evolutionBaseUrl?: string;
   evolutionApiKey?: string;
   /** Injetavel para testes deterministicos do delay min/max por canal. */
@@ -555,25 +565,60 @@ async function runRealSend(input: {
   }
 
   try {
-    // --- Last-mile: contato ---
-    const contact = await prisma.contact.findFirst({
-      where: {
-        id: item.contactId,
-        organizationId: (item as { organizationId?: string }).organizationId,
-        campaignId: (item as { campaignId?: string }).campaignId,
-      },
-      select: {
-        status: true,
-        optOuts: {
-          where: { OR: [{ channel: null }, { channel: 'WHATSAPP' }] },
-          take: 1,
-          select: { id: true },
+    // --- Last-mile: contato (fail closed) ---
+    let contact: { status?: unknown; optOuts?: unknown[] } | null = null;
+    try {
+      contact = (await prisma.contact.findFirst({
+        where: {
+          id: item.contactId,
+          organizationId: (item as { organizationId?: string }).organizationId,
+          campaignId: (item as { campaignId?: string }).campaignId,
         },
-      },
-    } as never);
+        select: {
+          status: true,
+          optOuts: {
+            where: { OR: [{ channel: null }, { channel: 'WHATSAPP' }] },
+            take: 1,
+            select: { id: true },
+          },
+        },
+      } as never)) as { status?: unknown; optOuts?: unknown[] } | null;
+    } catch {
+      const resumeAt = new Date(now().getTime() + 60_000);
+      await prisma.dispatchItem.update({
+        where: { id: item.id },
+        data: {
+          status: DispatchItemStatus.SCHEDULED,
+          scheduledAt: resumeAt,
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          lastQueueError: 'LAST_MILE_CONTACT_QUERY_FAILED',
+        },
+      });
+      return {
+        action: 'BLOCKED_LAST_MILE_UNAVAILABLE',
+        send: false,
+        dispatchItemId: item.id,
+        reason: 'CONTACT_QUERY_FAILED',
+        delayUntil: resumeAt,
+      };
+    }
 
-    if (contact) {
-      const contactStatus = String((contact as { status?: unknown }).status ?? '');
+    if (!contact) {
+      await finalizeSkip(
+        prisma,
+        item,
+        now(),
+        'CONTACT_DELETED',
+        DispatchItemErrorCategory.CONTACT_DELETED,
+      );
+      await recomputeDispatchProgress(prisma, dispatch, now());
+      return { action: 'SKIPPED_CONTACT_DELETED', send: false, dispatchItemId: item.id };
+    }
+
+    {
+      const contactStatus = String(contact.status ?? '');
       if (contactStatus === ContactStatus.DELETED) {
         await finalizeSkip(prisma, item, now(), 'CONTACT_DELETED', DispatchItemErrorCategory.CONTACT_DELETED);
         await recomputeDispatchProgress(prisma, dispatch, now());
@@ -584,8 +629,7 @@ async function runRealSend(input: {
         await recomputeDispatchProgress(prisma, dispatch, now());
         return { action: 'SKIPPED_CONTACT_BLOCKED', send: false, dispatchItemId: item.id };
       }
-      const optOuts = (contact as { optOuts?: unknown[] }).optOuts;
-      if (Array.isArray(optOuts) && optOuts.length > 0) {
+      if (Array.isArray(contact.optOuts) && contact.optOuts.length > 0) {
         await finalizeSkip(prisma, item, now(), 'CONTACT_OPT_OUT', DispatchItemErrorCategory.CONTACT_OPT_OUT);
         await recomputeDispatchProgress(prisma, dispatch, now());
         return { action: 'SKIPPED_CONTACT_OPT_OUT', send: false, dispatchItemId: item.id };
@@ -704,12 +748,192 @@ async function runRealSend(input: {
       };
     }
 
-    // --- Reserva atomica de slot por ChannelAccount (09.6.1) ---
+    // --- Validacao WhatsApp (antes da reserva; 09.6.2) ---
     const usageDateKey = computeUsageDateKey(now());
     const channelAccountMeta = await prisma.channelAccount.findUnique({
       where: { id: selectedChannel.channelAccountId },
-      select: { externalAccountId: true, createdAt: true },
+      select: {
+        externalAccountId: true,
+        createdAt: true,
+        accountOperationalSince: true,
+        verifiedAccountAgeSource: true,
+        status: true,
+      },
     });
+
+    if (
+      !channelAccountMeta ||
+      String(channelAccountMeta.status) !== ChannelAccountStatus.CONNECTED
+    ) {
+      const resumeAt = new Date(now().getTime() + DEFER_MINUTES_NO_CHANNEL * 60_000);
+      await prisma.dispatchItem.update({
+        where: { id: item.id },
+        data: {
+          status: DispatchItemStatus.SCHEDULED,
+          scheduledAt: resumeAt,
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          lastQueueError: 'CHANNEL_NOT_CONNECTED_AT_SEND',
+        },
+      });
+      return {
+        action: 'DEFERRED_NO_CHANNEL',
+        send: false,
+        dispatchItemId: item.id,
+        delayUntil: resumeAt,
+        reason: 'CHANNEL_NOT_CONNECTED',
+      };
+    }
+
+    let destinationValidationStatus:
+      | 'SKIPPED_BY_POLICY'
+      | 'VALID'
+      | 'INVALID'
+      | 'UNKNOWN'
+      | 'PROVIDER_UNAVAILABLE'
+      | 'CACHE_HIT' = 'SKIPPED_BY_POLICY';
+
+    if (policy.validateWhatsAppNumber) {
+      const orgId = String((item as { organizationId?: string }).organizationId ?? '');
+      const destHash = hashDestinationForCache(normalizedDestination);
+      const cacheTtlMs = 7 * 24 * 60 * 60 * 1000;
+      let cached: { status: string; expiresAt: Date } | null = null;
+      try {
+        const rows = await prisma.$queryRaw<
+          Array<{ status: string; expiresAt: Date }>
+        >`
+          SELECT "status", "expiresAt"
+          FROM "DestinationWhatsAppValidationCache"
+          WHERE "organizationId" = ${orgId}
+            AND "destinationHash" = ${destHash}
+            AND "expiresAt" > ${now()}
+          LIMIT 1
+        `;
+        cached = rows[0] ?? null;
+      } catch {
+        // tabela ausente: fail closed se validacao obrigatoria
+        const resumeAt = new Date(now().getTime() + 5 * 60_000);
+        await prisma.dispatchItem.update({
+          where: { id: item.id },
+          data: {
+            status: DispatchItemStatus.SCHEDULED,
+            scheduledAt: resumeAt,
+            lockedAt: null,
+            lockToken: null,
+            lockExpiresAt: null,
+            lastQueueError: 'WHATSAPP_VALIDATION_CACHE_UNAVAILABLE',
+          },
+        });
+        return {
+          action: 'DEFERRED_WHATSAPP_VALIDATION',
+          send: false,
+          dispatchItemId: item.id,
+          delayUntil: resumeAt,
+          reason: 'VALIDATION_CACHE_UNAVAILABLE',
+        };
+      }
+
+      if (cached?.status === 'VALID') {
+        destinationValidationStatus = 'CACHE_HIT';
+      } else if (cached?.status === 'INVALID') {
+        await finalizeFailed(
+          prisma,
+          item,
+          now(),
+          'INVALID_DESTINATION',
+          DispatchItemErrorCategory.INVALID_DESTINATION,
+          'Numero WhatsApp invalido (cache)',
+        );
+        await recomputeDispatchProgress(prisma, dispatch, now());
+        return {
+          action: 'FAILED_WHATSAPP_NUMBER_INVALID',
+          send: false,
+          dispatchItemId: item.id,
+        };
+      } else {
+        const validateFn = deps.validateNumber ?? validateWhatsAppNumber;
+        const validation = await validateFn({
+          baseUrl: deps.evolutionBaseUrl ?? process.env.EVOLUTION_API_URL ?? '',
+          apiKey: deps.evolutionApiKey ?? process.env.EVOLUTION_API_KEY,
+          instanceName: channelAccountMeta.externalAccountId ?? '',
+          destinationDigits: normalizedDestination,
+        });
+        destinationValidationStatus = validation.status;
+
+        if (validation.status === 'VALID' || validation.status === 'INVALID') {
+          try {
+            await prisma.$executeRaw`
+              INSERT INTO "DestinationWhatsAppValidationCache" (
+                "id", "organizationId", "destinationHash", "status", "source",
+                "checkedAt", "expiresAt", "createdAt", "updatedAt"
+              ) VALUES (
+                ${`dvc_${destHash.slice(0, 20)}`},
+                ${orgId},
+                ${destHash},
+                ${validation.status},
+                ${'EVOLUTION_WHATSAPP_NUMBERS'},
+                ${now()},
+                ${new Date(now().getTime() + cacheTtlMs)},
+                ${now()},
+                ${now()}
+              )
+              ON CONFLICT ("organizationId", "destinationHash") DO UPDATE SET
+                "status" = EXCLUDED."status",
+                "checkedAt" = EXCLUDED."checkedAt",
+                "expiresAt" = EXCLUDED."expiresAt",
+                "updatedAt" = EXCLUDED."updatedAt"
+            `;
+          } catch {
+            // cache best-effort
+          }
+        }
+
+        if (validation.status === 'INVALID') {
+          await finalizeFailed(
+            prisma,
+            item,
+            now(),
+            'INVALID_DESTINATION',
+            DispatchItemErrorCategory.INVALID_DESTINATION,
+            'Numero WhatsApp invalido (validacao Evolution)',
+          );
+          await recomputeDispatchProgress(prisma, dispatch, now());
+          return {
+            action: 'FAILED_WHATSAPP_NUMBER_INVALID',
+            send: false,
+            dispatchItemId: item.id,
+          };
+        }
+
+        if (
+          validation.status === 'UNKNOWN' ||
+          validation.status === 'PROVIDER_UNAVAILABLE'
+        ) {
+          const resumeAt = new Date(now().getTime() + 5 * 60_000);
+          await prisma.dispatchItem.update({
+            where: { id: item.id },
+            data: {
+              status: DispatchItemStatus.SCHEDULED,
+              scheduledAt: resumeAt,
+              lockedAt: null,
+              lockToken: null,
+              lockExpiresAt: null,
+              lastQueueError: `WHATSAPP_VALIDATION_${validation.status}`,
+            },
+          });
+          return {
+            action: 'DEFERRED_WHATSAPP_VALIDATION',
+            send: false,
+            dispatchItemId: item.id,
+            delayUntil: resumeAt,
+            reason: validation.errorCode ?? validation.status,
+          };
+        }
+      }
+    }
+
+    // --- Reserva atomica de slot por ChannelAccount (09.6.1) ---
 
     type ProtectionEvidence = {
       protectionProfile: string;
@@ -791,7 +1015,11 @@ async function runRealSend(input: {
         ),
         campaignId: String((item as { campaignId?: string }).campaignId ?? ''),
         channelAccountId: selectedChannel.channelAccountId,
-        channelAccountCreatedAt: channelAccountMeta?.createdAt ?? null,
+        channelAccountCreatedAt:
+          (channelAccountMeta as { accountOperationalSince?: Date | null } | null)
+            ?.accountOperationalSince ??
+          channelAccountMeta?.createdAt ??
+          null,
         approvalSnapshot: dispatch.approvalSnapshot,
         dispatchChannelEffectiveDailyLimit: selectedChannel.effectiveDailyLimit,
         now: now(),

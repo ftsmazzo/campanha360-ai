@@ -410,6 +410,9 @@ function createRealSendHarness(options: {
         return {
           externalAccountId: account?.externalAccountId ?? 'instance-1',
           createdAt: account?.createdAt ?? new Date('2020-01-01T00:00:00.000Z'),
+          accountOperationalSince: null,
+          verifiedAccountAgeSource: null,
+          status: 'CONNECTED',
         };
       },
     },

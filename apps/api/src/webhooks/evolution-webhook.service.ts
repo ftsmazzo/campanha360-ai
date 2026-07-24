@@ -16,8 +16,14 @@ import {
   MessageDirection,
   Prisma,
 } from '@prisma/client';
+import {
+  DEFAULT_OPT_OUT_KEYWORDS,
+  matchOptOutKeyword,
+  resolveOptOutKeywords,
+} from '@campanha360/shared';
 import { AuditService } from '../audit/audit.service';
 import { normalizePhone } from '../common/phone.util';
+import { skipPendingDispatchItemsForContactOptOut } from '../contacts/contact-opt-out-dispatch.util';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   EvolutionWebhookAuthHeaders,
@@ -364,7 +370,108 @@ export class EvolutionWebhookService {
       },
     });
 
+    if (!optOutActive) {
+      await this.maybeApplyInboundOptOutKeyword(account, contact.id, item.body);
+    }
+
     return 'processed';
+  }
+
+  /**
+   * Avalia keywords de opt-out no inbound (09.6.2).
+   * Nao cria resposta automatica.
+   */
+  private async maybeApplyInboundOptOutKeyword(
+    account: { id: string; organizationId: string; campaignId: string },
+    contactId: string,
+    body: string | null,
+  ): Promise<void> {
+    const campaign = await this.prisma.campaign.findUnique({
+      where: { id: account.campaignId },
+      select: { optOutKeywords: true },
+    });
+
+    const campaignKeywords = Array.isArray(campaign?.optOutKeywords)
+      ? (campaign?.optOutKeywords as unknown[]).filter(
+          (v): v is string => typeof v === 'string',
+        )
+      : null;
+
+    const keywords = resolveOptOutKeywords({
+      campaignKeywords,
+      policyKeywords: [...DEFAULT_OPT_OUT_KEYWORDS],
+    });
+
+    const match = matchOptOutKeyword(body, keywords);
+    if (!match.matched) return;
+
+    // Idempotente: se ja BLOCKED/opt-out, ainda assim tenta skip de items pendentes
+    const already = await this.isOptOutActive(contactId);
+    if (!already) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.optOut.create({
+          data: {
+            organizationId: account.organizationId,
+            campaignId: account.campaignId,
+            contactId,
+            channel: ChannelType.WHATSAPP,
+            reason: 'INBOUND_KEYWORD',
+            source: 'inbound_keyword',
+          },
+        });
+
+        const existingConsent = await tx.consent.findFirst({
+          where: {
+            organizationId: account.organizationId,
+            campaignId: account.campaignId,
+            contactId,
+            channel: ChannelType.WHATSAPP,
+          },
+          orderBy: { createdAt: 'desc' },
+        });
+        if (existingConsent) {
+          await tx.consent.update({
+            where: { id: existingConsent.id },
+            data: {
+              status: ConsentStatus.OPT_OUT,
+              source: 'inbound_keyword',
+              revokedAt: new Date(),
+            },
+          });
+        } else {
+          await tx.consent.create({
+            data: {
+              organizationId: account.organizationId,
+              campaignId: account.campaignId,
+              contactId,
+              channel: ChannelType.WHATSAPP,
+              status: ConsentStatus.OPT_OUT,
+              source: 'inbound_keyword',
+              revokedAt: new Date(),
+            },
+          });
+        }
+
+        await tx.contact.update({
+          where: { id: contactId },
+          data: { status: ContactStatus.BLOCKED },
+        });
+      });
+    }
+
+    const skipped = await skipPendingDispatchItemsForContactOptOut(this.prisma, {
+      organizationId: account.organizationId,
+      campaignId: account.campaignId,
+      contactId,
+    });
+
+    await this.safeAudit(account, 'CONTACT_OPT_OUT_KEYWORD_MATCHED', {
+      contactId,
+      keywordMatched: match.keyword,
+      strategy: match.strategy,
+      skippedItems: skipped.skipped,
+      // sem body/telefone
+    });
   }
 
   private async findOrCreateContact(

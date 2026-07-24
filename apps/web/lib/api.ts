@@ -1630,6 +1630,10 @@ export type DispatchProtectionsPanel = {
   dispatchId: string;
   status: string;
   frozenProfile: string;
+  protectionReadiness?: 'READY' | 'READY_WITH_WARNINGS' | 'BLOCKED';
+  readinessBlockers?: string[];
+  readinessWarnings?: string[];
+  honestyNote?: string;
   policy: {
     minDelaySeconds: number;
     maxDelaySeconds: number;
@@ -1659,6 +1663,7 @@ export type DispatchProtectionsPanel = {
     consecutiveErrors: number;
     cooldownUntil: string | null;
     operationalStatus: string;
+    accountAgeLabel?: string;
     guard: {
       nextAvailableAt: string | null;
       lastSentAt: string | null;
@@ -1677,7 +1682,12 @@ export type DispatchProtectionsPanel = {
     valueOrigin: string;
     appliedInWorker: boolean;
     status: string;
+    configured?: boolean;
+    blocks?: boolean;
+    applicationPoint?: string;
     evidence: string;
+    dependency?: string | null;
+    fallback?: string | null;
     lastEvaluation: string | null;
     result: string;
     observation: string;

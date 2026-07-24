@@ -5,7 +5,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { DispatchStatus } from '@prisma/client';
-import { assertDispatchSendAllowed } from '@campanha360/shared';
+import {
+  assertDispatchSendAllowed,
+  buildHonestProtectionMatrix,
+  evaluateProtectionReadiness,
+} from '@campanha360/shared';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -76,6 +80,7 @@ export class DispatchStartService {
         totalItems: true,
         queuedItems: true,
         requiringRedistribution: true,
+        approvalSnapshot: true,
       },
     });
 
@@ -91,6 +96,32 @@ export class DispatchStartService {
         error instanceof Error
           ? error.message
           : 'Dispatch nao pode ser iniciado',
+      );
+    }
+
+    // 09.6.2 — gate de blindagens (fail closed para obrigatorias)
+    let guardAvailable = true;
+    try {
+      await this.prisma.$queryRaw`SELECT 1 FROM "ChannelAccountSendGuard" LIMIT 1`;
+    } catch {
+      guardAvailable = false;
+    }
+    const honestRows = buildHonestProtectionMatrix({
+      approvalSnapshot: dispatch.approvalSnapshot,
+      hasAtomicReservation: true,
+      whatsappValidationImplemented: true,
+      optOutKeywordsInboundImplemented: true,
+      lastMileImplemented: true,
+      accountAgeSource: 'CREATED_AT_ONLY',
+      guardAvailable,
+    });
+    const readiness = evaluateProtectionReadiness({
+      approvalSnapshot: dispatch.approvalSnapshot,
+      rows: honestRows,
+    });
+    if (readiness.status === 'BLOCKED') {
+      throw new BadRequestException(
+        `Protecao nao pronta (${readiness.blockers.join(', ') || 'BLOCKED'})`,
       );
     }
 

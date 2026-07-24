@@ -1218,6 +1218,15 @@ export default function DispatchDetailPage() {
               </div>
               {protections ? (
                 <div className="mt-4 space-y-4 text-sm">
+                  <p className="text-xs text-[#65655f]">
+                    Readiness:{' '}
+                    <strong>
+                      {protections.protectionReadiness ?? 'n/a'}
+                    </strong>
+                    {protections.honestyNote
+                      ? ` — ${protections.honestyNote}`
+                      : ''}
+                  </p>
                   <dl className="grid gap-2 md:grid-cols-3">
                     <div>
                       <dt className="text-[#65655f]">Perfil congelado</dt>
@@ -1256,9 +1265,9 @@ export default function DispatchDetailPage() {
                         <tr className="border-b border-[#deddd4] text-[#65655f]">
                           <th className="py-1 pr-2">Regra</th>
                           <th className="py-1 pr-2">Valor</th>
-                          <th className="py-1 pr-2">Worker?</th>
                           <th className="py-1 pr-2">Status</th>
-                          <th className="py-1">Evidencia</th>
+                          <th className="py-1 pr-2">Bloqueia?</th>
+                          <th className="py-1">Evidencia / ponto</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1269,11 +1278,13 @@ export default function DispatchDetailPage() {
                           >
                             <td className="py-1 pr-2">{row.rule}</td>
                             <td className="py-1 pr-2">{row.approvedValue}</td>
-                            <td className="py-1 pr-2">
-                              {row.appliedInWorker ? 'SIM' : 'NAO'}
-                            </td>
                             <td className="py-1 pr-2">{row.status}</td>
-                            <td className="py-1">{row.evidence}</td>
+                            <td className="py-1 pr-2">
+                              {row.blocks ? 'SIM' : 'NAO'}
+                            </td>
+                            <td className="py-1">
+                              {row.applicationPoint ?? row.evidence}
+                            </td>
                           </tr>
                         ))}
                       </tbody>

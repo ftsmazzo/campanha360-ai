@@ -2794,3 +2794,21 @@ CorreÃ§Ã£o:
 NÃ£o iniciar a **09.7** atÃ© homologar 09.6.1 (migration + piloto 3 contatos com intervalos â‰¥ 30s comprovados).
 
 A prÃ³xima implementaÃ§Ã£o deve ser apenas conforme prioridade do Ã©pico apÃ³s homologaÃ§Ã£o da 09.6.1.
+### Correção obrigatória 09.6.2 — Fechamento e homologação das blindagens
+
+**Status: implementada (código + testes). Homologação operacional pendente.**
+
+Princípio: nenhuma regra aparece como ativa sem status honesto:
+
+- ENFORCED_BLOCKING
+- ENFORCED_NON_BLOCKING
+- DIAGNOSTIC_ONLY
+- DISABLED_BY_POLICY
+- NOT_IMPLEMENTED
+- NOT_APPLICABLE
+- DEGRADED
+- ERROR
+
+Entregas: validateWhatsAppNumber + cache; last-mile fail closed; optOutKeywords no webhook inbound; skip items apos opt-out; repeticao ENFORCED_NON_BLOCKING no approve; protectionReadiness no Start; matriz honesta no painel.
+
+Nao iniciar 09.7 ate homologar 09.6.2. Nao ha garantia anti-ban da plataforma.

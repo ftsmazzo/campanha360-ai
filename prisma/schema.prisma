@@ -259,6 +259,7 @@ model Organization {
   dispatchChannels DispatchChannel[]
   dispatchChannelUsageDaily DispatchChannelUsageDaily[]
   channelAccountSendGuards ChannelAccountSendGuard[]
+  destinationWhatsAppValidationCaches DestinationWhatsAppValidationCache[]
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 }
@@ -297,6 +298,8 @@ model Campaign {
   dispatchChannels DispatchChannel[]
   dispatchChannelUsageDaily DispatchChannelUsageDaily[]
   channelAccountSendGuards ChannelAccountSendGuard[]
+  /** Keywords de opt-out da campanha (09.6.2). Precedencia sobre defaults. */
+  optOutKeywords Json?
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
@@ -463,6 +466,13 @@ model ChannelAccount {
   status            ChannelAccountStatus @default(DISCONNECTED)
   externalAccountId String?
   config            Json?
+  /**
+   * Data operacional declarada/verificada da conta (09.6.2).
+   * Se nula, o sistema usa createdAt com status DEGRADED
+   * ("idade conhecida no Campanha360", nao idade real WhatsApp).
+   */
+  accountOperationalSince DateTime?
+  verifiedAccountAgeSource String?
   dispatchPlans     DispatchPlan[]
   dispatchPlanChannels DispatchPlanChannel[]
   dispatches        Dispatch[]
@@ -963,6 +973,8 @@ model DispatchItemAttempt {
   pauseReason                  String?
   protectionDecision           String?
   protectionReason             String?
+  /** Evidencia last-mile / validacao (09.6.2) — sem telefone/conteudo. */
+  lastMileEvidence             Json?
   organization                 Organization                @relation(fields: [organizationId], references: [id])
   campaign                     Campaign                    @relation(fields: [campaignId], references: [id])
   dispatch                     Dispatch                    @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
@@ -976,4 +988,24 @@ model DispatchItemAttempt {
   @@index([organizationId, campaignId])
   @@index([outcome])
   @@index([channelAccountId])
+}
+
+/**
+ * Cache de validacao WhatsApp por hash do destino (09.6.2).
+ * Nao armazena telefone em claro.
+ */
+model DestinationWhatsAppValidationCache {
+  id               String       @id @default(cuid())
+  organizationId   String
+  destinationHash  String
+  status           String
+  source           String       @default("EVOLUTION_WHATSAPP_NUMBERS")
+  checkedAt        DateTime
+  expiresAt        DateTime
+  organization     Organization @relation(fields: [organizationId], references: [id])
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+
+  @@unique([organizationId, destinationHash])
+  @@index([expiresAt])
 }

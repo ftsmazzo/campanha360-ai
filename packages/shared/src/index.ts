@@ -21,4 +21,8 @@ export * from './dispatch-send-retry';
 export * from './dispatch-recovery.util';
 export * from './dispatch-channel-send-reservation.util';
 export * from './dispatch-protection-enforcement.util';
+export * from './dispatch-protection-readiness.util';
+export * from './dispatch-repetition.util';
+export * from './opt-out-keywords.util';
+export * from './evolution-validate-number.client';
 export * from './evolution-send.client';

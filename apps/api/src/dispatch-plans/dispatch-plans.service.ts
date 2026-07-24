@@ -17,6 +17,10 @@ import {
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  acknowledgeRepetition,
+  assessContentRepetition,
+} from '@campanha360/shared';
 import { normalizeSegmentFilters } from '../segments/segment-filters.util';
 import { buildSegmentStructuralWhere } from '../segments/segment-prevalidate.util';
 import {
@@ -1645,6 +1649,44 @@ export class DispatchPlansService {
       campaignId,
     );
 
+    const contentBody =
+      existing.content &&
+      typeof existing.content === 'object' &&
+      typeof (existing.content as { body?: unknown }).body === 'string'
+        ? String((existing.content as { body: string }).body)
+        : JSON.stringify(existing.content ?? '');
+
+    const recentPlans = await this.prisma.dispatchPlan.findMany({
+      where: {
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: { in: [DispatchPlanStatus.APPROVED, DispatchPlanStatus.EXPIRED] },
+        id: { not: existing.id },
+      },
+      orderBy: { approvedAt: 'desc' },
+      take: 20,
+      select: { content: true },
+    });
+    const recentContents = recentPlans
+      .map((p) => {
+        const c = p.content as { body?: unknown } | null;
+        return typeof c?.body === 'string' ? c.body : '';
+      })
+      .filter(Boolean);
+
+    const repetitionBase = assessContentRepetition({
+      currentContent: contentBody,
+      recentContents,
+      thresholdPercentage: protectionPolicy.repetitionWarningPercentage,
+      now: approvedAt,
+    });
+    // Aprovacao do plano = reconhecimento explicito do warning (se houver)
+    const repetitionAssessment = acknowledgeRepetition(
+      repetitionBase,
+      userId,
+      approvedAt,
+    );
+
     const approvalSnapshot = {
       ...buildApprovalSnapshot({
         approvedAt,
@@ -1673,6 +1715,7 @@ export class DispatchPlansService {
       }),
       protectionPolicy,
       distributionStrategy: protectionPolicy.distributionStrategy,
+      repetitionAssessment,
       multiInstance: {
         enabled: planChannels.length > 1,
         legacySingleChannel: existing.legacySingleChannel,

@@ -4,9 +4,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import {
-  auditPilotSendIntervals,
-  buildProtectionEnforcementMatrix,
+  buildHonestProtectionMatrix,
+  evaluateProtectionReadiness,
   extractFullSendProtectionPolicy,
+  auditPilotSendIntervals,
 } from '@campanha360/shared';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -63,7 +64,13 @@ export class DispatchProtectionService {
             cooldownUntil: true,
             operationalStatus: true,
             channelAccount: {
-              select: { id: true, name: true, createdAt: true },
+              select: {
+                id: true,
+                name: true,
+                createdAt: true,
+                accountOperationalSince: true,
+                verifiedAccountAgeSource: true,
+              },
             },
           },
         },
@@ -79,6 +86,7 @@ export class DispatchProtectionService {
       ...new Set(dispatch.channels.map((c) => c.channelAccountId)),
     ];
 
+    let guardAvailable = true;
     const guardByAccount = new Map<string, GuardRow>();
     for (const id of channelAccountIds) {
       try {
@@ -99,32 +107,30 @@ export class DispatchProtectionService {
         `;
         if (found[0]) guardByAccount.set(id, found[0]);
       } catch {
-        // tabela ainda nao migrada no ambiente
+        guardAvailable = false;
       }
     }
 
-    const primaryGuard = [...guardByAccount.values()][0] ?? null;
+    const hasOperationalSince = dispatch.channels.some(
+      (c) => c.channelAccount.accountOperationalSince != null,
+    );
+    const accountAgeSource = hasOperationalSince
+      ? 'OPERATIONAL_SINCE'
+      : 'CREATED_AT_ONLY';
 
-    const matrix = buildProtectionEnforcementMatrix({
+    const honestRows = buildHonestProtectionMatrix({
       approvalSnapshot: dispatch.approvalSnapshot,
       hasAtomicReservation: true,
-      guardSummary: primaryGuard
-        ? {
-            nextAvailableAt: primaryGuard.nextAvailableAt?.toISOString() ?? null,
-            lastSentAt: primaryGuard.lastSentAt?.toISOString() ?? null,
-            dailySentCount: primaryGuard.dailySentCount,
-            hourlySentCount: primaryGuard.hourlySentCount,
-            violationCount: primaryGuard.violationCount,
-            protectionCooldownUntil:
-              primaryGuard.protectionCooldownUntil?.toISOString() ?? null,
-            sequenceNumber: primaryGuard.sequenceNumber,
-          }
-        : {
-            dailySentCount: 0,
-            hourlySentCount: 0,
-            violationCount: 0,
-            sequenceNumber: 0,
-          },
+      whatsappValidationImplemented: true,
+      optOutKeywordsInboundImplemented: true,
+      lastMileImplemented: true,
+      accountAgeSource,
+      guardAvailable,
+    });
+
+    const readiness = evaluateProtectionReadiness({
+      approvalSnapshot: dispatch.approvalSnapshot,
+      rows: honestRows,
     });
 
     const recentAttempts = await this.prisma.dispatchItemAttempt.findMany({
@@ -154,6 +160,7 @@ export class DispatchProtectionService {
         effectiveDailyLimit: true,
         minDelaySeconds: true,
         maxDelaySeconds: true,
+        lastMileEvidence: true,
       },
     });
 
@@ -161,6 +168,9 @@ export class DispatchProtectionService {
       dispatchId: dispatch.id,
       status: dispatch.status,
       frozenProfile: policy.profile,
+      protectionReadiness: readiness.status,
+      readinessBlockers: readiness.blockers,
+      readinessWarnings: readiness.warnings,
       policy: {
         minDelaySeconds: policy.minDelaySeconds,
         maxDelaySeconds: policy.maxDelaySeconds,
@@ -192,6 +202,10 @@ export class DispatchProtectionService {
           consecutiveErrors: ch.consecutiveErrors,
           cooldownUntil: ch.cooldownUntil,
           operationalStatus: ch.operationalStatus,
+          accountAgeLabel: ch.channelAccount.accountOperationalSince
+            ? 'accountOperationalSince'
+            : 'idade conhecida no Campanha360 (createdAt)',
+          verifiedAccountAgeSource: ch.channelAccount.verifiedAccountAgeSource,
           guard: guard
             ? {
                 nextAvailableAt: guard.nextAvailableAt,
@@ -207,37 +221,41 @@ export class DispatchProtectionService {
             : null,
         };
       }),
-      enforcementMatrix: matrix,
-      recentAttempts: recentAttempts.map((a) => ({
-        id: a.id,
-        dispatchItemId: a.dispatchItemId,
-        attemptNumber: a.attemptNumber,
-        channelAccountId: a.channelAccountId,
-        startedAt: a.startedAt,
-        completedAt: a.completedAt,
-        outcome: a.outcome,
-        reservedSendAt: a.reservedSendAt,
-        actualProviderRequestStartedAt: a.actualProviderRequestStartedAt,
-        intervalObservedSeconds: a.intervalObservedSeconds,
-        selectedDelaySeconds: a.selectedDelaySeconds,
-        sequenceNumber: a.sequenceNumber,
-        batchPosition: a.batchPosition,
-        pauseApplied: a.pauseApplied,
-        pauseReason: a.pauseReason,
-        protectionDecision: a.protectionDecision,
-        protectionReason: a.protectionReason,
-        hourlyUsageBefore: a.hourlyUsageBefore,
-        dailyUsageBefore: a.dailyUsageBefore,
-        effectiveDailyLimit: a.effectiveDailyLimit,
-        minDelaySeconds: a.minDelaySeconds,
-        maxDelaySeconds: a.maxDelaySeconds,
+      enforcementMatrix: honestRows.map((row) => ({
+        rule: row.rule,
+        approvedValue: row.approvedValue,
+        valueOrigin: row.applicationPoint,
+        appliedInWorker: row.applied,
+        status: row.status,
+        configured: row.configured,
+        blocks: row.blocks,
+        applicationPoint: row.applicationPoint,
+        evidence: row.evidence,
+        dependency: row.dependency,
+        fallback: row.fallback,
+        lastEvaluation: row.lastEvaluation,
+        result: row.status,
+        observation: row.observation,
       })),
+      recentAttempts,
       violationCountTotal: [...guardByAccount.values()].reduce(
         (acc, g) => acc + (g.violationCount ?? 0),
         0,
       ),
       atomicReservationStrategy: 'POSTGRES_SELECT_FOR_UPDATE',
       scope: 'ChannelAccount',
+      honestyNote:
+        'Status usa ENFORCED_BLOCKING / ENFORCED_NON_BLOCKING / DIAGNOSTIC_ONLY / DISABLED_BY_POLICY / NOT_IMPLEMENTED / DEGRADED / ERROR. Nao ha garantia anti-ban da plataforma.',
+    };
+  }
+
+  async getReadiness(userId: string, campaignId: string, dispatchId: string) {
+    const panel = await this.getProtections(userId, campaignId, dispatchId);
+    return {
+      dispatchId: panel.dispatchId,
+      protectionReadiness: panel.protectionReadiness,
+      blockers: panel.readinessBlockers,
+      warnings: panel.readinessWarnings,
     };
   }
 

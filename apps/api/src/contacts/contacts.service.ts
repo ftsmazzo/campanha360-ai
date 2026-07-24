@@ -23,6 +23,7 @@ import {
   resolveContactRemovalMode,
 } from './contact-removal.util';
 import { resolveStatusAfterClearOptOut } from './contact-opt-out.util';
+import { skipPendingDispatchItemsForContactOptOut } from './contact-opt-out-dispatch.util';
 import {
   buildContactListAndClauses,
   normalizeTagName,
@@ -999,6 +1000,12 @@ export class ContactsService {
         where: { id: contactId },
         data: { status: ContactStatus.BLOCKED },
       });
+    });
+
+    await skipPendingDispatchItemsForContactOptOut(this.prisma, {
+      organizationId: campaign.organizationId,
+      campaignId,
+      contactId,
     });
 
     await this.audit.log({
