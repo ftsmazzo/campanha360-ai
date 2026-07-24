@@ -1626,6 +1626,126 @@ export function fetchDispatchRecovery(
   );
 }
 
+export type DispatchProtectionsPanel = {
+  dispatchId: string;
+  status: string;
+  frozenProfile: string;
+  policy: {
+    minDelaySeconds: number;
+    maxDelaySeconds: number;
+    batchSize: number;
+    pauseBetweenBatchesSeconds: number;
+    longPauseEveryMessages: number;
+    longPauseMinutes: number;
+    hourlyLimit: number;
+    dailyLimitPerInstance: number;
+    newAccountMaxPerDay: number;
+    warmupMaxPerDay: number;
+    rotateEveryMessages: number;
+    rotationEnabled: boolean;
+    consecutiveErrorsBeforePause: number;
+    errorPauseMinutes: number;
+    pauseOn403: boolean;
+    pauseOn429: boolean;
+    validateWhatsAppNumber: boolean;
+    repetitionWarningPercentage: number;
+  };
+  channels: Array<{
+    dispatchChannelId: string;
+    channelAccountId: string;
+    channelAccountName: string;
+    effectiveDailyLimit: number;
+    sentItems: number;
+    consecutiveErrors: number;
+    cooldownUntil: string | null;
+    operationalStatus: string;
+    guard: {
+      nextAvailableAt: string | null;
+      lastSentAt: string | null;
+      lastReservedAt: string | null;
+      sequenceNumber: number;
+      dailySentCount: number;
+      hourlySentCount: number;
+      protectionCooldownUntil: string | null;
+      violationCount: number;
+      lastSelectedDelaySeconds: number | null;
+    } | null;
+  }>;
+  enforcementMatrix: Array<{
+    rule: string;
+    approvedValue: string;
+    valueOrigin: string;
+    appliedInWorker: boolean;
+    status: string;
+    evidence: string;
+    lastEvaluation: string | null;
+    result: string;
+    observation: string;
+  }>;
+  recentAttempts: Array<{
+    id: string;
+    dispatchItemId: string;
+    attemptNumber: number;
+    channelAccountId: string | null;
+    reservedSendAt: string | null;
+    actualProviderRequestStartedAt: string | null;
+    intervalObservedSeconds: number | null;
+    selectedDelaySeconds: number | null;
+    protectionDecision: string | null;
+    protectionReason: string | null;
+    sequenceNumber: number | null;
+    pauseApplied: boolean | null;
+    pauseReason: string | null;
+  }>;
+  violationCountTotal: number;
+  atomicReservationStrategy: string;
+  scope: string;
+};
+
+export type DispatchPilotProtectionAudit = {
+  dispatchId: string;
+  channelAccountId: string | null;
+  profile: string | null;
+  minDelaySeconds: number | null;
+  maxDelaySeconds: number | null;
+  overallVerdict: 'RESPEITADO' | 'VIOLADO' | 'NAO_COMPROVAVEL';
+  violationCount: number;
+  items: Array<{
+    dispatchItemId: string;
+    channelAccountId: string | null;
+    providerRequestStartedAt: string | null;
+    intervalFromPreviousSeconds: number | null;
+    minDelaySeconds: number | null;
+    selectedDelaySeconds: number | null;
+    verdict: 'RESPEITADO' | 'VIOLADO' | 'NAO_COMPROVAVEL';
+    reason: string;
+  }>;
+};
+
+export function fetchDispatchProtections(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<DispatchProtectionsPanel>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/protections`,
+    {},
+    token,
+  );
+}
+
+export function fetchDispatchPilotProtectionAudit(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<DispatchPilotProtectionAudit>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/protections/pilot-audit`,
+    {},
+    token,
+  );
+}
+
 export function recoverDispatch(
   token: string,
   campaignId: string,

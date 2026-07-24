@@ -2775,4 +2775,22 @@ A **09.1 — Entidade Dispatch**, a **09.2 — Materialização dos DispatchItem
 - UI: painel Recuperação, histórico de tentativas, retry/resolução no detalhe do item.
 - `DISPATCH_SEND_ENABLED` permanece default `false`.
 
-A próxima implementação deve ser apenas conforme prioridade do épico (ex.: 09.7/09.8).
+### Correção obrigatória 09.6.1 — Enforcement atômico das blindagens
+
+**Status: implementada (código + testes). Homologação operacional pendente — não marcar blindagem como homologada ainda.**
+
+Problema observado: com BullMQ `concurrency: 5`, vários jobs da mesma instância liam `lastSentAt` antes do primeiro sucesso e violavam o intervalo Conservador (30–60s).
+
+Correção:
+
+- Model `ChannelAccountSendGuard` + reserva atômica via **PostgreSQL `SELECT FOR UPDATE`** (estratégia A; sobrevive a múltiplas réplicas);
+- escopo por **ChannelAccount** (não só DispatchChannel);
+- delay sorteado uma vez e persistido no item/guard;
+- limites horário/diário, batch e long pause calculados atomicamente no guard;
+- evidência em `DispatchItemAttempt`; painel `GET .../protections`; auditoria `GET .../protections/pilot-audit`;
+- detector `PROTECTION_INTERVAL_VIOLATION` com cooldown preventivo;
+- `DISPATCH_SEND_ENABLED` permanece default `false`.
+
+Não iniciar a **09.7** até homologar 09.6.1 (migration + piloto 3 contatos com intervalos ≥ 30s comprovados).
+
+A próxima implementação deve ser apenas conforme prioridade do épico após homologação da 09.6.1.

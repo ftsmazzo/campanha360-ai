@@ -6,6 +6,7 @@ import { DispatchSendProducer } from './dispatch-send.producer';
 import { DispatchStartService } from './dispatch-start.service';
 import { DispatchOperationalService } from './dispatch-operational.service';
 import { DispatchRecoveryService } from './dispatch-recovery.service';
+import { DispatchProtectionService } from './dispatch-protection.service';
 
 @Module({
   controllers: [DispatchesController],
@@ -16,6 +17,7 @@ import { DispatchRecoveryService } from './dispatch-recovery.service';
     DispatchStartService,
     DispatchOperationalService,
     DispatchRecoveryService,
+    DispatchProtectionService,
   ],
   exports: [
     DispatchSendProducer,
@@ -23,6 +25,7 @@ import { DispatchRecoveryService } from './dispatch-recovery.service';
     DispatchStartService,
     DispatchOperationalService,
     DispatchRecoveryService,
+    DispatchProtectionService,
   ],
 })
 export class DispatchesModule {}

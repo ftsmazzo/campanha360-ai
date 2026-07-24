@@ -217,8 +217,21 @@ function realSendDispatch(overrides: Record<string, unknown> = {}) {
         longPauseEveryMessages: 1000,
         longPauseMinutes: 0,
         rotateEveryMessages: 1000,
+        rotationEnabled: true,
         pauseOn403: true,
         pauseOn429: true,
+        hourlyLimit: 1000,
+        dailyLimitPerInstance: 5000,
+        newAccountMaxPerDay: 5000,
+        newAccountDays: 0,
+        warmupEnabled: false,
+        warmupDays: 0,
+        warmupMaxPerDay: 5000,
+        consecutiveErrorsBeforePause: 1,
+        errorPauseMinutes: 5,
+        validateWhatsAppNumber: false,
+        optOutKeywords: [],
+        repetitionWarningPercentage: 70,
       },
     },
     ...overrides,
@@ -293,8 +306,10 @@ function createRealSendHarness(options: {
   const contact = options.contact === undefined ? contactRow() : options.contact;
   const usageDaily = new Map<string, Record<string, unknown>>();
   const dispatchChannelUpdates: Array<Record<string, unknown>> = [];
+  const sendGuards = new Map<string, Record<string, unknown>>();
+  let attemptSeq = 0;
 
-  const prisma = {
+  const prisma: Record<string, unknown> = {
     dispatch: {
       findFirst: async () => ({ ...dispatchRow }),
       updateMany: async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
@@ -337,8 +352,19 @@ function createRealSendHarness(options: {
       updateMany: async (args: { where: { id: string }; data: Record<string, unknown> }) => {
         const idx = channels.findIndex((c) => c.id === args.where.id);
         if (idx < 0) return { count: 0 };
-        channels[idx] = { ...channels[idx], ...args.data };
-        dispatchChannelUpdates.push({ id: args.where.id, data: args.data });
+        const data = { ...args.data } as Record<string, unknown>;
+        if (
+          data.consecutiveErrors &&
+          typeof data.consecutiveErrors === 'object' &&
+          data.consecutiveErrors !== null &&
+          'increment' in (data.consecutiveErrors as object)
+        ) {
+          const current = Number(channels[idx]!.consecutiveErrors ?? 0);
+          data.consecutiveErrors =
+            current + Number((data.consecutiveErrors as { increment: number }).increment);
+        }
+        channels[idx] = { ...channels[idx], ...data };
+        dispatchChannelUpdates.push({ id: args.where.id, data });
         return { count: 1 };
       },
     },
@@ -378,12 +404,107 @@ function createRealSendHarness(options: {
     channelAccount: {
       findUnique: async (args: { where: { id: string } }) => {
         const channel = channels.find((c) => c.channelAccountId === args.where.id);
-        const account = channel?.channelAccount as { externalAccountId?: string } | undefined;
-        return { externalAccountId: account?.externalAccountId ?? 'instance-1' };
+        const account = channel?.channelAccount as
+          | { externalAccountId?: string; createdAt?: Date }
+          | undefined;
+        return {
+          externalAccountId: account?.externalAccountId ?? 'instance-1',
+          createdAt: account?.createdAt ?? new Date('2020-01-01T00:00:00.000Z'),
+        };
       },
     },
     contact: {
       findFirst: async () => (contact ? { ...contact } : null),
+    },
+    dispatchItemAttempt: {
+      upsert: async () => {
+        attemptSeq += 1;
+        return { id: `attempt-${attemptSeq}` };
+      },
+      update: async () => ({}),
+    },
+    auditLog: {
+      create: async () => ({}),
+    },
+    $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
+    $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.join('?');
+      if (sql.includes('FROM "ChannelAccountSendGuard"') && sql.includes('FOR UPDATE')) {
+        const channelAccountId = String(values[0]);
+        const existing = sendGuards.get(channelAccountId);
+        return existing ? [{ ...existing }] : [];
+      }
+      if (sql.includes('FROM "ChannelAccountSendGuard"')) {
+        const channelAccountId = String(values[0]);
+        const existing = sendGuards.get(channelAccountId);
+        return existing ? [{ ...existing }] : [];
+      }
+      return [];
+    },
+    $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const sql = strings.join('?');
+      if (sql.includes('INSERT INTO "ChannelAccountSendGuard"')) {
+        const id = String(values[0]);
+        const organizationId = String(values[1]);
+        const campaignId = String(values[2]);
+        const channelAccountId = String(values[3]);
+        if (!sendGuards.has(channelAccountId)) {
+          sendGuards.set(channelAccountId, {
+            id,
+            organizationId,
+            campaignId,
+            channelAccountId,
+            nextAvailableAt: null,
+            lastReservedAt: null,
+            lastSentAt: null,
+            reservationToken: null,
+            reservationExpiresAt: null,
+            lastSelectedDelaySeconds: null,
+            sequenceNumber: 0,
+            dailyUsageDate: null,
+            dailySentCount: 0,
+            hourlyWindowStart: null,
+            hourlySentCount: 0,
+            protectionCooldownUntil: null,
+            lastViolationAt: null,
+            violationCount: 0,
+            version: 0,
+          });
+        }
+        return 1;
+      }
+      if (sql.includes('UPDATE "ChannelAccountSendGuard"')) {
+        // UPDATE args order from persistGuardState
+        const channelAccountId = String(values[values.length - 1]);
+        const existing = sendGuards.get(channelAccountId) ?? {
+          id: 'g1',
+          organizationId: 'org-1',
+          campaignId: 'campaign-1',
+          channelAccountId,
+          violationCount: 0,
+          version: 0,
+        };
+        sendGuards.set(channelAccountId, {
+          ...existing,
+          nextAvailableAt: values[0] as Date | null,
+          lastReservedAt: values[1] as Date | null,
+          lastSentAt: values[2] as Date | null,
+          reservationToken: values[3] as string | null,
+          reservationExpiresAt: values[4] as Date | null,
+          lastSelectedDelaySeconds: values[5] as number | null,
+          sequenceNumber: values[6] as number,
+          dailyUsageDate: values[7] as Date | null,
+          dailySentCount: values[8] as number,
+          hourlyWindowStart: values[9] as Date | null,
+          hourlySentCount: values[10] as number,
+          protectionCooldownUntil: values[11] as Date | null,
+          lastViolationAt: values[12] as Date | null,
+          violationCount: values[13] as number,
+          version: Number(existing.version ?? 0) + 1,
+        });
+        return 1;
+      }
+      return 0;
     },
   };
 
@@ -394,6 +515,7 @@ function createRealSendHarness(options: {
     getChannels: () => channels,
     getUsageDaily: () => usageDaily,
     getDispatchChannelUpdates: () => dispatchChannelUpdates,
+    getSendGuards: () => sendGuards,
   };
 }
 
@@ -780,6 +902,88 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
     assert.equal(result.action, 'BLOCKED_SEND_DISABLED');
     assert.equal(called, false);
     assert.equal(harness.getItem()?.status, 'FAILED');
+  });
+
+  it('09.6.1 Conservador: segundo job da mesma instância é adiado >= 30s', async () => {
+    enableRealSendFlags();
+    const conservativeDispatch = realSendDispatch({
+      approvalSnapshot: {
+        protectionProfile: 'CONSERVATIVE',
+        protectionPolicy: {
+          timezone: 'America/Sao_Paulo',
+          allowedStartTime: '09:00',
+          allowedEndTime: '18:00',
+          allowedDays: [1, 2, 3, 4, 5, 6, 7],
+          minDelaySeconds: 30,
+          maxDelaySeconds: 60,
+          batchSize: 10,
+          pauseBetweenBatchesSeconds: 900,
+          longPauseEveryMessages: 30,
+          longPauseMinutes: 20,
+          hourlyLimit: 15,
+          dailyLimitPerInstance: 80,
+          newAccountMaxPerDay: 25,
+          newAccountDays: 14,
+          warmupEnabled: true,
+          warmupDays: 14,
+          warmupMaxPerDay: 15,
+          consecutiveErrorsBeforePause: 3,
+          errorPauseMinutes: 60,
+          rotateEveryMessages: 50,
+          rotationEnabled: true,
+          pauseOn403: true,
+          pauseOn429: true,
+        },
+      },
+    });
+
+    const harness1 = createRealSendHarness({
+      dispatch: conservativeDispatch,
+      item: realSendItem({ id: 'item-a' }),
+    });
+    const sharedGuards = harness1.getSendGuards();
+
+    const first = await processDispatchSendJob(
+      { data: basePayload({ dispatchItemId: 'item-a' }) },
+      {
+        prisma: harness1.prisma,
+        now: () => INSIDE_WINDOW_NOW,
+        random: () => 0,
+        sendText: async () => ({
+          success: true,
+          providerMessageId: 'wamid-a',
+          providerStatus: 'PENDING',
+          httpStatus: 200,
+        }),
+      },
+    );
+    assert.equal(first.action, 'SENT');
+
+    const harness2 = createRealSendHarness({
+      dispatch: conservativeDispatch,
+      item: realSendItem({ id: 'item-b' }),
+    });
+    for (const [k, v] of sharedGuards.entries()) {
+      harness2.getSendGuards().set(k, { ...v });
+    }
+
+    const second = await processDispatchSendJob(
+      { data: basePayload({ dispatchItemId: 'item-b' }) },
+      {
+        prisma: harness2.prisma,
+        now: () => INSIDE_WINDOW_NOW,
+        random: () => 0,
+        sendText: async () => {
+          throw new Error('nao deveria chamar Evolution');
+        },
+      },
+    );
+
+    assert.equal(second.action, 'DEFERRED_CHANNEL_DELAY');
+    assert.ok(second.delayUntil);
+    assert.ok(
+      second.delayUntil.getTime() - INSIDE_WINDOW_NOW.getTime() >= 30_000,
+    );
   });
 });
 

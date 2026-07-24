@@ -258,6 +258,7 @@ model Organization {
   dispatchItemAttempts DispatchItemAttempt[]
   dispatchChannels DispatchChannel[]
   dispatchChannelUsageDaily DispatchChannelUsageDaily[]
+  channelAccountSendGuards ChannelAccountSendGuard[]
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 }
@@ -295,6 +296,7 @@ model Campaign {
   dispatchItemAttempts DispatchItemAttempt[]
   dispatchChannels DispatchChannel[]
   dispatchChannelUsageDaily DispatchChannelUsageDaily[]
+  channelAccountSendGuards ChannelAccountSendGuard[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
@@ -467,10 +469,46 @@ model ChannelAccount {
   dispatchItems     DispatchItem[]
   dispatchChannels  DispatchChannel[]
   dispatchChannelUsageDaily DispatchChannelUsageDaily[]
+  sendGuard         ChannelAccountSendGuard?
   createdAt         DateTime             @default(now())
   updatedAt         DateTime             @updatedAt
 
   @@index([organizationId, campaignId])
+}
+
+/**
+ * Estado de ritmo/limites por ChannelAccount (09.6.1).
+ * Serializa envios entre Dispatches e replicas do Worker via SELECT FOR UPDATE.
+ */
+model ChannelAccountSendGuard {
+  id                      String         @id @default(cuid())
+  organizationId          String
+  campaignId              String
+  channelAccountId        String         @unique
+  nextAvailableAt         DateTime?
+  lastReservedAt          DateTime?
+  lastSentAt              DateTime?
+  reservationToken        String?
+  reservationExpiresAt    DateTime?
+  lastSelectedDelaySeconds Int?
+  sequenceNumber          Int            @default(0)
+  dailyUsageDate          DateTime?      @db.Date
+  dailySentCount          Int            @default(0)
+  hourlyWindowStart       DateTime?
+  hourlySentCount         Int            @default(0)
+  protectionCooldownUntil DateTime?
+  lastViolationAt         DateTime?
+  violationCount          Int            @default(0)
+  version                 Int            @default(0)
+  organization            Organization   @relation(fields: [organizationId], references: [id])
+  campaign                Campaign       @relation(fields: [campaignId], references: [id])
+  channelAccount          ChannelAccount @relation(fields: [channelAccountId], references: [id])
+  createdAt               DateTime       @default(now())
+  updatedAt               DateTime       @updatedAt
+
+  @@index([organizationId, campaignId])
+  @@index([nextAvailableAt])
+  @@index([protectionCooldownUntil])
 }
 
 model ConversationThread {
@@ -846,6 +884,10 @@ model DispatchItem {
   retryRequestedAt        DateTime?
   retryReason             String?
   retryRequestedByUserId  String?
+  protectionDelaySeconds  Int?
+  protectionScheduledAt   DateTime?
+  protectionRuleApplied   String?
+  protectionSequenceNumber Int?
   metadata                Json?
   organization            Organization               @relation(fields: [organizationId], references: [id])
   campaign                Campaign                   @relation(fields: [campaignId], references: [id])
@@ -883,36 +925,55 @@ model DispatchItem {
  * do item — nao sobrescreve o resultado anterior.
  */
 model DispatchItemAttempt {
-  id                 String                      @id @default(cuid())
-  organizationId     String
-  campaignId         String
-  dispatchId         String
-  dispatchItemId     String
-  attemptNumber      Int
-  channelAccountId   String?
-  dispatchChannelId  String?
-  startedAt          DateTime
-  completedAt        DateTime?
-  outcome            DispatchItemAttemptOutcome?
-  providerStatus     String?
-  providerMessageId  String?
-  httpStatus         Int?
-  errorCategory      DispatchItemErrorCategory?
-  errorCode          String?
-  errorMessage       String?
-  ambiguous          Boolean                     @default(false)
-  manual             Boolean                     @default(false)
-  retryMode          DispatchRetryMode?
-  organization       Organization                @relation(fields: [organizationId], references: [id])
-  campaign           Campaign                    @relation(fields: [campaignId], references: [id])
-  dispatch           Dispatch                    @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
-  dispatchItem       DispatchItem                @relation(fields: [dispatchItemId], references: [id], onDelete: Cascade)
-  createdAt          DateTime                    @default(now())
-  updatedAt          DateTime                    @updatedAt
+  id                           String                      @id @default(cuid())
+  organizationId               String
+  campaignId                   String
+  dispatchId                   String
+  dispatchItemId               String
+  attemptNumber                Int
+  channelAccountId             String?
+  dispatchChannelId            String?
+  startedAt                    DateTime
+  completedAt                  DateTime?
+  outcome                      DispatchItemAttemptOutcome?
+  providerStatus               String?
+  providerMessageId            String?
+  httpStatus                   Int?
+  errorCategory                DispatchItemErrorCategory?
+  errorCode                    String?
+  errorMessage                 String?
+  ambiguous                    Boolean                     @default(false)
+  manual                       Boolean                     @default(false)
+  retryMode                    DispatchRetryMode?
+  protectionProfile            String?
+  minDelaySeconds              Int?
+  maxDelaySeconds              Int?
+  selectedDelaySeconds         Int?
+  previousChannelSendAt        DateTime?
+  reservedSendAt               DateTime?
+  actualProviderRequestStartedAt DateTime?
+  intervalObservedSeconds      Int?
+  sequenceNumber               Int?
+  hourlyUsageBefore            Int?
+  dailyUsageBefore             Int?
+  effectiveDailyLimit          Int?
+  batchPosition                Int?
+  batchNumber                  Int?
+  pauseApplied                 Boolean?
+  pauseReason                  String?
+  protectionDecision           String?
+  protectionReason             String?
+  organization                 Organization                @relation(fields: [organizationId], references: [id])
+  campaign                     Campaign                    @relation(fields: [campaignId], references: [id])
+  dispatch                     Dispatch                    @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  dispatchItem                 DispatchItem                @relation(fields: [dispatchItemId], references: [id], onDelete: Cascade)
+  createdAt                    DateTime                    @default(now())
+  updatedAt                    DateTime                    @updatedAt
 
   @@unique([dispatchItemId, attemptNumber])
   @@index([dispatchId])
   @@index([dispatchItemId])
   @@index([organizationId, campaignId])
   @@index([outcome])
+  @@index([channelAccountId])
 }

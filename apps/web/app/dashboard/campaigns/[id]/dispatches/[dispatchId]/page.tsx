@@ -20,6 +20,8 @@ import {
   fetchDispatchItemAttempts,
   fetchDispatchItems,
   fetchDispatchRecovery,
+  fetchDispatchProtections,
+  fetchDispatchPilotProtectionAudit,
   fetchMe,
   getStoredToken,
   pauseDispatch,
@@ -36,6 +38,8 @@ import {
   emergencyStopDispatch,
   startDispatch,
   type DispatchRecoveryInspection,
+  type DispatchProtectionsPanel,
+  type DispatchPilotProtectionAudit,
 } from '../../../../../../lib/api';
 import {
   formatDurationSeconds,
@@ -89,6 +93,12 @@ export default function DispatchDetailPage() {
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const [showRecoverConfirm, setShowRecoverConfirm] = useState(false);
+  const [protections, setProtections] =
+    useState<DispatchProtectionsPanel | null>(null);
+  const [protectionsLoading, setProtectionsLoading] = useState(false);
+  const [pilotAudit, setPilotAudit] =
+    useState<DispatchPilotProtectionAudit | null>(null);
+  const [pilotAuditLoading, setPilotAuditLoading] = useState(false);
   const [itemAttempts, setItemAttempts] = useState<
     Array<{
       id: string;
@@ -101,6 +111,12 @@ export default function DispatchDetailPage() {
       ambiguous: boolean;
       manual: boolean;
       providerMessageIdMasked: string | null;
+      reservedSendAt?: string | null;
+      actualProviderRequestStartedAt?: string | null;
+      intervalObservedSeconds?: number | null;
+      selectedDelaySeconds?: number | null;
+      protectionDecision?: string | null;
+      protectionReason?: string | null;
     }>
   >([]);
   const [retryReason, setRetryReason] = useState('');
@@ -471,6 +487,52 @@ export default function DispatchDetailPage() {
       );
     } finally {
       setRecoveryLoading(false);
+    }
+  }
+
+  async function onLoadProtections() {
+    const token = getStoredToken();
+    if (!token) return;
+    setProtectionsLoading(true);
+    setError(null);
+    try {
+      const result = await fetchDispatchProtections(
+        token,
+        campaignId,
+        dispatchId,
+      );
+      setProtections(result);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel carregar as blindagens',
+      );
+    } finally {
+      setProtectionsLoading(false);
+    }
+  }
+
+  async function onPilotAudit() {
+    const token = getStoredToken();
+    if (!token) return;
+    setPilotAuditLoading(true);
+    setError(null);
+    try {
+      const result = await fetchDispatchPilotProtectionAudit(
+        token,
+        campaignId,
+        dispatchId,
+      );
+      setPilotAudit(result);
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel auditar o piloto',
+      );
+    } finally {
+      setPilotAuditLoading(false);
     }
   }
 
@@ -1125,6 +1187,146 @@ export default function DispatchDetailPage() {
                 ) : null}
               </section>
             ) : null}
+
+            <section className="rounded-md border border-[#deddd4] bg-white p-4">
+              <h3 className="font-semibold text-[#151515]">
+                Blindagens aplicadas
+              </h3>
+              <p className="mt-1 text-sm text-[#65655f]">
+                Reserva atomica por ChannelAccount (SELECT FOR UPDATE). O
+                intervalo Conservador 30–60s e enforced antes da Evolution.
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-md border border-[#1e3a5f] px-3 py-2 text-sm font-medium text-[#1e3a5f]"
+                  disabled={protectionsLoading}
+                  onClick={() => void onLoadProtections()}
+                >
+                  {protectionsLoading ? 'Carregando...' : 'Carregar blindagens'}
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-[#24382b] px-3 py-2 text-sm font-medium text-[#24382b]"
+                  disabled={pilotAuditLoading}
+                  onClick={() => void onPilotAudit()}
+                >
+                  {pilotAuditLoading
+                    ? 'Auditando...'
+                    : 'Auditar intervalos do piloto'}
+                </button>
+              </div>
+              {protections ? (
+                <div className="mt-4 space-y-4 text-sm">
+                  <dl className="grid gap-2 md:grid-cols-3">
+                    <div>
+                      <dt className="text-[#65655f]">Perfil congelado</dt>
+                      <dd>{protections.frozenProfile}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Intervalo</dt>
+                      <dd>
+                        {protections.policy.minDelaySeconds}–
+                        {protections.policy.maxDelaySeconds}s
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Limite horario</dt>
+                      <dd>{protections.policy.hourlyLimit}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Limite diario</dt>
+                      <dd>{protections.policy.dailyLimitPerInstance}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Lote / pausa</dt>
+                      <dd>
+                        {protections.policy.batchSize} /{' '}
+                        {protections.policy.pauseBetweenBatchesSeconds}s
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Violacoes</dt>
+                      <dd>{protections.violationCountTotal}</dd>
+                    </div>
+                  </dl>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-[#deddd4] text-[#65655f]">
+                          <th className="py-1 pr-2">Regra</th>
+                          <th className="py-1 pr-2">Valor</th>
+                          <th className="py-1 pr-2">Worker?</th>
+                          <th className="py-1 pr-2">Status</th>
+                          <th className="py-1">Evidencia</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {protections.enforcementMatrix.map((row) => (
+                          <tr
+                            key={row.rule}
+                            className="border-b border-[#f0efe8]"
+                          >
+                            <td className="py-1 pr-2">{row.rule}</td>
+                            <td className="py-1 pr-2">{row.approvedValue}</td>
+                            <td className="py-1 pr-2">
+                              {row.appliedInWorker ? 'SIM' : 'NAO'}
+                            </td>
+                            <td className="py-1 pr-2">{row.status}</td>
+                            <td className="py-1">{row.evidence}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {protections.recentAttempts.length > 0 ? (
+                    <div>
+                      <h4 className="font-medium text-[#151515]">
+                        Tentativas recentes
+                      </h4>
+                      <ul className="mt-2 space-y-1 text-xs text-[#24382b]">
+                        {protections.recentAttempts.slice(0, 12).map((a) => (
+                          <li key={a.id}>
+                            #{a.attemptNumber} · seq={a.sequenceNumber ?? '—'} ·
+                            reservado=
+                            {a.reservedSendAt
+                              ? new Date(a.reservedSendAt).toLocaleTimeString()
+                              : '—'}{' '}
+                            · real=
+                            {a.actualProviderRequestStartedAt
+                              ? new Date(
+                                  a.actualProviderRequestStartedAt,
+                                ).toLocaleTimeString()
+                              : '—'}{' '}
+                            · intervalo={a.intervalObservedSeconds ?? '—'}s ·{' '}
+                            {a.protectionDecision ?? a.protectionReason ?? '—'}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {pilotAudit ? (
+                <div className="mt-4 rounded-md border border-[#deddd4] bg-[#fafaf7] p-3 text-sm">
+                  <p>
+                    Veredito do piloto:{' '}
+                    <strong>{pilotAudit.overallVerdict}</strong> (
+                    {pilotAudit.violationCount} violacao(oes))
+                  </p>
+                  <ul className="mt-2 space-y-1 text-xs">
+                    {pilotAudit.items.map((item) => (
+                      <li key={item.dispatchItemId}>
+                        {item.verdict}: {item.reason}
+                        {item.intervalFromPreviousSeconds != null
+                          ? ` (${item.intervalFromPreviousSeconds.toFixed(1)}s)`
+                          : ''}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </section>
 
             {showPrepareConfirm ? (
               <div className="rounded-md border border-[#24382b] bg-white p-4">

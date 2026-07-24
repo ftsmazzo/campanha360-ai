@@ -17,6 +17,7 @@ import { DispatchQueueService } from './dispatch-queue.service';
 import { DispatchStartService } from './dispatch-start.service';
 import { DispatchOperationalService } from './dispatch-operational.service';
 import { DispatchRecoveryService } from './dispatch-recovery.service';
+import { DispatchProtectionService } from './dispatch-protection.service';
 import {
   CancelDispatchDto,
   EmergencyStopDispatchDto,
@@ -38,6 +39,7 @@ export class DispatchesController {
     private readonly dispatchStartService: DispatchStartService,
     private readonly dispatchOperationalService: DispatchOperationalService,
     private readonly dispatchRecoveryService: DispatchRecoveryService,
+    private readonly dispatchProtectionService: DispatchProtectionService,
   ) {}
 
   @Get()
@@ -176,6 +178,32 @@ export class DispatchesController {
     @Param('dispatchId') dispatchId: string,
   ) {
     return this.dispatchRecoveryService.inspect(
+      user.id,
+      campaignId,
+      dispatchId,
+    );
+  }
+
+  @Get(':dispatchId/protections')
+  getProtections(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+  ) {
+    return this.dispatchProtectionService.getProtections(
+      user.id,
+      campaignId,
+      dispatchId,
+    );
+  }
+
+  @Get(':dispatchId/protections/pilot-audit')
+  auditPilotProtections(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+  ) {
+    return this.dispatchProtectionService.auditPilotIntervals(
       user.id,
       campaignId,
       dispatchId,

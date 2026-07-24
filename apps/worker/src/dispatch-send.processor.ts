@@ -13,6 +13,8 @@ import {
   buildReassignmentUpdate,
   canReassignDispatchItem,
   computeDispatchNextRetryAt,
+  detectProtectionIntervalViolation,
+  extractFullSendProtectionPolicy,
   isDispatchDestinationAllowed,
   isDispatchEngineEnabled,
   isDispatchQueueEnabled,
@@ -28,6 +30,11 @@ import {
   type OperationalWindowConfig,
   type SelectableDispatchChannel,
 } from '@campanha360/shared';
+import {
+  confirmChannelAccountSendSuccessAtomic,
+  registerChannelProtectionIntervalViolation,
+  reserveChannelAccountSendSlotAtomic,
+} from './channel-send-guard';
 
 /**
  * Worker de disparo. Consome jobs da fila `dispatch-send`.
@@ -107,6 +114,9 @@ export type DispatchSendProcessAction =
   | 'DEFERRED_OUTSIDE_WINDOW'
   | 'DEFERRED_CHANNEL_DELAY'
   | 'DEFERRED_CHANNEL_COOLDOWN'
+  | 'DEFERRED_HOURLY_LIMIT'
+  | 'DEFERRED_DAILY_LIMIT'
+  | 'DEFERRED_PROTECTION_COOLDOWN'
   | 'SKIPPED_FLAG_DISABLED'
   | 'SKIPPED_CLAIM_LOST'
   | 'SKIPPED_CONTACT_DELETED'
@@ -638,11 +648,12 @@ async function runRealSend(input: {
     }
 
     // --- Rotacao por volume (rotateEveryMessages) ---
-    const policy = extractSendProtectionPolicy(dispatch.approvalSnapshot);
+    const policy = extractFullSendProtectionPolicy(dispatch.approvalSnapshot);
     let selectedChannel = effectiveChannel;
     let rotated = false;
 
     if (
+      policy.rotationEnabled &&
       !reassigned &&
       shouldRotateChannel(selectedChannel.sentItems, policy.rotateEveryMessages)
     ) {
@@ -682,6 +693,7 @@ async function runRealSend(input: {
           lockedAt: null,
           lockToken: null,
           lockExpiresAt: null,
+          lastQueueError: 'OUTSIDE_OPERATIONAL_WINDOW',
         },
       });
       return {
@@ -692,28 +704,134 @@ async function runRealSend(input: {
       };
     }
 
-    // --- Delay minimo/batch/pausa longa por canal ---
+    // --- Reserva atomica de slot por ChannelAccount (09.6.1) ---
     const usageDateKey = computeUsageDateKey(now());
-    const usage = await prisma.dispatchChannelUsageDaily.findUnique({
-      where: {
-        dispatchChannelId_usageDate: {
-          dispatchChannelId: selectedChannel.id,
-          usageDate: usageDateKey,
-        },
-      },
+    const channelAccountMeta = await prisma.channelAccount.findUnique({
+      where: { id: selectedChannel.channelAccountId },
+      select: { externalAccountId: true, createdAt: true },
     });
 
-    const requiredDelayMs = computeChannelSendDelayMs(
-      policy,
-      selectedChannel.sentItems,
-      deps.random ?? Math.random,
-    );
-    const lastSentAt = (usage as { lastSentAt?: Date | null } | null)?.lastSentAt ?? null;
+    type ProtectionEvidence = {
+      protectionProfile: string;
+      minDelaySeconds: number;
+      maxDelaySeconds: number;
+      selectedDelaySeconds: number;
+      previousChannelSendAt: Date | null;
+      reservedSendAt: Date;
+      sequenceNumber: number;
+      hourlyUsageBefore: number;
+      dailyUsageBefore: number;
+      effectiveDailyLimit: number;
+      batchPosition: number;
+      batchNumber: number;
+      pauseApplied: boolean;
+      pauseReason: string | null;
+      protectionDecision: string;
+      protectionReason: string;
+    };
 
-    if (lastSentAt && requiredDelayMs > 0) {
-      const elapsed = now().getTime() - lastSentAt.getTime();
-      if (elapsed < requiredDelayMs) {
-        const resumeAt = new Date(lastSentAt.getTime() + requiredDelayMs);
+    let protectionEvidence: ProtectionEvidence;
+    const preScheduledAt = (item as { protectionScheduledAt?: Date | null })
+      .protectionScheduledAt;
+    const preDelaySeconds = (item as { protectionDelaySeconds?: number | null })
+      .protectionDelaySeconds;
+    const preSequence = (item as { protectionSequenceNumber?: number | null })
+      .protectionSequenceNumber;
+    const preRule = (item as { protectionRuleApplied?: string | null })
+      .protectionRuleApplied;
+
+    if (preScheduledAt && preDelaySeconds != null && preSequence != null) {
+      const scheduledMs = new Date(preScheduledAt).getTime();
+      if (scheduledMs > now().getTime() + 50) {
+        await prisma.dispatchItem.update({
+          where: { id: item.id },
+          data: {
+            status: DispatchItemStatus.SCHEDULED,
+            scheduledAt: new Date(preScheduledAt),
+            dispatchChannelId: selectedChannel.id,
+            channelAccountId: selectedChannel.channelAccountId,
+            lockedAt: null,
+            lockToken: null,
+            lockExpiresAt: null,
+            lastQueueError: 'WAITING_PRE_RESERVED_SLOT',
+          },
+        });
+        return {
+          action: 'DEFERRED_CHANNEL_DELAY',
+          send: false,
+          dispatchItemId: item.id,
+          delayUntil: new Date(preScheduledAt),
+          reason: 'PRE_RESERVED_SLOT_NOT_DUE',
+        };
+      }
+
+      protectionEvidence = {
+        protectionProfile: policy.profile,
+        minDelaySeconds: policy.minDelaySeconds,
+        maxDelaySeconds: policy.maxDelaySeconds,
+        selectedDelaySeconds: preDelaySeconds,
+        previousChannelSendAt: null,
+        reservedSendAt: new Date(preScheduledAt),
+        sequenceNumber: preSequence,
+        hourlyUsageBefore: 0,
+        dailyUsageBefore: 0,
+        effectiveDailyLimit: selectedChannel.effectiveDailyLimit,
+        batchPosition: ((preSequence - 1) % Math.max(1, policy.batchSize)) + 1,
+        batchNumber:
+          Math.floor((preSequence - 1) / Math.max(1, policy.batchSize)) + 1,
+        pauseApplied: Boolean(preRule && String(preRule).includes('PAUSE')),
+        pauseReason: preRule ?? null,
+        protectionDecision: 'ALLOW_NOW',
+        protectionReason: 'PRE_RESERVED_SLOT_DUE',
+      };
+    } else {
+      const reservation = await reserveChannelAccountSendSlotAtomic(prisma, {
+        organizationId: String(
+          (item as { organizationId?: string }).organizationId ?? '',
+        ),
+        campaignId: String((item as { campaignId?: string }).campaignId ?? ''),
+        channelAccountId: selectedChannel.channelAccountId,
+        channelAccountCreatedAt: channelAccountMeta?.createdAt ?? null,
+        approvalSnapshot: dispatch.approvalSnapshot,
+        dispatchChannelEffectiveDailyLimit: selectedChannel.effectiveDailyLimit,
+        now: now(),
+        random: deps.random,
+      });
+
+      protectionEvidence = {
+        protectionProfile: reservation.policy.profile,
+        minDelaySeconds: reservation.policy.minDelaySeconds,
+        maxDelaySeconds: reservation.policy.maxDelaySeconds,
+        selectedDelaySeconds: reservation.selectedDelaySeconds,
+        previousChannelSendAt: reservation.previousChannelSendAt,
+        reservedSendAt: reservation.reservedSendAt,
+        sequenceNumber: reservation.sequenceNumber,
+        hourlyUsageBefore: reservation.hourlyUsageBefore,
+        dailyUsageBefore: reservation.dailyUsageBefore,
+        effectiveDailyLimit: reservation.effectiveDailyLimit,
+        batchPosition: reservation.batchPosition,
+        batchNumber: reservation.batchNumber,
+        pauseApplied: reservation.pauseApplied,
+        pauseReason: reservation.pauseReason,
+        protectionDecision: reservation.decision,
+        protectionReason: reservation.protectionReason,
+      };
+
+      if (reservation.decision !== 'ALLOW_NOW') {
+        const resumeAt = reservation.reservedSendAt;
+        let action:
+          | 'DEFERRED_CHANNEL_DELAY'
+          | 'DEFERRED_HOURLY_LIMIT'
+          | 'DEFERRED_DAILY_LIMIT'
+          | 'DEFERRED_PROTECTION_COOLDOWN' = 'DEFERRED_CHANNEL_DELAY';
+        if (reservation.protectionReason === 'HOURLY_LIMIT_REACHED') {
+          action = 'DEFERRED_HOURLY_LIMIT';
+        } else if (reservation.protectionReason === 'DAILY_LIMIT_REACHED') {
+          action = 'DEFERRED_DAILY_LIMIT';
+        } else if (reservation.decision === 'BLOCKED_COOLDOWN') {
+          action = 'DEFERRED_PROTECTION_COOLDOWN';
+        }
+
         await prisma.dispatchItem.update({
           where: { id: item.id },
           data: {
@@ -721,18 +839,37 @@ async function runRealSend(input: {
             scheduledAt: resumeAt,
             dispatchChannelId: selectedChannel.id,
             channelAccountId: selectedChannel.channelAccountId,
+            protectionDelaySeconds: reservation.selectedDelaySeconds,
+            protectionScheduledAt: resumeAt,
+            protectionRuleApplied: reservation.protectionReason,
+            protectionSequenceNumber: reservation.sequenceNumber,
             lockedAt: null,
             lockToken: null,
             lockExpiresAt: null,
+            lastQueueError: reservation.protectionReason,
           },
         });
+
         return {
-          action: 'DEFERRED_CHANNEL_DELAY',
+          action,
           send: false,
           dispatchItemId: item.id,
           delayUntil: resumeAt,
+          reason: reservation.protectionReason,
         };
       }
+
+      await prisma.dispatchItem.update({
+        where: { id: item.id },
+        data: {
+          dispatchChannelId: selectedChannel.id,
+          channelAccountId: selectedChannel.channelAccountId,
+          protectionDelaySeconds: reservation.selectedDelaySeconds,
+          protectionScheduledAt: reservation.reservedSendAt,
+          protectionRuleApplied: reservation.protectionReason,
+          protectionSequenceNumber: reservation.sequenceNumber,
+        },
+      });
     }
 
     if (rotated) {
@@ -746,7 +883,6 @@ async function runRealSend(input: {
     }
 
     // --- Chamada Evolution ---
-    // Revalida status operacional imediatamente antes da chamada externa.
     const freshDispatch = await prisma.dispatch.findFirst({
       where: { id: dispatch.id },
       select: { status: true },
@@ -834,15 +970,82 @@ async function runRealSend(input: {
       };
     }
 
-    const channelAccount = await prisma.channelAccount.findUnique({
-      where: { id: selectedChannel.channelAccountId },
-      select: { externalAccountId: true },
-    });
-
     const contentSnapshot = (item.contentSnapshot ?? {}) as { body?: unknown };
     const text = typeof contentSnapshot.body === 'string' ? contentSnapshot.body : '';
 
     const requestStartedAt = now();
+
+    const violation = detectProtectionIntervalViolation({
+      previousStartedAt: protectionEvidence.previousChannelSendAt,
+      actualStartedAt: requestStartedAt,
+      minDelaySeconds: protectionEvidence.minDelaySeconds,
+    });
+    if (violation.violated) {
+      await registerChannelProtectionIntervalViolation(prisma, {
+        channelAccountId: selectedChannel.channelAccountId,
+        now: requestStartedAt,
+        cooldownMinutes: Math.max(1, policy.errorPauseMinutes),
+      });
+      await prisma.dispatchChannel.updateMany({
+        where: { id: selectedChannel.id },
+        data: {
+          consecutiveErrors: { increment: 1 },
+          cooldownUntil: new Date(
+            requestStartedAt.getTime() +
+              Math.max(1, policy.errorPauseMinutes) * 60_000,
+          ),
+          operationalStatus: DispatchChannelOperationalStatus.COOLDOWN,
+        },
+      });
+      await prisma.dispatchItem.update({
+        where: { id: item.id },
+        data: {
+          status: DispatchItemStatus.SCHEDULED,
+          scheduledAt: new Date(
+            requestStartedAt.getTime() +
+              Math.max(1, policy.errorPauseMinutes) * 60_000,
+          ),
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          lastQueueError: 'PROTECTION_INTERVAL_VIOLATION',
+        },
+      });
+      try {
+        await prisma.auditLog.create({
+          data: {
+            organizationId: String(
+              (item as { organizationId?: string }).organizationId ?? '',
+            ),
+            campaignId: String(
+              (item as { campaignId?: string }).campaignId ?? '',
+            ),
+            action: 'PROTECTION_INTERVAL_VIOLATION',
+            entityType: 'ChannelAccount',
+            entityId: selectedChannel.channelAccountId,
+            metadata: {
+              dispatchId: dispatch.id,
+              dispatchItemId: item.id,
+              intervalObservedSeconds: violation.intervalObservedSeconds,
+              minDelaySeconds: protectionEvidence.minDelaySeconds,
+            },
+          },
+        });
+      } catch {
+        // auditoria nao bloqueia
+      }
+      return {
+        action: 'DEFERRED_PROTECTION_COOLDOWN',
+        send: false,
+        dispatchItemId: item.id,
+        reason: 'PROTECTION_INTERVAL_VIOLATION',
+        delayUntil: new Date(
+          requestStartedAt.getTime() +
+            Math.max(1, policy.errorPauseMinutes) * 60_000,
+        ),
+      };
+    }
+
     await prisma.dispatchItem.updateMany({
       where: { id: item.id, status: DispatchItemStatus.PROCESSING },
       data: { providerRequestStartedAt: requestStartedAt },
@@ -862,6 +1065,11 @@ async function runRealSend(input: {
       startedAt: requestStartedAt,
       manual: String((item as { retryMode?: string }).retryMode ?? '') === 'MANUAL',
       retryMode: (item as { retryMode?: string | null }).retryMode ?? null,
+      protection: {
+        ...protectionEvidence,
+        actualProviderRequestStartedAt: requestStartedAt,
+        intervalObservedSeconds: violation.intervalObservedSeconds,
+      },
     });
 
     const sendFn = deps.sendText ?? sendEvolutionText;
@@ -869,7 +1077,7 @@ async function runRealSend(input: {
       baseUrl: deps.evolutionBaseUrl ?? process.env.EVOLUTION_API_URL ?? '',
       apiKey: deps.evolutionApiKey ?? process.env.EVOLUTION_API_KEY,
       instanceName:
-        (channelAccount as { externalAccountId?: string | null } | null)
+        (channelAccountMeta as { externalAccountId?: string | null } | null)
           ?.externalAccountId ?? '',
       destination: normalizedDestination,
       text,
@@ -897,6 +1105,7 @@ async function runRealSend(input: {
         providerMessageId: result.providerMessageId,
         httpStatus: result.httpStatus ?? null,
         ambiguous: false,
+        protectionDecision: 'SENT',
       });
       await prisma.dispatchChannel.updateMany({
         where: { id: selectedChannel.id },
@@ -906,6 +1115,10 @@ async function runRealSend(input: {
           cooldownUntil: null,
           operationalStatus: DispatchChannelOperationalStatus.READY,
         },
+      });
+      await confirmChannelAccountSendSuccessAtomic(prisma, {
+        channelAccountId: selectedChannel.channelAccountId,
+        now: now(),
       });
       await upsertChannelUsageDaily(prisma, {
         organizationId: (item as { organizationId?: string }).organizationId ?? '',
@@ -933,6 +1146,7 @@ async function runRealSend(input: {
         errorCode: failure.errorCode,
         errorMessage: failure.errorMessage,
         ambiguous: true,
+        protectionDecision: 'UNKNOWN_PROVIDER_STATE',
       });
       await recomputeDispatchProgress(prisma, dispatch, now());
       return { action: 'UNKNOWN_PROVIDER_STATE', send: true, dispatchItemId: item.id };
@@ -943,14 +1157,25 @@ async function runRealSend(input: {
       (failure.category === 'AUTHENTICATION_ERROR' && policy.pauseOn403)
     ) {
       const nextConsecutiveErrors = (selectedChannel.consecutiveErrors ?? 0) + 1;
-      await prisma.dispatchChannel.updateMany({
-        where: { id: selectedChannel.id },
-        data: {
-          consecutiveErrors: nextConsecutiveErrors,
-          cooldownUntil: computeChannelCooldownUntil(now(), nextConsecutiveErrors),
-          operationalStatus: DispatchChannelOperationalStatus.COOLDOWN,
-        },
-      });
+      const shouldPause =
+        nextConsecutiveErrors >= Math.max(1, policy.consecutiveErrorsBeforePause);
+      if (shouldPause) {
+        await prisma.dispatchChannel.updateMany({
+          where: { id: selectedChannel.id },
+          data: {
+            consecutiveErrors: nextConsecutiveErrors,
+            cooldownUntil: new Date(
+              now().getTime() + Math.max(1, policy.errorPauseMinutes) * 60_000,
+            ),
+            operationalStatus: DispatchChannelOperationalStatus.COOLDOWN,
+          },
+        });
+      } else {
+        await prisma.dispatchChannel.updateMany({
+          where: { id: selectedChannel.id },
+          data: { consecutiveErrors: nextConsecutiveErrors },
+        });
+      }
 
       const failoverCandidate = await resolveEffectiveChannel({
         prisma,
@@ -970,6 +1195,10 @@ async function runRealSend(input: {
             scheduledAt: resumeAt,
             dispatchChannelId: failoverCandidate.effectiveChannel.id,
             channelAccountId: failoverCandidate.effectiveChannel.channelAccountId,
+            protectionDelaySeconds: null,
+            protectionScheduledAt: null,
+            protectionRuleApplied: null,
+            protectionSequenceNumber: null,
             lockedAt: null,
             lockToken: null,
             lockExpiresAt: null,
@@ -1000,6 +1229,7 @@ async function runRealSend(input: {
         errorCode: failure.errorCode,
         errorMessage: failure.errorMessage,
         ambiguous: false,
+        protectionDecision: 'RETRY_SCHEDULED',
       });
       return {
         action: 'DEFERRED_CHANNEL_COOLDOWN',
@@ -1091,9 +1321,30 @@ async function beginDispatchItemAttempt(
     startedAt: Date;
     manual: boolean;
     retryMode: string | null;
+    protection?: {
+      protectionProfile: string;
+      minDelaySeconds: number;
+      maxDelaySeconds: number;
+      selectedDelaySeconds: number;
+      previousChannelSendAt: Date | null;
+      reservedSendAt: Date;
+      actualProviderRequestStartedAt: Date;
+      intervalObservedSeconds: number | null;
+      sequenceNumber: number;
+      hourlyUsageBefore: number;
+      dailyUsageBefore: number;
+      effectiveDailyLimit: number;
+      batchPosition: number;
+      batchNumber: number;
+      pauseApplied: boolean;
+      pauseReason: string | null;
+      protectionDecision: string;
+      protectionReason: string;
+    };
   },
 ): Promise<string | null> {
   if (!input.organizationId || !input.campaignId) return null;
+  const protection = input.protection;
   try {
     const created = await (prisma as unknown as {
       dispatchItemAttempt: {
@@ -1118,6 +1369,29 @@ async function beginDispatchItemAttempt(
         manual: input.manual,
         retryMode: input.retryMode,
         ambiguous: false,
+        ...(protection
+          ? {
+              protectionProfile: protection.protectionProfile,
+              minDelaySeconds: protection.minDelaySeconds,
+              maxDelaySeconds: protection.maxDelaySeconds,
+              selectedDelaySeconds: protection.selectedDelaySeconds,
+              previousChannelSendAt: protection.previousChannelSendAt,
+              reservedSendAt: protection.reservedSendAt,
+              actualProviderRequestStartedAt:
+                protection.actualProviderRequestStartedAt,
+              intervalObservedSeconds: protection.intervalObservedSeconds,
+              sequenceNumber: protection.sequenceNumber,
+              hourlyUsageBefore: protection.hourlyUsageBefore,
+              dailyUsageBefore: protection.dailyUsageBefore,
+              effectiveDailyLimit: protection.effectiveDailyLimit,
+              batchPosition: protection.batchPosition,
+              batchNumber: protection.batchNumber,
+              pauseApplied: protection.pauseApplied,
+              pauseReason: protection.pauseReason,
+              protectionDecision: protection.protectionDecision,
+              protectionReason: protection.protectionReason,
+            }
+          : {}),
       },
       update: {
         startedAt: input.startedAt,
@@ -1127,6 +1401,29 @@ async function beginDispatchItemAttempt(
         retryMode: input.retryMode,
         completedAt: null,
         outcome: null,
+        ...(protection
+          ? {
+              protectionProfile: protection.protectionProfile,
+              minDelaySeconds: protection.minDelaySeconds,
+              maxDelaySeconds: protection.maxDelaySeconds,
+              selectedDelaySeconds: protection.selectedDelaySeconds,
+              previousChannelSendAt: protection.previousChannelSendAt,
+              reservedSendAt: protection.reservedSendAt,
+              actualProviderRequestStartedAt:
+                protection.actualProviderRequestStartedAt,
+              intervalObservedSeconds: protection.intervalObservedSeconds,
+              sequenceNumber: protection.sequenceNumber,
+              hourlyUsageBefore: protection.hourlyUsageBefore,
+              dailyUsageBefore: protection.dailyUsageBefore,
+              effectiveDailyLimit: protection.effectiveDailyLimit,
+              batchPosition: protection.batchPosition,
+              batchNumber: protection.batchNumber,
+              pauseApplied: protection.pauseApplied,
+              pauseReason: protection.pauseReason,
+              protectionDecision: protection.protectionDecision,
+              protectionReason: protection.protectionReason,
+            }
+          : {}),
       },
     });
     return created.id;
@@ -1148,6 +1445,7 @@ async function completeDispatchItemAttempt(
     errorCode?: string | null;
     errorMessage?: string | null;
     ambiguous: boolean;
+    protectionDecision?: string | null;
   },
 ): Promise<void> {
   if (!attemptId) return;
@@ -1168,6 +1466,9 @@ async function completeDispatchItemAttempt(
         errorCode: data.errorCode ?? null,
         errorMessage: data.errorMessage ?? null,
         ambiguous: data.ambiguous,
+        ...(data.protectionDecision
+          ? { protectionDecision: data.protectionDecision }
+          : {}),
       },
     });
   } catch {
@@ -1677,28 +1978,17 @@ function isChannelApta(channel: SelectableDispatchChannel, now: Date): boolean {
 export function extractSendProtectionPolicy(
   approvalSnapshot: unknown,
 ): DispatchSendProtectionPolicy {
-  const snapshot = (approvalSnapshot ?? {}) as {
-    protectionPolicy?: Partial<DispatchSendProtectionPolicy>;
-  };
-  const policy = snapshot.protectionPolicy ?? {};
-
+  const full = extractFullSendProtectionPolicy(approvalSnapshot);
   return {
-    minDelaySeconds: firstNumber(policy.minDelaySeconds) ?? DEFAULT_SEND_POLICY.minDelaySeconds,
-    maxDelaySeconds: firstNumber(policy.maxDelaySeconds) ?? DEFAULT_SEND_POLICY.maxDelaySeconds,
-    batchSize: firstNumber(policy.batchSize) ?? DEFAULT_SEND_POLICY.batchSize,
-    pauseBetweenBatchesSeconds:
-      firstNumber(policy.pauseBetweenBatchesSeconds) ??
-      DEFAULT_SEND_POLICY.pauseBetweenBatchesSeconds,
-    longPauseEveryMessages:
-      firstNumber(policy.longPauseEveryMessages) ?? DEFAULT_SEND_POLICY.longPauseEveryMessages,
-    longPauseMinutes:
-      firstNumber(policy.longPauseMinutes) ?? DEFAULT_SEND_POLICY.longPauseMinutes,
-    rotateEveryMessages:
-      firstNumber(policy.rotateEveryMessages) ?? DEFAULT_SEND_POLICY.rotateEveryMessages,
-    pauseOn403:
-      typeof policy.pauseOn403 === 'boolean' ? policy.pauseOn403 : DEFAULT_SEND_POLICY.pauseOn403,
-    pauseOn429:
-      typeof policy.pauseOn429 === 'boolean' ? policy.pauseOn429 : DEFAULT_SEND_POLICY.pauseOn429,
+    minDelaySeconds: full.minDelaySeconds,
+    maxDelaySeconds: full.maxDelaySeconds,
+    batchSize: full.batchSize,
+    pauseBetweenBatchesSeconds: full.pauseBetweenBatchesSeconds,
+    longPauseEveryMessages: full.longPauseEveryMessages,
+    longPauseMinutes: full.longPauseMinutes,
+    rotateEveryMessages: full.rotateEveryMessages,
+    pauseOn403: full.pauseOn403,
+    pauseOn429: full.pauseOn429,
   };
 }
 

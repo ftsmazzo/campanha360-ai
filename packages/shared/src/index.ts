@@ -19,4 +19,6 @@ export * from './dispatch-channel-selection';
 export * from './dispatch-window.util';
 export * from './dispatch-send-retry';
 export * from './dispatch-recovery.util';
+export * from './dispatch-channel-send-reservation.util';
+export * from './dispatch-protection-enforcement.util';
 export * from './evolution-send.client';
