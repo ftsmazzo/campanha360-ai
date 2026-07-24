@@ -48,11 +48,7 @@ const CHANNEL_COOLDOWN_STEP_MS = 5 * 60_000;
 const CHANNEL_COOLDOWN_MAX_STEPS = 6;
 const CHANNEL_FAILOVER_RETRY_DELAY_MS = 5_000;
 
-const NON_ACTIVE_DISPATCH_STATUSES = new Set<string>([
-  DispatchStatus.PAUSING,
-  DispatchStatus.PAUSED,
-  DispatchStatus.CANCELED,
-  DispatchStatus.EMERGENCY_STOPPED,
+const TERMINAL_DISPATCH_STATUSES = new Set<string>([
   DispatchStatus.FAILED,
   DispatchStatus.COMPLETED,
   DispatchStatus.COMPLETED_WITH_ERRORS,
@@ -122,7 +118,11 @@ export type DispatchSendProcessAction =
   | 'RETRY_SCHEDULED'
   | 'FAILED'
   | 'UNKNOWN_PROVIDER_STATE'
-  | 'BLOCKED_SEND_DISABLED';
+  | 'BLOCKED_SEND_DISABLED'
+  | 'BLOCKED_DISPATCH_PAUSING'
+  | 'BLOCKED_DISPATCH_PAUSED'
+  | 'BLOCKED_DISPATCH_CANCELED'
+  | 'BLOCKED_DISPATCH_EMERGENCY_STOPPED';
 
 export type DispatchSendProcessResult = {
   action: DispatchSendProcessAction;
@@ -211,13 +211,24 @@ export async function processDispatchSendJob(
     };
   }
 
-  if (NON_ACTIVE_DISPATCH_STATUSES.has(String(dispatch.status))) {
+  if (TERMINAL_DISPATCH_STATUSES.has(String(dispatch.status))) {
     return {
       action: 'NOOP_DISPATCH_NOT_ACTIVE',
       send: false,
       dispatchItemId: item.id,
       reason: `DISPATCH_STATUS_${dispatch.status}`,
     };
+  }
+
+  // 09.5 — bloqueios operacionais (antes de SEND / Evolution)
+  const operationalBlock = await handleOperationalDispatchBlock({
+    prisma,
+    dispatch,
+    item,
+    now,
+  });
+  if (operationalBlock) {
+    return operationalBlock;
   }
 
   if (
@@ -735,6 +746,94 @@ async function runRealSend(input: {
     }
 
     // --- Chamada Evolution ---
+    // Revalida status operacional imediatamente antes da chamada externa.
+    const freshDispatch = await prisma.dispatch.findFirst({
+      where: { id: dispatch.id },
+      select: { status: true },
+    });
+    const freshStatus = String(freshDispatch?.status ?? '');
+    if (
+      freshStatus === DispatchStatus.PAUSING ||
+      freshStatus === DispatchStatus.PAUSED
+    ) {
+      await prisma.dispatchItem.updateMany({
+        where: {
+          id: item.id,
+          status: DispatchItemStatus.PROCESSING,
+          providerRequestStartedAt: null,
+        },
+        data: {
+          status: DispatchItemStatus.QUEUED,
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          lastQueueError: `BLOCKED_${freshStatus}`,
+        },
+      });
+      await tryFinalizePauseFromWorker(prisma, dispatch.id, now());
+      return {
+        action:
+          freshStatus === DispatchStatus.PAUSED
+            ? 'BLOCKED_DISPATCH_PAUSED'
+            : 'BLOCKED_DISPATCH_PAUSING',
+        send: false,
+        dispatchItemId: item.id,
+      };
+    }
+    if (freshStatus === DispatchStatus.CANCELED) {
+      await prisma.dispatchItem.updateMany({
+        where: {
+          id: item.id,
+          status: DispatchItemStatus.PROCESSING,
+          providerRequestStartedAt: null,
+        },
+        data: {
+          status: DispatchItemStatus.CANCELED,
+          canceledAt: now(),
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          errorCategory: DispatchItemErrorCategory.DISPATCH_CANCELED,
+          errorCode: 'DISPATCH_CANCELED',
+          errorMessage: 'Dispatch cancelado antes da chamada externa',
+        },
+      });
+      return {
+        action: 'BLOCKED_DISPATCH_CANCELED',
+        send: false,
+        dispatchItemId: item.id,
+      };
+    }
+    if (freshStatus === DispatchStatus.EMERGENCY_STOPPED) {
+      await prisma.dispatchItem.updateMany({
+        where: {
+          id: item.id,
+          status: DispatchItemStatus.PROCESSING,
+          providerRequestStartedAt: null,
+        },
+        data: {
+          status: DispatchItemStatus.QUEUED,
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          lastQueueError: 'DISPATCH_EMERGENCY_STOPPED',
+        },
+      });
+      return {
+        action: 'BLOCKED_DISPATCH_EMERGENCY_STOPPED',
+        send: false,
+        dispatchItemId: item.id,
+      };
+    }
+    if (freshStatus !== DispatchStatus.RUNNING) {
+      return {
+        action: 'NOOP_DISPATCH_NOT_ACTIVE',
+        send: false,
+        dispatchItemId: item.id,
+        reason: `DISPATCH_STATUS_${freshStatus}`,
+      };
+    }
+
     const channelAccount = await prisma.channelAccount.findUnique({
       where: { id: selectedChannel.channelAccountId },
       select: { externalAccountId: true },
@@ -742,6 +841,12 @@ async function runRealSend(input: {
 
     const contentSnapshot = (item.contentSnapshot ?? {}) as { body?: unknown };
     const text = typeof contentSnapshot.body === 'string' ? contentSnapshot.body : '';
+
+    const requestStartedAt = now();
+    await prisma.dispatchItem.updateMany({
+      where: { id: item.id, status: DispatchItemStatus.PROCESSING },
+      data: { providerRequestStartedAt: requestStartedAt },
+    });
 
     const sendFn = deps.sendText ?? sendEvolutionText;
     const result = await sendFn({
@@ -753,6 +858,11 @@ async function runRealSend(input: {
       destination: normalizedDestination,
       text,
       idempotencyKey: item.id,
+    });
+
+    await prisma.dispatchItem.updateMany({
+      where: { id: item.id },
+      data: { providerRequestCompletedAt: now() },
     });
 
     const attemptCount = (item.attemptCount ?? 0) + 1;
@@ -1107,7 +1217,11 @@ async function recomputeDispatchProgress(
     lastProgressAt: now,
   };
 
-  if (unresolved === 0 && (dispatch.totalItems ?? 0) > 0) {
+  if (
+    unresolved === 0 &&
+    (dispatch.totalItems ?? 0) > 0 &&
+    String(dispatch.status) === DispatchStatus.RUNNING
+  ) {
     data.completedAt = now;
     data.status =
       failedItems + skippedItems + canceledItems > 0
@@ -1116,9 +1230,187 @@ async function recomputeDispatchProgress(
   }
 
   await prisma.dispatch.updateMany({
-    where: { id: dispatch.id, status: DispatchStatus.RUNNING },
+    where: {
+      id: dispatch.id,
+      status: {
+        in: [
+          DispatchStatus.RUNNING,
+          DispatchStatus.PAUSING,
+          DispatchStatus.PAUSED,
+        ],
+      },
+    },
     data,
   });
+
+  if (String((dispatch as { status?: string }).status) === DispatchStatus.PAUSING) {
+    await tryFinalizePauseFromWorker(prisma, dispatch.id, now);
+  }
+}
+
+async function handleOperationalDispatchBlock(input: {
+  prisma: PrismaClient;
+  dispatch: DispatchRow;
+  item: ItemRow;
+  now: () => Date;
+}): Promise<DispatchSendProcessResult | null> {
+  const { prisma, dispatch, item, now } = input;
+  const status = String(dispatch.status);
+
+  if (status === DispatchStatus.CANCELED) {
+    const cancelableNow = new Set<string>([
+      DispatchItemStatus.PENDING,
+      DispatchItemStatus.SCHEDULED,
+      DispatchItemStatus.QUEUED,
+      DispatchItemStatus.RETRY_SCHEDULED,
+      DispatchItemStatus.PROCESSING,
+    ]);
+    if (
+      cancelableNow.has(String(item.status)) &&
+      !(item as { providerRequestStartedAt?: Date | null }).providerRequestStartedAt
+    ) {
+      await prisma.dispatchItem.updateMany({
+        where: {
+          id: item.id,
+          status: {
+            in: [
+              DispatchItemStatus.PENDING,
+              DispatchItemStatus.SCHEDULED,
+              DispatchItemStatus.QUEUED,
+              DispatchItemStatus.RETRY_SCHEDULED,
+              DispatchItemStatus.PROCESSING,
+            ],
+          },
+          providerRequestStartedAt: null,
+        },
+        data: {
+          status: DispatchItemStatus.CANCELED,
+          canceledAt: now(),
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          errorCategory: DispatchItemErrorCategory.DISPATCH_CANCELED,
+          errorCode: 'DISPATCH_CANCELED',
+          errorMessage: 'Dispatch cancelado',
+        },
+      });
+    }
+    return {
+      action: 'BLOCKED_DISPATCH_CANCELED',
+      send: false,
+      dispatchItemId: item.id,
+      reason: 'DISPATCH_CANCELED',
+    };
+  }
+
+  if (status === DispatchStatus.EMERGENCY_STOPPED) {
+    if (
+      item.status === DispatchItemStatus.PROCESSING &&
+      !(item as { providerRequestStartedAt?: Date | null }).providerRequestStartedAt
+    ) {
+      await prisma.dispatchItem.updateMany({
+        where: {
+          id: item.id,
+          status: DispatchItemStatus.PROCESSING,
+          providerRequestStartedAt: null,
+        },
+        data: {
+          status: DispatchItemStatus.QUEUED,
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          lastQueueError: 'DISPATCH_EMERGENCY_STOPPED',
+        },
+      });
+    }
+    return {
+      action: 'BLOCKED_DISPATCH_EMERGENCY_STOPPED',
+      send: false,
+      dispatchItemId: item.id,
+      reason: 'DISPATCH_EMERGENCY_STOPPED',
+    };
+  }
+
+  if (status === DispatchStatus.PAUSED) {
+    if (
+      item.status === DispatchItemStatus.PROCESSING &&
+      !(item as { providerRequestStartedAt?: Date | null }).providerRequestStartedAt
+    ) {
+      await prisma.dispatchItem.updateMany({
+        where: {
+          id: item.id,
+          status: DispatchItemStatus.PROCESSING,
+          providerRequestStartedAt: null,
+        },
+        data: {
+          status: DispatchItemStatus.QUEUED,
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          lastQueueError: 'DISPATCH_PAUSED',
+        },
+      });
+    }
+    return {
+      action: 'BLOCKED_DISPATCH_PAUSED',
+      send: false,
+      dispatchItemId: item.id,
+      reason: 'DISPATCH_PAUSED',
+    };
+  }
+
+  if (status === DispatchStatus.PAUSING) {
+    if (
+      item.status === DispatchItemStatus.PROCESSING &&
+      !(item as { providerRequestStartedAt?: Date | null }).providerRequestStartedAt
+    ) {
+      await prisma.dispatchItem.updateMany({
+        where: {
+          id: item.id,
+          status: DispatchItemStatus.PROCESSING,
+          providerRequestStartedAt: null,
+        },
+        data: {
+          status: DispatchItemStatus.QUEUED,
+          lockedAt: null,
+          lockToken: null,
+          lockExpiresAt: null,
+          lastQueueError: 'DISPATCH_PAUSING_RELEASED',
+        },
+      });
+    }
+    await tryFinalizePauseFromWorker(prisma, dispatch.id, now());
+    return {
+      action: 'BLOCKED_DISPATCH_PAUSING',
+      send: false,
+      dispatchItemId: item.id,
+      reason: 'DISPATCH_PAUSING',
+    };
+  }
+
+  return null;
+}
+
+async function tryFinalizePauseFromWorker(
+  prisma: PrismaClient,
+  dispatchId: string,
+  now: Date,
+): Promise<boolean> {
+  const processingCount = await prisma.dispatchItem.count({
+    where: { dispatchId, status: DispatchItemStatus.PROCESSING },
+  });
+  if (processingCount > 0) return false;
+
+  const claim = await prisma.dispatch.updateMany({
+    where: { id: dispatchId, status: DispatchStatus.PAUSING },
+    data: {
+      status: DispatchStatus.PAUSED,
+      pausedAt: now,
+      pausingAt: null,
+      lastProgressAt: now,
+    },
+  });
+  return claim.count === 1;
 }
 
 // ---------------------------------------------------------------------------

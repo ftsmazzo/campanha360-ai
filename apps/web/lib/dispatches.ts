@@ -51,6 +51,9 @@ export function getDispatchStatusBadgeClass(status: string): string {
     case 'QUEUED':
     case 'PREPARING':
       return 'border-[#c9d7ee] bg-[#eef4fc] text-[#1e3a5f]';
+    case 'PAUSING':
+    case 'PAUSED':
+      return 'border-amber-200 bg-amber-50 text-amber-900';
     case 'COMPLETED':
     case 'READY':
       return 'border-green-200 bg-green-50 text-green-800';

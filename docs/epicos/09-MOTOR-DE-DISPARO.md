@@ -1474,6 +1474,8 @@ A subetapa estará concluída quando:
 - concorrência é tratada;
 - tudo é auditável.
 
+**Status: concluída (implementação + testes unitários).** Homologação operacional com `DISPATCH_SEND_ENABLED=false` primeiro (transições/UI), depois piloto controlado com envio real.
+
 ---
 
 # 12. Subetapa 09.6 — Retry, Idempotência e Recuperação
@@ -2762,10 +2764,19 @@ O Épico 10 não deve alterar as garantias do Motor de Disparo.
 
 ## 45. Próxima ação prática
 
-A **09.1 — Entidade Dispatch**, a **09.2 — Materialização dos DispatchItems**, a **09.3 — Preparação e Enfileiramento** e a **09.4 — Worker de Envio** estão concluídas.
+A **09.1 — Entidade Dispatch**, a **09.2 — Materialização dos DispatchItems**, a **09.3 — Preparação e Enfileiramento**, a **09.4 — Worker de Envio** e a **09.5 — Controle Operacional** estão concluídas.
+
+### Resultado da 09.5
+
+- Rotas: `POST .../pause`, `.../resume`, `.../cancel`, `.../emergency-stop` (OWNER/ADMIN).
+- Máquina de estados: `RUNNING→PAUSING→PAUSED`, `PAUSED→RUNNING`, canceláveis até `CANCELED`, emergência → `EMERGENCY_STOPPED` (sem retomada nesta etapa).
+- Worker bloqueia Evolution em `PAUSING`/`PAUSED`/`CANCELED`/`EMERGENCY_STOPPED` (`BLOCKED_DISPATCH_*`); `providerRequestStartedAt` marca início da chamada externa.
+- Contadores recomputados por `groupBy` após ações; AuditLog: `DISPATCH_PAUSE_REQUESTED`, `DISPATCH_PAUSED`, `DISPATCH_RESUMED`, `DISPATCH_CANCELED`, `DISPATCH_EMERGENCY_STOPPED`.
+- Web: botões/confirmações conforme `allowedActions`; motivos e responsáveis exibidos.
+- `DISPATCH_SEND_ENABLED` permanece default `false` (resume exige `true` em homologação).
 
 A próxima implementação deve ser apenas:
 
-**09.5 — Controle Operacional**
+**09.6 — Retry, Idempotência e Recuperação** (aprofundamento além do já existente na 09.4)
 
-Permitir controlar uma execução em andamento (pausar, retomar, cancelar, parada emergencial), reaproveitando o estado `RUNNING`/contadores consolidados pela 09.4 sem alterar as garantias de modo piloto, idempotência e last-mile já implementadas.
+ou conforme prioridade do épico.

@@ -110,6 +110,7 @@ const detailSelect = {
   queuedAt: true,
   startedAt: true,
   pausingAt: true,
+  pauseRequestedAt: true,
   pausedAt: true,
   resumedAt: true,
   completedAt: true,
@@ -117,6 +118,12 @@ const detailSelect = {
   canceledAt: true,
   emergencyStoppedAt: true,
   lastProgressAt: true,
+  pauseReason: true,
+  cancelReason: true,
+  emergencyStopReason: true,
+  pausedByUserId: true,
+  canceledByUserId: true,
+  emergencyStoppedByUserId: true,
   requiringRedistribution: true,
   multiInstance: true,
   createdAt: true,
@@ -145,6 +152,15 @@ const detailSelect = {
       id: true,
       name: true,
     },
+  },
+  pausedBy: {
+    select: { id: true, name: true },
+  },
+  canceledBy: {
+    select: { id: true, name: true },
+  },
+  emergencyStoppedBy: {
+    select: { id: true, name: true },
   },
 } satisfies Prisma.DispatchSelect;
 

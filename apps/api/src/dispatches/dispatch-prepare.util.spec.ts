@@ -304,6 +304,44 @@ describe('dispatch-prepare.util', () => {
     }
   });
 
+  it('canPause/canResume/canCancel/canEmergencyStop (09.5)', () => {
+    process.env.DISPATCH_ENGINE_ENABLED = 'true';
+    process.env.DISPATCH_QUEUE_ENABLED = 'true';
+    process.env.DISPATCH_SEND_ENABLED = 'true';
+    try {
+      const running = buildDispatchAllowedActionsForPrepare({
+        role: MembershipRole.OWNER,
+        status: DispatchStatus.RUNNING,
+        totalItems: 2,
+        queuedItems: 2,
+      });
+      assert.equal(running.canPause, true);
+      assert.equal(running.canResume, false);
+      assert.equal(running.canCancel, true);
+      assert.equal(running.canEmergencyStop, true);
+
+      const paused = buildDispatchAllowedActionsForPrepare({
+        role: MembershipRole.ADMIN,
+        status: DispatchStatus.PAUSED,
+        totalItems: 2,
+        queuedItems: 1,
+      });
+      assert.equal(paused.canResume, true);
+      assert.equal(paused.canPause, false);
+
+      const viewer = buildDispatchAllowedActionsForPrepare({
+        role: MembershipRole.VIEWER,
+        status: DispatchStatus.RUNNING,
+        totalItems: 2,
+        queuedItems: 2,
+      });
+      assert.equal(viewer.canPause, false);
+      assert.equal(viewer.canCancel, false);
+    } finally {
+      clearStartFlags();
+    }
+  });
+
   it('rejeita plano nao APPROVED indiretamente via contagem divergente', () => {
     assert.throws(() =>
       assertEligibleRecipientsReadyForPrepare({

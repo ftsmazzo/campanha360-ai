@@ -214,6 +214,9 @@ model User {
   rejectedDispatchPlans DispatchPlan[] @relation("DispatchPlanRejectedBy")
   canceledDispatchPlans DispatchPlan[] @relation("DispatchPlanCanceledBy")
   createdDispatches Dispatch[] @relation("DispatchCreatedBy")
+  pausedDispatches Dispatch[] @relation("DispatchPausedBy")
+  canceledDispatches Dispatch[] @relation("DispatchCanceledBy")
+  emergencyStoppedDispatches Dispatch[] @relation("DispatchEmergencyStoppedBy")
   contactNotes ContactNote[]
   createdContactTasks ContactTask[] @relation("ContactTaskCreatedBy")
   assignedContactTasks ContactTask[] @relation("ContactTaskAssignedTo")
@@ -667,6 +670,7 @@ model Dispatch {
   queuedAt              DateTime?
   startedAt             DateTime?
   pausingAt             DateTime?
+  pauseRequestedAt      DateTime?
   pausedAt              DateTime?
   resumedAt             DateTime?
   completedAt           DateTime?
@@ -674,11 +678,20 @@ model Dispatch {
   canceledAt            DateTime?
   emergencyStoppedAt    DateTime?
   lastProgressAt        DateTime?
+  pauseReason           String?
+  cancelReason          String?
+  emergencyStopReason   String?
+  pausedByUserId        String?
+  canceledByUserId      String?
+  emergencyStoppedByUserId String?
   organization          Organization   @relation(fields: [organizationId], references: [id])
   campaign              Campaign       @relation(fields: [campaignId], references: [id])
   dispatchPlan          DispatchPlan   @relation(fields: [dispatchPlanId], references: [id])
   channelAccount        ChannelAccount @relation(fields: [channelAccountId], references: [id])
   createdBy             User           @relation("DispatchCreatedBy", fields: [createdByUserId], references: [id])
+  pausedBy              User?          @relation("DispatchPausedBy", fields: [pausedByUserId], references: [id])
+  canceledBy            User?          @relation("DispatchCanceledBy", fields: [canceledByUserId], references: [id])
+  emergencyStoppedBy    User?          @relation("DispatchEmergencyStoppedBy", fields: [emergencyStoppedByUserId], references: [id])
   items                 DispatchItem[]
   channels              DispatchChannel[]
   requiringRedistribution Boolean      @default(false)
@@ -691,6 +704,9 @@ model Dispatch {
   @@index([dispatchPlanId])
   @@index([channelAccountId])
   @@index([status, createdAt])
+  @@index([pausedByUserId])
+  @@index([canceledByUserId])
+  @@index([emergencyStoppedByUserId])
 }
 
 model DispatchChannel {
@@ -784,6 +800,8 @@ model DispatchItem {
   lockToken               String?
   lockExpiresAt           DateTime?
   startedAt               DateTime?
+  providerRequestStartedAt DateTime?
+  providerRequestCompletedAt DateTime?
   sentAt                  DateTime?
   deliveredAt             DateTime?
   readAt                  DateTime?

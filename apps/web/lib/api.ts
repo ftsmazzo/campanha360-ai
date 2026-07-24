@@ -1195,6 +1195,7 @@ export type DispatchDetail = {
   queuedAt: string | null;
   startedAt: string | null;
   pausingAt: string | null;
+  pauseRequestedAt?: string | null;
   pausedAt: string | null;
   resumedAt: string | null;
   completedAt: string | null;
@@ -1202,6 +1203,12 @@ export type DispatchDetail = {
   canceledAt: string | null;
   emergencyStoppedAt: string | null;
   lastProgressAt: string | null;
+  pauseReason?: string | null;
+  cancelReason?: string | null;
+  emergencyStopReason?: string | null;
+  pausedByUserId?: string | null;
+  canceledByUserId?: string | null;
+  emergencyStoppedByUserId?: string | null;
   createdAt: string;
   updatedAt: string;
   dispatchPlan: {
@@ -1223,6 +1230,9 @@ export type DispatchDetail = {
     id: string;
     name: string;
   };
+  pausedBy?: { id: string; name: string } | null;
+  canceledBy?: { id: string; name: string } | null;
+  emergencyStoppedBy?: { id: string; name: string } | null;
   allowedActions: DispatchAllowedActions;
   approvedAudience: DispatchApprovedAudience;
   itemSummary?: Record<string, number>;
@@ -1320,6 +1330,27 @@ export type StartDispatchResponse = {
   queuedItems: number;
   itemsEligible: number;
   jobsRepublished: number;
+};
+
+export type OperationalDispatchResponse = {
+  dispatchId: string;
+  previousStatus: DispatchStatus;
+  status: DispatchStatus;
+  reason: string | null;
+  counts: {
+    pendingItems: number;
+    queuedItems: number;
+    processingItems: number;
+    sentItems: number;
+    deliveredItems: number;
+    readItems: number;
+    failedItems: number;
+    skippedItems: number;
+    canceledItems: number;
+  };
+  jobsRepublished?: number;
+  itemsCanceled?: number;
+  jobsRemoved?: number;
 };
 
 export type ListDispatchItemsResponse = {
@@ -1469,6 +1500,66 @@ export function startDispatch(
   return request<StartDispatchResponse>(
     `/campaigns/${campaignId}/dispatches/${dispatchId}/start`,
     { method: 'POST' },
+    token,
+  );
+}
+
+export function pauseDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  reason?: string,
+) {
+  return request<OperationalDispatchResponse>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/pause`,
+    {
+      method: 'POST',
+      body: JSON.stringify(reason ? { reason } : {}),
+    },
+    token,
+  );
+}
+
+export function resumeDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+) {
+  return request<OperationalDispatchResponse>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/resume`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function cancelDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  reason: string,
+) {
+  return request<OperationalDispatchResponse>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    },
+    token,
+  );
+}
+
+export function emergencyStopDispatch(
+  token: string,
+  campaignId: string,
+  dispatchId: string,
+  reason: string,
+) {
+  return request<OperationalDispatchResponse>(
+    `/campaigns/${campaignId}/dispatches/${dispatchId}/emergency-stop`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+    },
     token,
   );
 }

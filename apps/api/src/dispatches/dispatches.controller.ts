@@ -15,6 +15,12 @@ import { ListDispatchesQueryDto } from './dto/list-dispatches-query.dto';
 import { DispatchesService } from './dispatches.service';
 import { DispatchQueueService } from './dispatch-queue.service';
 import { DispatchStartService } from './dispatch-start.service';
+import { DispatchOperationalService } from './dispatch-operational.service';
+import {
+  CancelDispatchDto,
+  EmergencyStopDispatchDto,
+  PauseDispatchDto,
+} from './dto/operational-dispatch.dto';
 
 @Controller('campaigns/:campaignId/dispatches')
 @UseGuards(JwtAuthGuard)
@@ -23,6 +29,7 @@ export class DispatchesController {
     private readonly dispatchesService: DispatchesService,
     private readonly dispatchQueueService: DispatchQueueService,
     private readonly dispatchStartService: DispatchStartService,
+    private readonly dispatchOperationalService: DispatchOperationalService,
   ) {}
 
   @Get()
@@ -94,6 +101,64 @@ export class DispatchesController {
     @Param('dispatchId') dispatchId: string,
   ) {
     return this.dispatchStartService.start(user.id, campaignId, dispatchId);
+  }
+
+  @Post(':dispatchId/pause')
+  pause(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Body() dto: PauseDispatchDto,
+  ) {
+    return this.dispatchOperationalService.pause(
+      user.id,
+      campaignId,
+      dispatchId,
+      dto.reason,
+    );
+  }
+
+  @Post(':dispatchId/resume')
+  resume(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+  ) {
+    return this.dispatchOperationalService.resume(
+      user.id,
+      campaignId,
+      dispatchId,
+    );
+  }
+
+  @Post(':dispatchId/cancel')
+  cancel(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Body() dto: CancelDispatchDto,
+  ) {
+    return this.dispatchOperationalService.cancel(
+      user.id,
+      campaignId,
+      dispatchId,
+      dto.reason,
+    );
+  }
+
+  @Post(':dispatchId/emergency-stop')
+  emergencyStop(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('dispatchId') dispatchId: string,
+    @Body() dto: EmergencyStopDispatchDto,
+  ) {
+    return this.dispatchOperationalService.emergencyStop(
+      user.id,
+      campaignId,
+      dispatchId,
+      dto.reason,
+    );
   }
 
   @Get(':dispatchId/items')

@@ -96,9 +96,28 @@ function createFakePrisma(options: {
     prisma: {
       dispatch: {
         findFirst: async () => dispatch,
+        updateMany: async (args: {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        }) => {
+          if (!dispatch) return { count: 0 };
+          if (
+            args.where.status &&
+            String(dispatch.status) !== String(args.where.status)
+          ) {
+            return { count: 0 };
+          }
+          Object.assign(dispatch, args.data);
+          return { count: 1 };
+        },
       },
       dispatchItem: {
         findFirst: async () => (item ? { ...item } : null),
+        count: async (args: { where: { status?: string } }) => {
+          if (!item) return 0;
+          if (args.where.status && item.status !== args.where.status) return 0;
+          return 1;
+        },
         updateMany: async (args: {
           where: Record<string, unknown>;
           data: Record<string, unknown>;
@@ -106,8 +125,23 @@ function createFakePrisma(options: {
           if (!item) return { count: 0 };
           const statusFilter = args.where.status as
             | { in?: string[] }
+            | string
             | undefined;
-          if (statusFilter?.in && !statusFilter.in.includes(String(item.status))) {
+          if (statusFilter && typeof statusFilter === 'object' && statusFilter.in) {
+            if (!statusFilter.in.includes(String(item.status))) {
+              return { count: 0 };
+            }
+          } else if (typeof statusFilter === 'string') {
+            if (item.status !== statusFilter) return { count: 0 };
+          }
+          if (
+            Object.prototype.hasOwnProperty.call(
+              args.where,
+              'providerRequestStartedAt',
+            ) &&
+            args.where.providerRequestStartedAt === null &&
+            item.providerRequestStartedAt != null
+          ) {
             return { count: 0 };
           }
           const orFilter = args.where.OR as
@@ -264,7 +298,18 @@ function createRealSendHarness(options: {
     dispatch: {
       findFirst: async () => ({ ...dispatchRow }),
       updateMany: async (args: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
-        if (args.where.status && dispatchRow.status !== args.where.status) {
+        const statusFilter = args.where.status as
+          | { in?: string[] }
+          | string
+          | undefined;
+        if (statusFilter && typeof statusFilter === 'object' && statusFilter.in) {
+          if (!statusFilter.in.includes(String(dispatchRow.status))) {
+            return { count: 0 };
+          }
+        } else if (
+          typeof statusFilter === 'string' &&
+          dispatchRow.status !== statusFilter
+        ) {
           return { count: 0 };
         }
         dispatchRow = { ...dispatchRow, ...args.data };
@@ -764,15 +809,56 @@ describe('processDispatchSendJob (worker 09.3)', () => {
     assert.equal(result.action, 'NOOP_NOT_FOUND');
   });
 
-  it('Dispatch em status terminal: NOOP_DISPATCH_NOT_ACTIVE, sem alterar item', async () => {
+  it('Dispatch PAUSED: BLOCKED_DISPATCH_PAUSED sem enviar', async () => {
     enableFlags();
+    process.env.DISPATCH_SEND_ENABLED = 'true';
     const harness = createFakePrisma({ dispatch: baseDispatch({ status: 'PAUSED' }) });
     const result = await processDispatchSendJob(
       { data: basePayload() },
       { prisma: harness.prisma, now: () => INSIDE_WINDOW_NOW },
     );
-    assert.equal(result.action, 'NOOP_DISPATCH_NOT_ACTIVE');
+    assert.equal(result.action, 'BLOCKED_DISPATCH_PAUSED');
     assert.equal(harness.getItem()?.status, 'QUEUED');
+  });
+
+  it('Dispatch CANCELED: marca item pendente como CANCELED', async () => {
+    enableFlags();
+    process.env.DISPATCH_SEND_ENABLED = 'true';
+    const harness = createFakePrisma({
+      dispatch: baseDispatch({ status: 'CANCELED' }),
+    });
+    const result = await processDispatchSendJob(
+      { data: basePayload() },
+      { prisma: harness.prisma, now: () => INSIDE_WINDOW_NOW },
+    );
+    assert.equal(result.action, 'BLOCKED_DISPATCH_CANCELED');
+    assert.equal(harness.getItem()?.status, 'CANCELED');
+  });
+
+  it('Dispatch EMERGENCY_STOPPED: bloqueia sem cancelar item', async () => {
+    enableFlags();
+    process.env.DISPATCH_SEND_ENABLED = 'true';
+    const harness = createFakePrisma({
+      dispatch: baseDispatch({ status: 'EMERGENCY_STOPPED' }),
+    });
+    const result = await processDispatchSendJob(
+      { data: basePayload() },
+      { prisma: harness.prisma, now: () => INSIDE_WINDOW_NOW },
+    );
+    assert.equal(result.action, 'BLOCKED_DISPATCH_EMERGENCY_STOPPED');
+    assert.equal(harness.getItem()?.status, 'QUEUED');
+  });
+
+  it('Dispatch COMPLETED: NOOP_DISPATCH_NOT_ACTIVE', async () => {
+    enableFlags();
+    const harness = createFakePrisma({
+      dispatch: baseDispatch({ status: 'COMPLETED' }),
+    });
+    const result = await processDispatchSendJob(
+      { data: basePayload() },
+      { prisma: harness.prisma, now: () => INSIDE_WINDOW_NOW },
+    );
+    assert.equal(result.action, 'NOOP_DISPATCH_NOT_ACTIVE');
   });
 
   it('item ja enviado: NOOP_ALREADY_SENT', async () => {

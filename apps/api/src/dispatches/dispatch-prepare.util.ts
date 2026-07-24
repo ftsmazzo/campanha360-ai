@@ -23,6 +23,7 @@ import {
   DISPATCH_ITEM_DEFAULT_MAX_ATTEMPTS,
   DISPATCH_PREPARE_MAX_ITEMS,
 } from './dispatch.constants';
+import { buildOperationalAllowedActions } from './dispatch-operational.util';
 import type { DispatchContentSnapshot } from './dispatch.util';
 
 export type EligibleRecipientForPrepare = {
@@ -322,16 +323,23 @@ export function buildDispatchAllowedActionsForPrepare(input: {
     isDispatchSendEnabled() &&
     isDispatchStartWithinPilotLimit(input.totalItems);
 
+  const operational = buildOperationalAllowedActions({
+    role: input.role,
+    status: input.status,
+    requiringRedistribution: input.requiringRedistribution,
+    totalItems: input.totalItems,
+  });
+
   return {
     canView: true,
     canPrepare: canPrepareDispatch(input),
     canQueue,
     canRedistribute: Boolean(input.requiringRedistribution),
     canStart,
-    canPause: false,
-    canResume: false,
-    canCancel: false,
-    canEmergencyStop: false,
+    canPause: operational.canPause,
+    canResume: operational.canResume,
+    canCancel: operational.canCancel,
+    canEmergencyStop: operational.canEmergencyStop,
     canReconcile,
     canRetryFailedItems: false,
   };

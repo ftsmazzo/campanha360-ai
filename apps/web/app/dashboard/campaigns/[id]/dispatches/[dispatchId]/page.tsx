@@ -19,10 +19,14 @@ import {
   fetchDispatchItems,
   fetchMe,
   getStoredToken,
+  pauseDispatch,
   prepareDispatch,
   queueDispatch,
   redistributeDispatch,
   reconcileDispatchQueue,
+  resumeDispatch,
+  cancelDispatch,
+  emergencyStopDispatch,
   startDispatch,
 } from '../../../../../../lib/api';
 import {
@@ -60,9 +64,17 @@ export default function DispatchDetailPage() {
   const [queuing, setQueuing] = useState(false);
   const [starting, setStarting] = useState(false);
   const [reconciling, setReconciling] = useState(false);
+  const [pausing, setPausing] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+  const [emergencyStopping, setEmergencyStopping] = useState(false);
   const [showPrepareConfirm, setShowPrepareConfirm] = useState(false);
   const [showQueueConfirm, setShowQueueConfirm] = useState(false);
   const [showStartConfirm, setShowStartConfirm] = useState(false);
+  const [showPauseConfirm, setShowPauseConfirm] = useState(false);
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [showEmergencyConfirm, setShowEmergencyConfirm] = useState(false);
+  const [operationalReason, setOperationalReason] = useState('');
   const [queueResult, setQueueResult] = useState<QueueDispatchResponse | null>(
     null,
   );
@@ -288,6 +300,119 @@ export default function DispatchDetailPage() {
     }
   }
 
+  async function onPause() {
+    const token = getStoredToken();
+    if (!token) return;
+    setPausing(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await pauseDispatch(
+        token,
+        campaignId,
+        dispatchId,
+        operationalReason.trim() || undefined,
+      );
+      setShowPauseConfirm(false);
+      setOperationalReason('');
+      setSuccess(
+        result.status === 'PAUSED'
+          ? 'Disparo pausado.'
+          : 'Pausa solicitada; aguardando items em processamento.',
+      );
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel pausar o disparo',
+      );
+    } finally {
+      setPausing(false);
+    }
+  }
+
+  async function onResume() {
+    const token = getStoredToken();
+    if (!token) return;
+    setResuming(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await resumeDispatch(token, campaignId, dispatchId);
+      setSuccess(
+        `Disparo retomado: ${result.jobsRepublished ?? 0} job(s) republicado(s).`,
+      );
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel retomar o disparo',
+      );
+    } finally {
+      setResuming(false);
+    }
+  }
+
+  async function onCancel() {
+    const token = getStoredToken();
+    if (!token) return;
+    setCanceling(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await cancelDispatch(
+        token,
+        campaignId,
+        dispatchId,
+        operationalReason.trim(),
+      );
+      setShowCancelConfirm(false);
+      setOperationalReason('');
+      setSuccess(
+        `Disparo cancelado. ${result.itemsCanceled ?? 0} item(ns) cancelado(s).`,
+      );
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel cancelar o disparo',
+      );
+    } finally {
+      setCanceling(false);
+    }
+  }
+
+  async function onEmergencyStop() {
+    const token = getStoredToken();
+    if (!token) return;
+    setEmergencyStopping(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      await emergencyStopDispatch(
+        token,
+        campaignId,
+        dispatchId,
+        operationalReason.trim(),
+      );
+      setShowEmergencyConfirm(false);
+      setOperationalReason('');
+      setSuccess('Parada emergencial acionada. Nenhuma nova mensagem sera iniciada.');
+      await reload();
+    } catch (err) {
+      setError(
+        err instanceof ApiError
+          ? err.message
+          : 'Nao foi possivel acionar a parada emergencial',
+      );
+    } finally {
+      setEmergencyStopping(false);
+    }
+  }
+
   async function onQueue() {
     const token = getStoredToken();
     if (!token) return;
@@ -331,6 +456,14 @@ export default function DispatchDetailPage() {
     canApprove && (dispatch?.allowedActions?.canQueue ?? false);
   const canStartAction =
     canApprove && (dispatch?.allowedActions?.canStart ?? false);
+  const canPauseAction =
+    canApprove && (dispatch?.allowedActions?.canPause ?? false);
+  const canResumeAction =
+    canApprove && (dispatch?.allowedActions?.canResume ?? false);
+  const canCancelAction =
+    canApprove && (dispatch?.allowedActions?.canCancel ?? false);
+  const canEmergencyStopAction =
+    canApprove && (dispatch?.allowedActions?.canEmergencyStop ?? false);
 
   return (
     <DashboardShell userName={user?.name}>
@@ -338,7 +471,7 @@ export default function DispatchDetailPage() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="text-sm font-medium uppercase tracking-wide text-[#65655f]">
-              Etapa 09.4 — envio real (Worker + Evolution)
+              Etapa 09.5 — controle operacional do disparo
             </p>
             <h2 className="mt-2 text-2xl font-semibold text-[#151515]">
               {dispatch?.name ?? 'Disparo'}
@@ -610,6 +743,111 @@ export default function DispatchDetailPage() {
               </div>
             ) : null}
 
+            {dispatch.status === 'PAUSING' ? (
+              <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                Pausando: novas mensagens nao serao iniciadas. Um item ja em
+                processamento pode concluir.
+              </p>
+            ) : null}
+
+            {dispatch.status === 'EMERGENCY_STOPPED' ? (
+              <div className="rounded-md border border-red-300 bg-red-50 px-3 py-3 text-sm text-red-900">
+                <p className="font-semibold">Parada emergencial ativa</p>
+                <p className="mt-1">
+                  Motivo: {dispatch.emergencyStopReason ?? '—'}
+                </p>
+                <p className="mt-1">
+                  Por {dispatch.emergencyStoppedBy?.name ?? '—'} em{' '}
+                  {dispatch.emergencyStoppedAt
+                    ? new Date(dispatch.emergencyStoppedAt).toLocaleString('pt-BR')
+                    : '—'}
+                </p>
+                <p className="mt-2 text-xs">
+                  Nenhuma retomada automatica nesta etapa. Exige analise
+                  administrativa.
+                </p>
+              </div>
+            ) : null}
+
+            {dispatch.status === 'CANCELED' ? (
+              <div className="rounded-md border border-[#ddd] bg-[#f5f5f5] px-3 py-3 text-sm text-[#24382b]">
+                <p className="font-semibold">Disparo cancelado</p>
+                <p className="mt-1">Motivo: {dispatch.cancelReason ?? '—'}</p>
+                <p className="mt-1">
+                  Por {dispatch.canceledBy?.name ?? '—'} em{' '}
+                  {dispatch.canceledAt
+                    ? new Date(dispatch.canceledAt).toLocaleString('pt-BR')
+                    : '—'}
+                </p>
+              </div>
+            ) : null}
+
+            {dispatch.status === 'PAUSED' && dispatch.pauseReason ? (
+              <p className="text-sm text-[#65655f]">
+                Motivo da pausa: {dispatch.pauseReason}
+                {dispatch.pausedBy?.name
+                  ? ` · por ${dispatch.pausedBy.name}`
+                  : ''}
+                {dispatch.pausedAt
+                  ? ` · ${new Date(dispatch.pausedAt).toLocaleString('pt-BR')}`
+                  : ''}
+              </p>
+            ) : null}
+
+            <div className="flex flex-wrap gap-2">
+              {canPauseAction ? (
+                <button
+                  type="button"
+                  className="rounded-md border border-amber-400 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-950 disabled:opacity-60"
+                  disabled={pausing}
+                  onClick={() => {
+                    setOperationalReason('');
+                    setShowPauseConfirm(true);
+                  }}
+                >
+                  {pausing ? 'Pausando...' : 'Pausar'}
+                </button>
+              ) : null}
+              {canResumeAction ? (
+                <button
+                  type="button"
+                  className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  disabled={resuming}
+                  onClick={() => void onResume()}
+                >
+                  {resuming ? 'Retomando...' : 'Retomar'}
+                </button>
+              ) : null}
+              {canCancelAction ? (
+                <button
+                  type="button"
+                  className="rounded-md border border-[#7a2e2e] px-4 py-2 text-sm font-semibold text-[#7a2e2e] disabled:opacity-60"
+                  disabled={canceling}
+                  onClick={() => {
+                    setOperationalReason('');
+                    setShowCancelConfirm(true);
+                  }}
+                >
+                  {canceling ? 'Cancelando...' : 'Cancelar'}
+                </button>
+              ) : null}
+              {canEmergencyStopAction ? (
+                <button
+                  type="button"
+                  className="rounded-md bg-[#7a2e2e] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  disabled={emergencyStopping}
+                  onClick={() => {
+                    setOperationalReason('');
+                    setShowEmergencyConfirm(true);
+                  }}
+                >
+                  {emergencyStopping
+                    ? 'Interrompendo...'
+                    : 'Parada emergencial'}
+                </button>
+              ) : null}
+            </div>
+
             {showPrepareConfirm ? (
               <div className="rounded-md border border-[#24382b] bg-white p-4">
                 <h4 className="font-semibold text-[#151515]">
@@ -702,6 +940,128 @@ export default function DispatchDetailPage() {
                     className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm"
                     disabled={starting}
                     onClick={() => setShowStartConfirm(false)}
+                  >
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {showPauseConfirm ? (
+              <div className="rounded-md border border-amber-400 bg-white p-4">
+                <h4 className="font-semibold text-[#151515]">Confirmar pausa</h4>
+                <p className="mt-2 text-sm text-[#24382b]">
+                  Novas mensagens deixarao de ser iniciadas. Uma mensagem ja em
+                  processamento pode concluir.
+                </p>
+                <label className="mt-3 block text-sm text-[#65655f]">
+                  Motivo (opcional)
+                  <textarea
+                    className="mt-1 w-full rounded-md border border-[#c9c8c0] px-3 py-2 text-sm"
+                    rows={3}
+                    maxLength={500}
+                    value={operationalReason}
+                    onChange={(e) => setOperationalReason(e.target.value)}
+                  />
+                </label>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md border border-amber-400 bg-amber-50 px-4 py-2 text-sm font-semibold text-amber-950 disabled:opacity-60"
+                    disabled={pausing}
+                    onClick={() => void onPause()}
+                  >
+                    {pausing ? 'Pausando...' : 'Confirmar pausa'}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm"
+                    disabled={pausing}
+                    onClick={() => setShowPauseConfirm(false)}
+                  >
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {showCancelConfirm ? (
+              <div className="rounded-md border border-[#7a2e2e] bg-white p-4">
+                <h4 className="font-semibold text-[#151515]">
+                  Confirmar cancelamento
+                </h4>
+                <p className="mt-2 text-sm text-[#24382b]">
+                  Os itens ainda nao enviados serao cancelados. Mensagens ja
+                  enviadas nao serao revertidas.
+                </p>
+                <label className="mt-3 block text-sm text-[#65655f]">
+                  Motivo (obrigatorio)
+                  <textarea
+                    className="mt-1 w-full rounded-md border border-[#c9c8c0] px-3 py-2 text-sm"
+                    rows={3}
+                    maxLength={500}
+                    value={operationalReason}
+                    onChange={(e) => setOperationalReason(e.target.value)}
+                  />
+                </label>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md bg-[#7a2e2e] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    disabled={canceling || operationalReason.trim().length < 10}
+                    onClick={() => void onCancel()}
+                  >
+                    {canceling ? 'Cancelando...' : 'Confirmar cancelamento'}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm"
+                    disabled={canceling}
+                    onClick={() => setShowCancelConfirm(false)}
+                  >
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {showEmergencyConfirm ? (
+              <div className="rounded-md border border-red-400 bg-white p-4">
+                <h4 className="font-semibold text-[#151515]">
+                  Confirmar parada emergencial
+                </h4>
+                <p className="mt-2 text-sm text-[#24382b]">
+                  O envio sera interrompido imediatamente antes de novas
+                  chamadas. Esta acao exige analise antes de qualquer retomada.
+                </p>
+                <label className="mt-3 block text-sm text-[#65655f]">
+                  Motivo (obrigatorio)
+                  <textarea
+                    className="mt-1 w-full rounded-md border border-[#c9c8c0] px-3 py-2 text-sm"
+                    rows={3}
+                    maxLength={500}
+                    value={operationalReason}
+                    onChange={(e) => setOperationalReason(e.target.value)}
+                  />
+                </label>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md bg-[#7a2e2e] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    disabled={
+                      emergencyStopping || operationalReason.trim().length < 10
+                    }
+                    onClick={() => void onEmergencyStop()}
+                  >
+                    {emergencyStopping
+                      ? 'Interrompendo...'
+                      : 'Confirmar parada emergencial'}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm"
+                    disabled={emergencyStopping}
+                    onClick={() => setShowEmergencyConfirm(false)}
                   >
                     Voltar
                   </button>

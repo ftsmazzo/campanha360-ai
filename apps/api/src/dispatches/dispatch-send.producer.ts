@@ -205,6 +205,29 @@ export class DispatchSendProducer implements OnModuleDestroy {
     return this.ensureJob(payload);
   }
 
+  /**
+   * Remove job waiting/delayed (limpeza tecnica apos cancel/emergency).
+   * Nao remove active/completed. Retorna true se removeu.
+   */
+  async removeWaitingOrDelayedJob(
+    payload: Pick<DispatchSendEnqueueInput, 'dispatchId' | 'dispatchItemId'>,
+  ): Promise<boolean> {
+    const jobId = buildDispatchSendJobId(
+      payload.dispatchId,
+      payload.dispatchItemId,
+    );
+    const queue = this.getQueue();
+    const existing = await this.fetchJob(queue, jobId);
+    if (!existing) return false;
+
+    const state = await existing.getState().catch(() => 'unknown');
+    if (state === 'waiting' || state === 'delayed' || state === 'prioritized') {
+      await existing.remove().catch(() => undefined);
+      return true;
+    }
+    return false;
+  }
+
   /** Enfileira vários itens em lotes sequenciais, preservando idempotência por item. */
   async enqueueMany(
     payloads: DispatchSendEnqueueInput[],
