@@ -133,6 +133,37 @@ export function createOrganization(token: string, payload: { name: string; slug?
   );
 }
 
+export type HardResetResponse = {
+  ok: true;
+  confirmationRequired: string;
+  organizationsReset: number;
+  organizationIds?: string[];
+  counts: {
+    organizations: number;
+    campaigns: number;
+    contacts: number;
+    channelAccounts: number;
+    conversationThreads: number;
+    messages: number;
+    dispatchPlans: number;
+    dispatches: number;
+    dispatchItems: number;
+    segments: number;
+    tags: number;
+    auditLogs: number;
+  };
+  message: string;
+};
+
+/** Apaga organizacoes OWNER e todo conteudo de teste. Mantem a conta. */
+export function hardResetOrganizations(token: string, confirmation: string) {
+  return request<HardResetResponse>(
+    '/organizations/hard-reset',
+    { method: 'POST', body: JSON.stringify({ confirmation }) },
+    token,
+  );
+}
+
 export type CampaignItem = {
   id: string;
   organizationId: string;

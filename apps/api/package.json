@@ -12,6 +12,7 @@
     "test:webhook-normalizer": "npx --yes tsx --test src/webhooks/evolution-webhook.normalizer.spec.ts",
     "test:inbox-reply": "npx --yes tsx --test src/inbox/inbox-reply.util.spec.ts src/inbox/inbox-conversation-integrity.util.spec.ts",
     "test:evolution-connection": "npx --yes tsx --test src/evolution/evolution-connection.util.spec.ts",
+    "test:hard-reset": "npx --yes tsx --test src/organizations/hard-reset.service.spec.ts",
     "test:contact-interaction": "npx --yes tsx --test src/contacts/contact-interaction.util.spec.ts",
     "test:contact-opt-out": "npx --yes tsx --test src/contacts/contact-opt-out.util.spec.ts",
     "test:contact-tag": "npx --yes tsx --test src/contacts/contact-tag.util.spec.ts",
