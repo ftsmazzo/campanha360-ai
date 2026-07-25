@@ -2080,10 +2080,12 @@ export default function DispatchDetailPage() {
                           <div className="flex justify-between gap-3">
                             <dt className="text-[#65655f]">Retry permitido</dt>
                             <dd>
-                              {selectedItem.allowedActions?.canRetryManually
+                              {'allowedActions' in selectedItem &&
+                              selectedItem.allowedActions?.canRetryManually
                                 ? 'sim'
                                 : 'nao'}
-                              {selectedItem.allowedActions?.retryBlockedReason
+                              {'allowedActions' in selectedItem &&
+                              selectedItem.allowedActions?.retryBlockedReason
                                 ? ` (${selectedItem.allowedActions.retryBlockedReason})`
                                 : ''}
                             </dd>
