@@ -156,11 +156,12 @@ describe('protection readiness', () => {
     assert.equal(r.status, 'BLOCKED');
   });
 
-  it('validateWhatsApp false → DISABLED_BY_POLICY', () => {
+  it('validateWhatsApp false → DISABLED_BY_POLICY + READY_WITH_WARNINGS', () => {
     const rows = buildHonestProtectionMatrix({
       approvalSnapshot: baseSnap,
       hasAtomicReservation: true,
       whatsappValidationImplemented: true,
+      whatsappValidationAvailable: true,
       optOutKeywordsInboundImplemented: true,
       lastMileImplemented: true,
       accountAgeSource: 'CREATED_AT_ONLY',
@@ -168,6 +169,60 @@ describe('protection readiness', () => {
     });
     const wa = rows.find((x) => x.rule.includes('Validacao WhatsApp'));
     assert.equal(wa?.status, 'DISABLED_BY_POLICY');
+    const r = evaluateProtectionReadiness({
+      approvalSnapshot: baseSnap,
+      rows,
+    });
+    assert.equal(r.status, 'READY_WITH_WARNINGS');
+    assert.ok(
+      r.warnings.includes('VALIDATE_WHATSAPP_DISABLED_BY_POLICY'),
+    );
+  });
+
+  it('validateWhatsApp true sem Evolution → BLOCKED', () => {
+    const snap = {
+      ...baseSnap,
+      protectionPolicy: {
+        ...baseSnap.protectionPolicy,
+        validateWhatsAppNumber: true,
+      },
+    };
+    const rows = buildHonestProtectionMatrix({
+      approvalSnapshot: snap,
+      hasAtomicReservation: true,
+      whatsappValidationImplemented: true,
+      whatsappValidationAvailable: false,
+      optOutKeywordsInboundImplemented: true,
+      lastMileImplemented: true,
+      accountAgeSource: 'CREATED_AT_ONLY',
+      guardAvailable: true,
+    });
+    const wa = rows.find((x) => x.rule.includes('Validacao WhatsApp'));
+    assert.equal(wa?.status, 'ERROR');
+    const r = evaluateProtectionReadiness({ approvalSnapshot: snap, rows });
+    assert.equal(r.status, 'BLOCKED');
+  });
+
+  it('validateWhatsApp true com Evolution → ENFORCED_BLOCKING', () => {
+    const snap = {
+      ...baseSnap,
+      protectionPolicy: {
+        ...baseSnap.protectionPolicy,
+        validateWhatsAppNumber: true,
+      },
+    };
+    const rows = buildHonestProtectionMatrix({
+      approvalSnapshot: snap,
+      hasAtomicReservation: true,
+      whatsappValidationImplemented: true,
+      whatsappValidationAvailable: true,
+      optOutKeywordsInboundImplemented: true,
+      lastMileImplemented: true,
+      accountAgeSource: 'CREATED_AT_ONLY',
+      guardAvailable: true,
+    });
+    const wa = rows.find((x) => x.rule.includes('Validacao WhatsApp'));
+    assert.equal(wa?.status, 'ENFORCED_BLOCKING');
   });
 
   it('repeticao e ENFORCED_NON_BLOCKING', () => {

@@ -6,6 +6,7 @@ import {
 } from '@prisma/client';
 import {
   DISPATCH_PLAN_DEFAULT_PROTECTION_POLICY,
+  applyValidateWhatsAppNumberOverride,
   buildProtectionPolicyFromProfile,
 } from './dispatch-plan-protection.constants';
 
@@ -30,7 +31,7 @@ describe('dispatch-plan-protection.constants', () => {
     assert.equal(policy.errorPauseMinutes, 60);
     assert.equal(policy.pauseOn403, true);
     assert.equal(policy.pauseOn429, true);
-    assert.equal(policy.validateWhatsAppNumber, false);
+    assert.equal(policy.validateWhatsAppNumber, true);
     assert.equal(policy.repetitionWarningPercentage, 70);
     assert.equal(policy.allowedStartTime, '09:00');
     assert.equal(policy.allowedEndTime, '18:00');
@@ -88,5 +89,37 @@ describe('dispatch-plan-protection.constants', () => {
       DISPATCH_PLAN_DEFAULT_PROTECTION_POLICY.batchSize,
       buildProtectionPolicyFromProfile(ProtectionProfile.MODERATE).batchSize,
     );
+  });
+
+  it('todos os perfis defaultam validateWhatsAppNumber=true', () => {
+    for (const profile of [
+      ProtectionProfile.CONSERVATIVE,
+      ProtectionProfile.MODERATE,
+      ProtectionProfile.AGGRESSIVE,
+      ProtectionProfile.CUSTOM,
+    ]) {
+      assert.equal(
+        buildProtectionPolicyFromProfile(profile).validateWhatsAppNumber,
+        true,
+        profile,
+      );
+    }
+  });
+
+  it('desativacao exige aceite explicito', () => {
+    const base = buildProtectionPolicyFromProfile(ProtectionProfile.MODERATE);
+    assert.throws(
+      () =>
+        applyValidateWhatsAppNumberOverride(base, {
+          validateWhatsAppNumber: false,
+        }),
+      /VALIDATE_WHATSAPP_DISABLE_ACK_REQUIRED/,
+    );
+    const applied = applyValidateWhatsAppNumberOverride(base, {
+      validateWhatsAppNumber: false,
+      validateWhatsAppNumberDisableAcknowledged: true,
+    });
+    assert.equal(applied.policy.validateWhatsAppNumber, false);
+    assert.equal(applied.disabledByOperator, true);
   });
 });

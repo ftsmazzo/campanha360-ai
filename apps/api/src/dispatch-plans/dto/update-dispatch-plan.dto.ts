@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsOptional,
   IsString,
@@ -46,6 +47,14 @@ export class UpdateDispatchPlanDto {
   @IsOptional()
   @IsEnum(ProtectionProfile)
   protectionProfile?: ProtectionProfile;
+
+  @IsOptional()
+  @IsBoolean()
+  validateWhatsAppNumber?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  validateWhatsAppNumberDisableAcknowledged?: boolean;
 
   @IsOptional()
   @IsString()

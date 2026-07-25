@@ -57,7 +57,7 @@ const MODERATE_POLICY: ProfilePolicyInput = {
   rotateEveryMessages: 100,
   pauseOn403: true,
   pauseOn429: true,
-  validateWhatsAppNumber: false,
+  validateWhatsAppNumber: true,
   optOutKeywords: [
     'sair',
     'descadastrar',
@@ -128,6 +128,35 @@ export function buildProtectionPolicyFromProfile(
   return {
     profile,
     ...PROFILE_POLICIES[profile],
+  };
+}
+
+/**
+ * Aplica override de validateWhatsAppNumber.
+ * Desativacao exige aceite explicito (anti-bypass).
+ */
+export function applyValidateWhatsAppNumberOverride(
+  policy: ProtectionPolicySnapshot,
+  input: {
+    validateWhatsAppNumber?: boolean;
+    validateWhatsAppNumberDisableAcknowledged?: boolean;
+  },
+): { policy: ProtectionPolicySnapshot; disabledByOperator: boolean } {
+  if (input.validateWhatsAppNumber === undefined) {
+    return { policy, disabledByOperator: false };
+  }
+  if (
+    input.validateWhatsAppNumber === false &&
+    input.validateWhatsAppNumberDisableAcknowledged !== true
+  ) {
+    throw new Error('VALIDATE_WHATSAPP_DISABLE_ACK_REQUIRED');
+  }
+  return {
+    policy: {
+      ...policy,
+      validateWhatsAppNumber: input.validateWhatsAppNumber,
+    },
+    disabledByOperator: input.validateWhatsAppNumber === false,
   };
 }
 

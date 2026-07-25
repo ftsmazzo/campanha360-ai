@@ -8,6 +8,7 @@ import {
   evaluateProtectionReadiness,
   extractFullSendProtectionPolicy,
   auditPilotSendIntervals,
+  isEvolutionValidationConfigured,
 } from '@campanha360/shared';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -118,10 +119,19 @@ export class DispatchProtectionService {
       ? 'OPERATIONAL_SINCE'
       : 'CREATED_AT_ONLY';
 
+    let validationCacheAvailable = true;
+    try {
+      await this.prisma.$queryRaw`SELECT 1 FROM "DestinationWhatsAppValidationCache" LIMIT 1`;
+    } catch {
+      validationCacheAvailable = false;
+    }
+
     const honestRows = buildHonestProtectionMatrix({
       approvalSnapshot: dispatch.approvalSnapshot,
       hasAtomicReservation: true,
       whatsappValidationImplemented: true,
+      whatsappValidationAvailable:
+        isEvolutionValidationConfigured() && validationCacheAvailable,
       optOutKeywordsInboundImplemented: true,
       lastMileImplemented: true,
       accountAgeSource,
@@ -132,6 +142,21 @@ export class DispatchProtectionService {
       approvalSnapshot: dispatch.approvalSnapshot,
       rows: honestRows,
     });
+
+    const validationCounters = await this.prisma.dispatchItem.groupBy({
+      by: ['destinationValidationStatus'],
+      where: { dispatchId: dispatch.id },
+      _count: { _all: true },
+    } as never).catch(() => [] as Array<{ destinationValidationStatus: string | null; _count: { _all: number } }>);
+
+    const validationCountMap: Record<string, number> = {};
+    for (const row of validationCounters as Array<{
+      destinationValidationStatus: string | null;
+      _count: { _all: number };
+    }>) {
+      const key = row.destinationValidationStatus ?? 'PENDING';
+      validationCountMap[key] = row._count._all;
+    }
 
     const recentAttempts = await this.prisma.dispatchItemAttempt.findMany({
       where: { dispatchId: dispatch.id },
@@ -242,6 +267,25 @@ export class DispatchProtectionService {
         (acc, g) => acc + (g.violationCount ?? 0),
         0,
       ),
+      validationCounters: {
+        validationPendingItems: validationCountMap.PENDING ?? 0,
+        validDestinationItems: validationCountMap.VALID ?? 0,
+        invalidDestinationItems: validationCountMap.INVALID ?? 0,
+        validationErrorItems:
+          (validationCountMap.UNKNOWN ?? 0) +
+          (validationCountMap.PROVIDER_UNAVAILABLE ?? 0) +
+          (validationCountMap.ERROR ?? 0),
+      },
+      whatsappValidation: (() => {
+        const wa = honestRows.find((r) => r.rule.includes('Validacao WhatsApp'));
+        return {
+          status: wa?.status ?? 'NOT_APPLICABLE',
+          configured: policy.validateWhatsAppNumber,
+          label: policy.validateWhatsAppNumber
+            ? 'Ativada'
+            : 'Desativada pelo operador',
+        };
+      })(),
       atomicReservationStrategy: 'POSTGRES_SELECT_FOR_UPDATE',
       scope: 'ChannelAccount',
       honestyNote:

@@ -56,6 +56,7 @@ import { RejectDispatchPlanDto } from './dto/reject-dispatch-plan.dto';
 import { SimulateDispatchPlanDto } from './dto/simulate-dispatch-plan.dto';
 import { UpdateDispatchPlanDto } from './dto/update-dispatch-plan.dto';
 import {
+  applyValidateWhatsAppNumberOverride,
   buildProtectionPolicyFromProfile,
   type ProtectionPolicySnapshot,
 } from './dispatch-plan-protection.constants';
@@ -683,9 +684,25 @@ export class DispatchPlansService {
     }
 
     const primary = resolvedChannels[0]!.channelAccount;
-    const policy = buildProtectionPolicyFromProfile(
+    let policy = buildProtectionPolicyFromProfile(
       dto.protectionProfile ?? ProtectionProfile.MODERATE,
     );
+    let whatsappValidationDisabledByOperator = false;
+    try {
+      const applied = applyValidateWhatsAppNumberOverride(policy, dto);
+      policy = applied.policy;
+      whatsappValidationDisabledByOperator = applied.disabledByOperator;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === 'VALIDATE_WHATSAPP_DISABLE_ACK_REQUIRED'
+      ) {
+        throw new BadRequestException(
+          'Para desativar a validacao WhatsApp, confirme o aceite explicito (validateWhatsAppNumberDisableAcknowledged=true)',
+        );
+      }
+      throw error;
+    }
     const multiInstanceEnabled = resolvedChannels.length > 1;
 
     const plan = await this.prisma.$transaction(async (tx) => {
@@ -748,6 +765,23 @@ export class DispatchPlansService {
         version: plan.version,
       }),
     });
+
+    if (whatsappValidationDisabledByOperator) {
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'DISPATCH_PLAN_WHATSAPP_VALIDATION_DISABLED',
+        entityType: 'DispatchPlan',
+        entityId: plan.id,
+        metadata: {
+          dispatchPlanId: plan.id,
+          validateWhatsAppNumber: false,
+          userId,
+          reason: 'OPERATOR_ACKNOWLEDGED_DISABLE',
+        },
+      });
+    }
 
     return plan;
   }
@@ -846,10 +880,33 @@ export class DispatchPlansService {
       nextChannelType = resolveDispatchChannelType(channelAccount.provider);
     }
 
-    const nextPolicy = policyChanged
+    let nextPolicy = policyChanged
       ? buildProtectionPolicyFromProfile(dto.protectionProfile!)
       : ((existing.protectionPolicySnapshot as ProtectionPolicySnapshot | null) ??
         buildProtectionPolicyFromProfile(ProtectionProfile.MODERATE));
+
+    let whatsappValidationDisabledByOperator = false;
+    const previousValidateWhatsApp = nextPolicy.validateWhatsAppNumber;
+    try {
+      const applied = applyValidateWhatsAppNumberOverride(nextPolicy, dto);
+      nextPolicy = applied.policy;
+      whatsappValidationDisabledByOperator = applied.disabledByOperator;
+    } catch (error) {
+      if (
+        error instanceof Error &&
+        error.message === 'VALIDATE_WHATSAPP_DISABLE_ACK_REQUIRED'
+      ) {
+        throw new BadRequestException(
+          'Para desativar a validacao WhatsApp, confirme o aceite explicito (validateWhatsAppNumberDisableAcknowledged=true)',
+        );
+      }
+      throw error;
+    }
+    const validateWhatsAppChanged =
+      dto.validateWhatsAppNumber !== undefined &&
+      dto.validateWhatsAppNumber !== previousValidateWhatsApp;
+    const policySnapshotChanged =
+      policyChanged || validateWhatsAppChanged || whatsappValidationDisabledByOperator;
 
     const multiInstanceEnabled = resolvedChannels
       ? resolvedChannels.length > 1
@@ -866,6 +923,7 @@ export class DispatchPlansService {
       bumpVersion ||
       poolChanged ||
       policyChanged ||
+      validateWhatsAppChanged ||
       existing.validationSnapshot !== null ||
       existing.validatedAt !== null ||
       existing.validatedVersion !== null ||
@@ -895,7 +953,7 @@ export class DispatchPlansService {
             assignedRecipients: 0,
           })),
         });
-      } else if (policyChanged) {
+      } else if (policyChanged || validateWhatsAppChanged) {
         await tx.dispatchPlanChannel.updateMany({
           where: { dispatchPlanId: existing.id },
           data: {
@@ -927,7 +985,7 @@ export class DispatchPlansService {
           content: contentChanged ? nextContent : undefined,
           version: bumpVersion ? existing.version + 1 : undefined,
           protectionPolicySnapshot:
-            policyChanged || poolChanged
+            policySnapshotChanged || poolChanged
               ? (nextPolicy as unknown as Prisma.InputJsonValue)
               : undefined,
           legacySingleChannel: resolvedChannels
@@ -967,6 +1025,23 @@ export class DispatchPlansService {
         version: plan.version,
       }),
     });
+
+    if (whatsappValidationDisabledByOperator) {
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'DISPATCH_PLAN_WHATSAPP_VALIDATION_DISABLED',
+        entityType: 'DispatchPlan',
+        entityId: plan.id,
+        metadata: {
+          dispatchPlanId: plan.id,
+          validateWhatsAppNumber: false,
+          userId,
+          reason: 'OPERATOR_ACKNOWLEDGED_DISABLE',
+        },
+      });
+    }
 
     return plan;
   }

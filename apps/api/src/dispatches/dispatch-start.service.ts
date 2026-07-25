@@ -9,6 +9,7 @@ import {
   assertDispatchSendAllowed,
   buildHonestProtectionMatrix,
   evaluateProtectionReadiness,
+  isEvolutionValidationConfigured,
 } from '@campanha360/shared';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
@@ -99,17 +100,26 @@ export class DispatchStartService {
       );
     }
 
-    // 09.6.2 — gate de blindagens (fail closed para obrigatorias)
+    // 09.6.2/09.6.3 — gate de blindagens (fail closed para obrigatorias)
     let guardAvailable = true;
     try {
       await this.prisma.$queryRaw`SELECT 1 FROM "ChannelAccountSendGuard" LIMIT 1`;
     } catch {
       guardAvailable = false;
     }
+    let validationCacheAvailable = true;
+    try {
+      await this.prisma.$queryRaw`SELECT 1 FROM "DestinationWhatsAppValidationCache" LIMIT 1`;
+    } catch {
+      validationCacheAvailable = false;
+    }
+    const whatsappValidationAvailable =
+      isEvolutionValidationConfigured() && validationCacheAvailable;
     const honestRows = buildHonestProtectionMatrix({
       approvalSnapshot: dispatch.approvalSnapshot,
       hasAtomicReservation: true,
       whatsappValidationImplemented: true,
+      whatsappValidationAvailable,
       optOutKeywordsInboundImplemented: true,
       lastMileImplemented: true,
       accountAgeSource: 'CREATED_AT_ONLY',

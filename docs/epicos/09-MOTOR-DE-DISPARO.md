@@ -2812,3 +2812,21 @@ Princípio: nenhuma regra aparece como ativa sem status honesto:
 Entregas: validateWhatsAppNumber + cache; last-mile fail closed; optOutKeywords no webhook inbound; skip items apos opt-out; repeticao ENFORCED_NON_BLOCKING no approve; protectionReadiness no Start; matriz honesta no painel.
 
 Nao iniciar 09.7 ate homologar 09.6.2. Nao ha garantia anti-ban da plataforma.
+
+### Correcao obrigatoria 09.6.3 ? validateWhatsAppNumber configuravel e homologavel
+
+**Status: implementada (codigo + testes). Homologacao operacional pendente.**
+
+`validateWhatsAppNumber` passou a ser:
+
+- **configuravel** na criacao/edicao do Plano (checkbox visivel em Blindagens de envio);
+- **default true** em CONSERVATIVE / MODERATE / AGGRESSIVE / CUSTOM;
+- **bloqueante** quando ativa (`ENFORCED_BLOCKING`): Worker consulta Evolution `/chat/whatsappNumbers` **antes** da reserva de slot e do envio;
+- **fail closed** em timeout/5xx/resposta ambigua (reagenda com backoff; apos limite ? `FAILED_VALIDATION_UNAVAILABLE`);
+- **INVALID** ? `SKIPPED` + `WHATSAPP_NUMBER_NOT_REGISTERED` (sem tentativa de envio, sem cooldown, sem retry);
+- **desativacao** exige aceite explicito (`validateWhatsAppNumberDisableAcknowledged`) e gera audit `DISPATCH_PLAN_WHATSAPP_VALIDATION_DISABLED`;
+- **homologavel** pela interface (resumo/aprovacao/matriz/itens com status VALID/INVALID/pendente/erro).
+
+Cache: `DestinationWhatsAppValidationCache` por `organizationId + destinationHash` (TTL VALID 7d / INVALID 24h / UNKNOWN ~10min). Contadores: `validationPendingItems`, `validDestinationItems`, `invalidDestinationItems`, `validationErrorItems`.
+
+`DISPATCH_SEND_ENABLED` permanece default `false`. Nao iniciar **09.7**.

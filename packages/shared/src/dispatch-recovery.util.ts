@@ -217,6 +217,7 @@ export function evaluateManualRetryEligibility(item: {
   providerMessageId?: string | null;
   sentAt?: Date | string | null;
   errorCategory?: string | null;
+  errorCode?: string | null;
   attemptCount?: number | null;
   maxAttempts?: number | null;
   allowExtraManualAttempt?: boolean;
@@ -226,6 +227,13 @@ export function evaluateManualRetryEligibility(item: {
   }
   if (hasText(item.providerMessageId) || item.sentAt) {
     return { allowed: false, reason: 'PROVIDER_EVIDENCE_PRESENT' };
+  }
+  const errorCode = String(item.errorCode ?? '');
+  if (
+    errorCode === 'WHATSAPP_NUMBER_NOT_REGISTERED' ||
+    errorCode === 'FAILED_VALIDATION_UNAVAILABLE'
+  ) {
+    return { allowed: false, reason: `BLOCKED_CODE_${errorCode}` };
   }
   const category = String(item.errorCategory ?? '');
   if (

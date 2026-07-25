@@ -26,6 +26,9 @@ import {
   selectNextEligibleDispatchChannel,
   sendEvolutionText,
   validateWhatsAppNumber,
+  cacheTtlMsForValidationStatus,
+  WHATSAPP_VALIDATION_MAX_UNKNOWN_ATTEMPTS,
+  WHATSAPP_VALIDATION_SOURCE,
   type EvolutionSendCategory,
   type EvolutionSendInput,
   type EvolutionSendResult,
@@ -124,6 +127,8 @@ export type DispatchSendProcessAction =
   | 'SKIPPED_FLAG_DISABLED'
   | 'BLOCKED_LAST_MILE_UNAVAILABLE'
   | 'FAILED_WHATSAPP_NUMBER_INVALID'
+  | 'SKIPPED_WHATSAPP_NUMBER_INVALID'
+  | 'FAILED_VALIDATION_UNAVAILABLE'
   | 'SKIPPED_CLAIM_LOST'
   | 'SKIPPED_CONTACT_DELETED'
   | 'SKIPPED_CONTACT_BLOCKED'
@@ -793,17 +798,42 @@ async function runRealSend(input: {
       | 'UNKNOWN'
       | 'PROVIDER_UNAVAILABLE'
       | 'CACHE_HIT' = 'SKIPPED_BY_POLICY';
+    let validationCacheHit = false;
+    let validationSource: string | null = null;
 
     if (policy.validateWhatsAppNumber) {
       const orgId = String((item as { organizationId?: string }).organizationId ?? '');
+      const campaignId = String((item as { campaignId?: string }).campaignId ?? '');
       const destHash = hashDestinationForCache(normalizedDestination);
-      const cacheTtlMs = 7 * 24 * 60 * 60 * 1000;
-      let cached: { status: string; expiresAt: Date } | null = null;
+      const destHashPartial = destHash.slice(0, 12);
+      const priorAttempts = Number(
+        (item as { destinationValidationAttempts?: number | null })
+          .destinationValidationAttempts ?? 0,
+      );
+
+      await safeAudit(prisma, {
+        organizationId: orgId,
+        campaignId,
+        action: 'DISPATCH_DESTINATION_VALIDATION_REQUIRED',
+        entityType: 'DispatchItem',
+        entityId: item.id,
+        metadata: {
+          dispatchId: dispatch.id,
+          destinationHashPartial: destHashPartial,
+          source: WHATSAPP_VALIDATION_SOURCE,
+        },
+      });
+
+      let cached: {
+        status: string;
+        expiresAt: Date;
+        source: string | null;
+      } | null = null;
       try {
         const rows = await prisma.$queryRaw<
-          Array<{ status: string; expiresAt: Date }>
+          Array<{ status: string; expiresAt: Date; source: string | null }>
         >`
-          SELECT "status", "expiresAt"
+          SELECT "status", "expiresAt", "source"
           FROM "DestinationWhatsAppValidationCache"
           WHERE "organizationId" = ${orgId}
             AND "destinationHash" = ${destHash}
@@ -812,7 +842,6 @@ async function runRealSend(input: {
         `;
         cached = rows[0] ?? null;
       } catch {
-        // tabela ausente: fail closed se validacao obrigatoria
         const resumeAt = new Date(now().getTime() + 5 * 60_000);
         await prisma.dispatchItem.update({
           where: { id: item.id },
@@ -823,6 +852,21 @@ async function runRealSend(input: {
             lockToken: null,
             lockExpiresAt: null,
             lastQueueError: 'WHATSAPP_VALIDATION_CACHE_UNAVAILABLE',
+            destinationValidationStatus: 'UNKNOWN',
+            destinationValidationAttempts: { increment: 1 },
+          } as never,
+        });
+        await safeAudit(prisma, {
+          organizationId: orgId,
+          campaignId,
+          action: 'DISPATCH_DESTINATION_VALIDATION_UNAVAILABLE',
+          entityType: 'DispatchItem',
+          entityId: item.id,
+          metadata: {
+            dispatchId: dispatch.id,
+            destinationHashPartial: destHashPartial,
+            reason: 'VALIDATION_CACHE_UNAVAILABLE',
+            cacheHit: false,
           },
         });
         return {
@@ -835,19 +879,65 @@ async function runRealSend(input: {
       }
 
       if (cached?.status === 'VALID') {
-        destinationValidationStatus = 'CACHE_HIT';
+        destinationValidationStatus = 'VALID';
+        validationCacheHit = true;
+        validationSource = cached.source ?? WHATSAPP_VALIDATION_SOURCE;
+        await prisma.dispatchItem.update({
+          where: { id: item.id },
+          data: {
+            destinationValidationStatus: 'VALID',
+            destinationValidatedAt: now(),
+            validationSource,
+            validationCacheHit: true,
+          } as never,
+        });
+        await safeAudit(prisma, {
+          organizationId: orgId,
+          campaignId,
+          action: 'DISPATCH_DESTINATION_VALIDATED',
+          entityType: 'DispatchItem',
+          entityId: item.id,
+          metadata: {
+            dispatchId: dispatch.id,
+            destinationHashPartial: destHashPartial,
+            status: 'VALID',
+            cacheHit: true,
+            source: validationSource,
+          },
+        });
       } else if (cached?.status === 'INVALID') {
-        await finalizeFailed(
+        await finalizeSkip(
           prisma,
           item,
           now(),
-          'INVALID_DESTINATION',
+          'WHATSAPP_NUMBER_NOT_REGISTERED',
           DispatchItemErrorCategory.INVALID_DESTINATION,
-          'Numero WhatsApp invalido (cache)',
+          {
+            destinationValidationStatus: 'INVALID',
+            destinationValidatedAt: now(),
+            validationSource: cached.source ?? WHATSAPP_VALIDATION_SOURCE,
+            validationCacheHit: true,
+            lastQueueError: 'WHATSAPP_NUMBER_NOT_REGISTERED',
+          },
         );
         await recomputeDispatchProgress(prisma, dispatch, now());
+        await safeAudit(prisma, {
+          organizationId: orgId,
+          campaignId,
+          action: 'DISPATCH_DESTINATION_INVALID',
+          entityType: 'DispatchItem',
+          entityId: item.id,
+          metadata: {
+            dispatchId: dispatch.id,
+            destinationHashPartial: destHashPartial,
+            status: 'INVALID',
+            cacheHit: true,
+            source: cached.source ?? WHATSAPP_VALIDATION_SOURCE,
+            reason: 'WHATSAPP_NUMBER_NOT_REGISTERED',
+          },
+        });
         return {
-          action: 'FAILED_WHATSAPP_NUMBER_INVALID',
+          action: 'SKIPPED_WHATSAPP_NUMBER_INVALID',
           send: false,
           dispatchItemId: item.id,
         };
@@ -860,26 +950,64 @@ async function runRealSend(input: {
           destinationDigits: normalizedDestination,
         });
         destinationValidationStatus = validation.status;
+        validationSource = WHATSAPP_VALIDATION_SOURCE;
+        validationCacheHit = false;
 
         if (validation.status === 'VALID' || validation.status === 'INVALID') {
+          const ttl = cacheTtlMsForValidationStatus(validation.status);
           try {
             await prisma.$executeRaw`
               INSERT INTO "DestinationWhatsAppValidationCache" (
                 "id", "organizationId", "destinationHash", "status", "source",
-                "checkedAt", "expiresAt", "createdAt", "updatedAt"
+                "provider", "lastErrorCode", "checkedAt", "expiresAt", "createdAt", "updatedAt"
               ) VALUES (
                 ${`dvc_${destHash.slice(0, 20)}`},
                 ${orgId},
                 ${destHash},
                 ${validation.status},
-                ${'EVOLUTION_WHATSAPP_NUMBERS'},
+                ${WHATSAPP_VALIDATION_SOURCE},
+                ${'EVOLUTION'},
+                ${validation.errorCode},
                 ${now()},
-                ${new Date(now().getTime() + cacheTtlMs)},
+                ${new Date(now().getTime() + ttl)},
                 ${now()},
                 ${now()}
               )
               ON CONFLICT ("organizationId", "destinationHash") DO UPDATE SET
                 "status" = EXCLUDED."status",
+                "source" = EXCLUDED."source",
+                "provider" = EXCLUDED."provider",
+                "lastErrorCode" = EXCLUDED."lastErrorCode",
+                "checkedAt" = EXCLUDED."checkedAt",
+                "expiresAt" = EXCLUDED."expiresAt",
+                "updatedAt" = EXCLUDED."updatedAt"
+            `;
+          } catch {
+            // cache best-effort
+          }
+        } else {
+          const ttl = cacheTtlMsForValidationStatus('UNKNOWN');
+          try {
+            await prisma.$executeRaw`
+              INSERT INTO "DestinationWhatsAppValidationCache" (
+                "id", "organizationId", "destinationHash", "status", "source",
+                "provider", "lastErrorCode", "checkedAt", "expiresAt", "createdAt", "updatedAt"
+              ) VALUES (
+                ${`dvc_${destHash.slice(0, 20)}`},
+                ${orgId},
+                ${destHash},
+                ${'UNKNOWN'},
+                ${WHATSAPP_VALIDATION_SOURCE},
+                ${'EVOLUTION'},
+                ${validation.errorCode},
+                ${now()},
+                ${new Date(now().getTime() + ttl)},
+                ${now()},
+                ${now()}
+              )
+              ON CONFLICT ("organizationId", "destinationHash") DO UPDATE SET
+                "status" = EXCLUDED."status",
+                "lastErrorCode" = EXCLUDED."lastErrorCode",
                 "checkedAt" = EXCLUDED."checkedAt",
                 "expiresAt" = EXCLUDED."expiresAt",
                 "updatedAt" = EXCLUDED."updatedAt"
@@ -889,28 +1017,114 @@ async function runRealSend(input: {
           }
         }
 
-        if (validation.status === 'INVALID') {
-          await finalizeFailed(
+        if (validation.status === 'VALID') {
+          await prisma.dispatchItem.update({
+            where: { id: item.id },
+            data: {
+              destinationValidationStatus: 'VALID',
+              destinationValidatedAt: now(),
+              validationSource,
+              validationCacheHit: false,
+            } as never,
+          });
+          await safeAudit(prisma, {
+            organizationId: orgId,
+            campaignId,
+            action: 'DISPATCH_DESTINATION_VALIDATED',
+            entityType: 'DispatchItem',
+            entityId: item.id,
+            metadata: {
+              dispatchId: dispatch.id,
+              destinationHashPartial: destHashPartial,
+              status: 'VALID',
+              cacheHit: false,
+              source: validationSource,
+            },
+          });
+        } else if (validation.status === 'INVALID') {
+          await finalizeSkip(
             prisma,
             item,
             now(),
-            'INVALID_DESTINATION',
+            'WHATSAPP_NUMBER_NOT_REGISTERED',
             DispatchItemErrorCategory.INVALID_DESTINATION,
-            'Numero WhatsApp invalido (validacao Evolution)',
+            {
+              destinationValidationStatus: 'INVALID',
+              destinationValidatedAt: now(),
+              validationSource,
+              validationCacheHit: false,
+              lastQueueError: 'WHATSAPP_NUMBER_NOT_REGISTERED',
+            },
           );
           await recomputeDispatchProgress(prisma, dispatch, now());
+          await safeAudit(prisma, {
+            organizationId: orgId,
+            campaignId,
+            action: 'DISPATCH_DESTINATION_INVALID',
+            entityType: 'DispatchItem',
+            entityId: item.id,
+            metadata: {
+              dispatchId: dispatch.id,
+              destinationHashPartial: destHashPartial,
+              status: 'INVALID',
+              cacheHit: false,
+              source: validationSource,
+              reason: 'WHATSAPP_NUMBER_NOT_REGISTERED',
+            },
+          });
           return {
-            action: 'FAILED_WHATSAPP_NUMBER_INVALID',
+            action: 'SKIPPED_WHATSAPP_NUMBER_INVALID',
             send: false,
             dispatchItemId: item.id,
           };
-        }
+        } else {
+          const nextAttempts = priorAttempts + 1;
+          if (nextAttempts >= WHATSAPP_VALIDATION_MAX_UNKNOWN_ATTEMPTS) {
+            await finalizeFailed(
+              prisma,
+              item,
+              now(),
+              'FAILED_VALIDATION_UNAVAILABLE',
+              DispatchItemErrorCategory.PROVIDER_UNAVAILABLE,
+              'Validacao WhatsApp indisponivel apos tentativas',
+            );
+            await prisma.dispatchItem.update({
+              where: { id: item.id },
+              data: {
+                destinationValidationStatus: validation.status,
+                destinationValidatedAt: now(),
+                validationSource,
+                validationCacheHit: false,
+                destinationValidationAttempts: nextAttempts,
+                lastQueueError: 'FAILED_VALIDATION_UNAVAILABLE',
+              } as never,
+            });
+            await recomputeDispatchProgress(prisma, dispatch, now());
+            await safeAudit(prisma, {
+              organizationId: orgId,
+              campaignId,
+              action: 'DISPATCH_DESTINATION_VALIDATION_UNAVAILABLE',
+              entityType: 'DispatchItem',
+              entityId: item.id,
+              metadata: {
+                dispatchId: dispatch.id,
+                destinationHashPartial: destHashPartial,
+                status: validation.status,
+                cacheHit: false,
+                reason: 'FAILED_VALIDATION_UNAVAILABLE',
+                source: validationSource,
+              },
+            });
+            return {
+              action: 'FAILED_VALIDATION_UNAVAILABLE',
+              send: false,
+              dispatchItemId: item.id,
+              reason: validation.errorCode ?? validation.status,
+            };
+          }
 
-        if (
-          validation.status === 'UNKNOWN' ||
-          validation.status === 'PROVIDER_UNAVAILABLE'
-        ) {
-          const resumeAt = new Date(now().getTime() + 5 * 60_000);
+          const backoffMinutes = Math.min(30, 5 * nextAttempts);
+          const resumeAt = new Date(now().getTime() + backoffMinutes * 60_000);
           await prisma.dispatchItem.update({
             where: { id: item.id },
             data: {
@@ -920,6 +1134,25 @@ async function runRealSend(input: {
               lockToken: null,
               lockExpiresAt: null,
               lastQueueError: `WHATSAPP_VALIDATION_${validation.status}`,
+              destinationValidationStatus: validation.status,
+              validationSource,
+              validationCacheHit: false,
+              destinationValidationAttempts: nextAttempts,
+            } as never,
+          });
+          await safeAudit(prisma, {
+            organizationId: orgId,
+            campaignId,
+            action: 'DISPATCH_DESTINATION_VALIDATION_UNAVAILABLE',
+            entityType: 'DispatchItem',
+            entityId: item.id,
+            metadata: {
+              dispatchId: dispatch.id,
+              destinationHashPartial: destHashPartial,
+              status: validation.status,
+              cacheHit: false,
+              reason: validation.errorCode ?? validation.status,
+              source: validationSource,
             },
           });
           return {
@@ -931,6 +1164,8 @@ async function runRealSend(input: {
           };
         }
       }
+    } else {
+      destinationValidationStatus = 'SKIPPED_BY_POLICY';
     }
 
     // --- Reserva atomica de slot por ChannelAccount (09.6.1) ---
@@ -1704,12 +1939,46 @@ async function completeDispatchItemAttempt(
   }
 }
 
+async function safeAudit(
+  prisma: PrismaClient,
+  input: {
+    organizationId: string;
+    campaignId: string;
+    action: string;
+    entityType: string;
+    entityId: string;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<void> {
+  try {
+    await prisma.auditLog.create({
+      data: {
+        organizationId: input.organizationId,
+        campaignId: input.campaignId,
+        action: input.action,
+        entityType: input.entityType,
+        entityId: input.entityId,
+        metadata: input.metadata as never,
+      },
+    });
+  } catch {
+    // auditoria nao bloqueia
+  }
+}
+
 async function finalizeSkip(
   prisma: PrismaClient,
   item: ItemRow,
   now: Date,
   errorCode: string,
   errorCategory: DispatchItemErrorCategory | null,
+  extras?: {
+    destinationValidationStatus?: string;
+    destinationValidatedAt?: Date;
+    validationSource?: string | null;
+    validationCacheHit?: boolean;
+    lastQueueError?: string;
+  },
 ): Promise<void> {
   await prisma.dispatchItem.update({
     where: { id: item.id },
@@ -1722,7 +1991,18 @@ async function finalizeSkip(
       lockedAt: null,
       lockToken: null,
       lockExpiresAt: null,
-    },
+      ...(extras?.lastQueueError
+        ? { lastQueueError: extras.lastQueueError }
+        : {}),
+      ...(extras?.destinationValidationStatus
+        ? {
+            destinationValidationStatus: extras.destinationValidationStatus,
+            destinationValidatedAt: extras.destinationValidatedAt ?? now,
+            validationSource: extras.validationSource ?? null,
+            validationCacheHit: extras.validationCacheHit ?? false,
+          }
+        : {}),
+    } as never,
   });
 }
 
@@ -1896,6 +2176,38 @@ async function recomputeDispatchProgress(
   const skippedItems = counts[DispatchItemStatus.SKIPPED] ?? 0;
   const canceledItems = counts[DispatchItemStatus.CANCELED] ?? 0;
 
+  let validationPendingItems = 0;
+  let validDestinationItems = 0;
+  let invalidDestinationItems = 0;
+  let validationErrorItems = 0;
+  try {
+    const validationGrouped = await prisma.dispatchItem.groupBy({
+      by: ['destinationValidationStatus'],
+      where: { dispatchId: dispatch.id },
+      _count: { _all: true },
+    } as never);
+    for (const row of validationGrouped as Array<{
+      destinationValidationStatus: string | null;
+      _count: { _all: number };
+    }>) {
+      const status = row.destinationValidationStatus;
+      const n = row._count._all;
+      if (status === 'VALID') validDestinationItems += n;
+      else if (status === 'INVALID') invalidDestinationItems += n;
+      else if (
+        status === 'UNKNOWN' ||
+        status === 'PROVIDER_UNAVAILABLE' ||
+        status === 'ERROR'
+      ) {
+        validationErrorItems += n;
+      } else {
+        validationPendingItems += n;
+      }
+    }
+  } catch {
+    // colunas ausentes: nao bloqueia progresso
+  }
+
   const unresolved = pendingItems + queuedItems + processingItems + unknownItems;
   const data: Record<string, unknown> = {
     pendingItems,
@@ -1908,6 +2220,10 @@ async function recomputeDispatchProgress(
     skippedItems,
     canceledItems,
     unknownItems,
+    validationPendingItems,
+    validDestinationItems,
+    invalidDestinationItems,
+    validationErrorItems,
     lastProgressAt: now,
   };
 

@@ -44,6 +44,8 @@ export function buildHonestProtectionMatrix(input: {
   approvalSnapshot: unknown;
   hasAtomicReservation: boolean;
   whatsappValidationImplemented: boolean;
+  /** Endpoint Evolution /chat/whatsappNumbers configurado e cache disponivel. */
+  whatsappValidationAvailable?: boolean;
   optOutKeywordsInboundImplemented: boolean;
   lastMileImplemented: boolean;
   accountAgeSource: 'CREATED_AT_ONLY' | 'OPERATIONAL_SINCE' | 'UNKNOWN';
@@ -53,6 +55,7 @@ export function buildHonestProtectionMatrix(input: {
   const policy = extractFullSendProtectionPolicy(input.approvalSnapshot);
   const at = (input.evaluatedAt ?? new Date()).toISOString();
   const atomic = input.hasAtomicReservation && input.guardAvailable;
+  const whatsappAvailable = input.whatsappValidationAvailable !== false;
 
   const row = (
     partial: Omit<HonestProtectionRow, 'lastEvaluation'> & { lastEvaluation?: string | null },
@@ -227,21 +230,31 @@ export function buildHonestProtectionMatrix(input: {
     row({
       rule: 'Validacao WhatsApp number',
       configured: policy.validateWhatsAppNumber,
-      applied: policy.validateWhatsAppNumber && input.whatsappValidationImplemented,
-      blocks: policy.validateWhatsAppNumber && input.whatsappValidationImplemented,
+      applied:
+        policy.validateWhatsAppNumber &&
+        input.whatsappValidationImplemented &&
+        whatsappAvailable,
+      blocks:
+        policy.validateWhatsAppNumber &&
+        input.whatsappValidationImplemented &&
+        whatsappAvailable,
       status: !policy.validateWhatsAppNumber
         ? 'DISABLED_BY_POLICY'
-        : input.whatsappValidationImplemented
-          ? 'ENFORCED_BLOCKING'
-          : 'NOT_IMPLEMENTED',
+        : !input.whatsappValidationImplemented
+          ? 'NOT_IMPLEMENTED'
+          : !whatsappAvailable
+            ? 'ERROR'
+            : 'ENFORCED_BLOCKING',
       approvedValue: String(policy.validateWhatsAppNumber),
       applicationPoint: 'Worker antes da reserva de slot',
       evidence: 'validateWhatsAppNumber + DestinationWhatsAppValidationCache',
       dependency: 'Evolution /chat/whatsappNumbers',
       fallback: 'fail closed se provider indisponivel',
-      observation: policy.validateWhatsAppNumber
-        ? 'Regex so e validacao estrutural inicial'
-        : 'Politica desativa validacao externa',
+      observation: !policy.validateWhatsAppNumber
+        ? 'Desativada pelo operador — numeros invalidos podem chegar ao envio'
+        : !whatsappAvailable
+          ? 'Validador Evolution indisponivel — Start bloqueado'
+          : 'Regex so e validacao estrutural inicial; existencia via Evolution',
     }),
     row({
       rule: 'Opt-out atual (last-mile)',
@@ -369,6 +382,12 @@ export function evaluateProtectionReadiness(input: {
     }
     if (row.status === 'ENFORCED_NON_BLOCKING') {
       warnings.push(`${row.rule}:NON_BLOCKING`);
+    }
+    if (
+      row.status === 'DISABLED_BY_POLICY' &&
+      row.rule.includes('Validacao WhatsApp')
+    ) {
+      warnings.push('VALIDATE_WHATSAPP_DISABLED_BY_POLICY');
     }
   }
 

@@ -32,7 +32,7 @@ const CONSERVATIVE: ChannelSendProtectionPolicy = {
   rotationEnabled: true,
   pauseOn403: true,
   pauseOn429: true,
-  validateWhatsAppNumber: false,
+  validateWhatsAppNumber: true,
   optOutKeywords: [],
   repetitionWarningPercentage: 70,
 };

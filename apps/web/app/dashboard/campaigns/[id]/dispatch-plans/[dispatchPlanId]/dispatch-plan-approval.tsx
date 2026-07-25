@@ -168,14 +168,23 @@ export function DispatchPlanApproval({
                 {plan.channelAccount.name} · {plan.channelAccount.status}
               </dd>
             </div>
-            <div>
-              <dt className="text-[#65655f]">Avaliados / elegiveis / excluidos</dt>
-              <dd>
-                {plan.totalEvaluated} / {plan.totalEligible} /{' '}
-                {plan.totalExcluded}
-              </dd>
-            </div>
-            {simulation ? (
+                <div>
+                  <dt className="text-[#65655f]">Avaliados / elegiveis / excluidos</dt>
+                  <dd>
+                    {plan.totalEvaluated} / {plan.totalEligible} /{' '}
+                    {plan.totalExcluded}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">Validacao WhatsApp</dt>
+                  <dd>
+                    {(plan.protectionPolicySnapshot?.validateWhatsAppNumber ??
+                    true)
+                      ? 'Ativada'
+                      : 'Desativada pelo operador'}
+                  </dd>
+                </div>
+                {simulation ? (
               <>
                 <div>
                   <dt className="text-[#65655f]">Velocidade efetiva</dt>

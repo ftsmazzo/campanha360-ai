@@ -307,6 +307,7 @@ function createRealSendHarness(options: {
   const usageDaily = new Map<string, Record<string, unknown>>();
   const dispatchChannelUpdates: Array<Record<string, unknown>> = [];
   const sendGuards = new Map<string, Record<string, unknown>>();
+  const validationCache = new Map<string, Record<string, unknown>>();
   let attemptSeq = 0;
 
   const prisma: Record<string, unknown> = {
@@ -339,11 +340,35 @@ function createRealSendHarness(options: {
         return { count: result.count };
       },
       update: async (args: { where: { id: string }; data: Record<string, unknown> }) => {
-        item = { ...(item ?? {}), ...args.data };
+        const data = { ...args.data };
+        if (
+          data.destinationValidationAttempts &&
+          typeof data.destinationValidationAttempts === 'object' &&
+          data.destinationValidationAttempts !== null &&
+          'increment' in (data.destinationValidationAttempts as object)
+        ) {
+          const current = Number(item?.destinationValidationAttempts ?? 0);
+          data.destinationValidationAttempts =
+            current +
+            Number(
+              (data.destinationValidationAttempts as { increment: number })
+                .increment,
+            );
+        }
+        item = { ...(item ?? {}), ...data };
         return { ...item };
       },
-      groupBy: async () => {
+      groupBy: async (args?: { by?: string[] }) => {
         if (!item) return [];
+        if (args?.by?.includes('destinationValidationStatus')) {
+          return [
+            {
+              destinationValidationStatus:
+                item.destinationValidationStatus ?? null,
+              _count: { _all: 1 },
+            },
+          ];
+        }
         return [{ status: item.status, _count: { _all: 1 } }];
       },
     },
@@ -432,6 +457,16 @@ function createRealSendHarness(options: {
     $transaction: async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma),
     $queryRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const sql = strings.join('?');
+      if (sql.includes('FROM "DestinationWhatsAppValidationCache"')) {
+        const organizationId = String(values[0]);
+        const destinationHash = String(values[1]);
+        const key = `${organizationId}::${destinationHash}`;
+        const row = validationCache.get(key);
+        if (!row) return [];
+        const expiresAt = row.expiresAt as Date;
+        if (expiresAt.getTime() <= Date.now()) return [];
+        return [{ status: row.status, expiresAt, source: row.source ?? null }];
+      }
       if (sql.includes('FROM "ChannelAccountSendGuard"') && sql.includes('FOR UPDATE')) {
         const channelAccountId = String(values[0]);
         const existing = sendGuards.get(channelAccountId);
@@ -446,6 +481,19 @@ function createRealSendHarness(options: {
     },
     $executeRaw: async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const sql = strings.join('?');
+      if (sql.includes('INSERT INTO "DestinationWhatsAppValidationCache"')) {
+        const organizationId = String(values[1]);
+        const destinationHash = String(values[2]);
+        const status = String(values[3]);
+        const source = String(values[4]);
+        const expiresAt = values[8] as Date;
+        validationCache.set(`${organizationId}::${destinationHash}`, {
+          status,
+          source,
+          expiresAt,
+        });
+        return 1;
+      }
       if (sql.includes('INSERT INTO "ChannelAccountSendGuard"')) {
         const id = String(values[0]);
         const organizationId = String(values[1]);
@@ -519,6 +567,7 @@ function createRealSendHarness(options: {
     getUsageDaily: () => usageDaily,
     getDispatchChannelUpdates: () => dispatchChannelUpdates,
     getSendGuards: () => sendGuards,
+    getValidationCache: () => validationCache,
   };
 }
 
@@ -936,6 +985,7 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
           rotationEnabled: true,
           pauseOn403: true,
           pauseOn429: true,
+          validateWhatsAppNumber: false,
         },
       },
     });
@@ -1221,5 +1271,208 @@ describe('processDispatchSendJob (worker 09.3)', () => {
         { prisma: harness.prisma, now: () => INSIDE_WINDOW_NOW },
       ),
     );
+  });
+});
+
+describe('processDispatchSendJob — validateWhatsAppNumber (09.6.3)', () => {
+  afterEach(() => {
+    clearFlags();
+  });
+
+  function enableRealSendFlags(): void {
+    enableFlags();
+    process.env.DISPATCH_SEND_ENABLED = 'true';
+  }
+
+  function policyWithValidation(enabled: boolean) {
+    return realSendDispatch({
+      approvalSnapshot: {
+        protectionPolicy: {
+          ...(realSendDispatch().approvalSnapshot as { protectionPolicy: Record<string, unknown> })
+            .protectionPolicy,
+          validateWhatsAppNumber: enabled,
+        },
+      },
+    });
+  }
+
+  it('true + VALID → envia', async () => {
+    enableRealSendFlags();
+    const harness = createRealSendHarness({
+      dispatch: policyWithValidation(true),
+    });
+    let validateCalls = 0;
+    let sendCalls = 0;
+    const result = await processDispatchSendJob(
+      { data: basePayload() },
+      {
+        prisma: harness.prisma,
+        now: () => INSIDE_WINDOW_NOW,
+        validateNumber: async () => {
+          validateCalls += 1;
+          return {
+            status: 'VALID',
+            httpStatus: 200,
+            errorCode: null,
+            errorMessage: null,
+          };
+        },
+        sendText: async () => {
+          sendCalls += 1;
+          return {
+            success: true,
+            providerMessageId: 'wamid-valid',
+            providerStatus: 'PENDING',
+            httpStatus: 200,
+          };
+        },
+      },
+    );
+    assert.equal(result.action, 'SENT');
+    assert.equal(validateCalls, 1);
+    assert.equal(sendCalls, 1);
+    assert.equal(harness.getItem()?.destinationValidationStatus, 'VALID');
+  });
+
+  it('true + INVALID → SKIPPED sem envio nem reserva', async () => {
+    enableRealSendFlags();
+    const harness = createRealSendHarness({
+      dispatch: policyWithValidation(true),
+    });
+    let sendCalls = 0;
+    const result = await processDispatchSendJob(
+      { data: basePayload() },
+      {
+        prisma: harness.prisma,
+        now: () => INSIDE_WINDOW_NOW,
+        validateNumber: async () => ({
+          status: 'INVALID',
+          httpStatus: 200,
+          errorCode: null,
+          errorMessage: null,
+        }),
+        sendText: async () => {
+          sendCalls += 1;
+          return {
+            success: true,
+            providerMessageId: 'should-not',
+            providerStatus: null,
+            httpStatus: 200,
+          };
+        },
+      },
+    );
+    assert.equal(result.action, 'SKIPPED_WHATSAPP_NUMBER_INVALID');
+    assert.equal(sendCalls, 0);
+    assert.equal(harness.getItem()?.status, 'SKIPPED');
+    assert.equal(harness.getItem()?.errorCode, 'WHATSAPP_NUMBER_NOT_REGISTERED');
+    assert.equal(harness.getSendGuards().size, 0);
+  });
+
+  it('true + UNKNOWN → nao envia e reagenda', async () => {
+    enableRealSendFlags();
+    const harness = createRealSendHarness({
+      dispatch: policyWithValidation(true),
+    });
+    let sendCalls = 0;
+    const result = await processDispatchSendJob(
+      { data: basePayload() },
+      {
+        prisma: harness.prisma,
+        now: () => INSIDE_WINDOW_NOW,
+        validateNumber: async () => ({
+          status: 'UNKNOWN',
+          httpStatus: 502,
+          errorCode: 'HTTP_502',
+          errorMessage: 'erro',
+        }),
+        sendText: async () => {
+          sendCalls += 1;
+          return {
+            success: true,
+            providerMessageId: 'x',
+            providerStatus: null,
+            httpStatus: 200,
+          };
+        },
+      },
+    );
+    assert.equal(result.action, 'DEFERRED_WHATSAPP_VALIDATION');
+    assert.equal(sendCalls, 0);
+    assert.equal(harness.getItem()?.status, 'SCHEDULED');
+    assert.equal(harness.getItem()?.destinationValidationStatus, 'UNKNOWN');
+  });
+
+  it('false → nao chama validador e envia', async () => {
+    enableRealSendFlags();
+    const harness = createRealSendHarness({
+      dispatch: policyWithValidation(false),
+    });
+    let validateCalls = 0;
+    const result = await processDispatchSendJob(
+      { data: basePayload() },
+      {
+        prisma: harness.prisma,
+        now: () => INSIDE_WINDOW_NOW,
+        validateNumber: async () => {
+          validateCalls += 1;
+          return {
+            status: 'INVALID',
+            httpStatus: 200,
+            errorCode: null,
+            errorMessage: null,
+          };
+        },
+        sendText: async () => ({
+          success: true,
+          providerMessageId: 'wamid-skip-val',
+          providerStatus: null,
+          httpStatus: 200,
+        }),
+      },
+    );
+    assert.equal(result.action, 'SENT');
+    assert.equal(validateCalls, 0);
+  });
+
+  it('cache VALID evita nova consulta', async () => {
+    enableRealSendFlags();
+    const harness = createRealSendHarness({
+      dispatch: policyWithValidation(true),
+      item: realSendItem({ organizationId: 'org-1' }),
+    });
+    const { createHash } = await import('node:crypto');
+    const destHash = createHash('sha256').update('5511999999999').digest('hex');
+    harness.getValidationCache().set(`org-1::${destHash}`, {
+      status: 'VALID',
+      source: 'EVOLUTION_WHATSAPP_NUMBERS',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    let validateCalls = 0;
+    const result = await processDispatchSendJob(
+      { data: basePayload() },
+      {
+        prisma: harness.prisma,
+        now: () => INSIDE_WINDOW_NOW,
+        validateNumber: async () => {
+          validateCalls += 1;
+          return {
+            status: 'INVALID',
+            httpStatus: 200,
+            errorCode: null,
+            errorMessage: null,
+          };
+        },
+        sendText: async () => ({
+          success: true,
+          providerMessageId: 'wamid-cache',
+          providerStatus: null,
+          httpStatus: 200,
+        }),
+      },
+    );
+    assert.equal(result.action, 'SENT');
+    assert.equal(validateCalls, 0);
+    assert.equal(harness.getItem()?.validationCacheHit, true);
   });
 });

@@ -87,7 +87,7 @@ export function extractFullSendProtectionPolicy(
     rotationEnabled: true,
     pauseOn403: true,
     pauseOn429: true,
-    validateWhatsAppNumber: false,
+    validateWhatsAppNumber: true,
     optOutKeywords: [],
     repetitionWarningPercentage: 70,
   };
@@ -255,11 +255,16 @@ export function buildProtectionEnforcementMatrix(input: {
       rule: 'Validacao WhatsApp number',
       approvedValue: String(policy.validateWhatsAppNumber),
       valueOrigin: 'approvalSnapshot.protectionPolicy',
-      appliedInWorker: false,
-      status: policy.validateWhatsAppNumber ? 'NOT_IMPLEMENTED' : 'DISABLED',
-      evidence: 'campo no snapshot; Worker nao consulta API de validacao',
-      result: 'NAO_BLOQUEANTE',
-      observation: 'Fora do MVP de envio atual',
+      appliedInWorker: policy.validateWhatsAppNumber,
+      status: policy.validateWhatsAppNumber ? 'APPLIED' : 'DISABLED',
+      evidence:
+        'Worker consulta Evolution /chat/whatsappNumbers antes da reserva; cache DestinationWhatsAppValidationCache',
+      result: policy.validateWhatsAppNumber
+        ? 'BLOQUEANTE_ANTES_DO_ENVIO'
+        : 'DESATIVADA_PELO_OPERADOR',
+      observation: policy.validateWhatsAppNumber
+        ? 'Fail closed em UNKNOWN; INVALID → SKIPPED'
+        : 'Numeros invalidos podem chegar ao fluxo de envio',
     }),
     row({
       rule: 'Opt-out keywords',

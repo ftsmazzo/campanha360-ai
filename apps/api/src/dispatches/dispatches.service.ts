@@ -1257,6 +1257,10 @@ export class DispatchesService {
           nextRetryAt: true,
           technicalValidatedAt: true,
           queueJobId: true,
+          destinationValidationStatus: true,
+          destinationValidatedAt: true,
+          validationSource: true,
+          validationCacheHit: true,
           createdAt: true,
           dispatchChannel: {
             select: {
@@ -1310,6 +1314,10 @@ export class DispatchesService {
           nextRetryAt: item.nextRetryAt,
           technicalValidatedAt: item.technicalValidatedAt,
           queueJobId: item.queueJobId,
+          destinationValidationStatus: item.destinationValidationStatus,
+          destinationValidatedAt: item.destinationValidatedAt,
+          validationSource: item.validationSource,
+          validationCacheHit: item.validationCacheHit,
           dispatchChannel: item.dispatchChannel
             ? {
                 id: item.dispatchChannel.id,
@@ -1405,6 +1413,10 @@ export class DispatchesService {
         queueCreatedAt: true,
         technicalValidatedAt: true,
         lastQueueError: true,
+        destinationValidationStatus: true,
+        destinationValidatedAt: true,
+        validationSource: true,
+        validationCacheHit: true,
         createdAt: true,
         updatedAt: true,
         dispatchPlanRecipient: {
@@ -1445,6 +1457,7 @@ export class DispatchesService {
       providerMessageId: item.providerMessageId,
       sentAt: item.sentAt,
       errorCategory: item.errorCategory,
+      errorCode: item.errorCode,
       attemptCount: item.attemptCount,
       maxAttempts: item.maxAttempts,
       allowExtraManualAttempt: true,
@@ -1494,6 +1507,10 @@ export class DispatchesService {
       queueCreatedAt: item.queueCreatedAt,
       technicalValidatedAt: item.technicalValidatedAt,
       lastQueueError: item.lastQueueError,
+      destinationValidationStatus: item.destinationValidationStatus,
+      destinationValidatedAt: item.destinationValidatedAt,
+      validationSource: item.validationSource,
+      validationCacheHit: item.validationCacheHit,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       dispatchPlanRecipient: item.dispatchPlanRecipient,

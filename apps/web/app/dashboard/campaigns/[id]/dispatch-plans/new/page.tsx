@@ -34,8 +34,10 @@ export default function NewDispatchPlanPage() {
   const [segmentId, setSegmentId] = useState('');
   const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>([]);
   const [protectionProfile, setProtectionProfile] = useState<
-    'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE'
+    'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE' | 'CUSTOM'
   >('MODERATE');
+  const [validateWhatsAppNumber, setValidateWhatsAppNumber] = useState(true);
+  const [disableWhatsAppAck, setDisableWhatsAppAck] = useState(false);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -120,6 +122,10 @@ export default function NewDispatchPlanPage() {
           channelAccountId,
         })),
         protectionProfile,
+        validateWhatsAppNumber,
+        ...(validateWhatsAppNumber
+          ? {}
+          : { validateWhatsAppNumberDisableAcknowledged: true }),
         content: content.trim(),
       });
       router.replace(
@@ -263,15 +269,68 @@ export default function NewDispatchPlanPage() {
                 value={protectionProfile}
                 onChange={(event) =>
                   setProtectionProfile(
-                    event.target.value as 'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE',
+                    event.target.value as
+                      | 'CONSERVATIVE'
+                      | 'MODERATE'
+                      | 'AGGRESSIVE'
+                      | 'CUSTOM',
                   )
                 }
               >
                 <option value="CONSERVATIVE">Conservador</option>
                 <option value="MODERATE">Moderado (padrao)</option>
                 <option value="AGGRESSIVE">Agressivo</option>
+                <option value="CUSTOM">Custom</option>
               </select>
             </label>
+
+            <fieldset className="rounded-md border border-[#c9c8c0] bg-white p-4 text-sm text-[#24382b]">
+              <legend className="px-1 font-medium">Blindagens de envio</legend>
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={validateWhatsAppNumber}
+                  onChange={(event) => {
+                    const next = event.target.checked;
+                    setValidateWhatsAppNumber(next);
+                    if (next) setDisableWhatsAppAck(false);
+                  }}
+                />
+                <span>
+                  <span className="font-medium">
+                    Validar se o destinatario possui WhatsApp antes do envio
+                  </span>
+                  <span className="mt-1 block text-xs text-[#65655f]">
+                    Quando ativada, cada numero sera verificado pela Evolution
+                    antes da reserva do slot e antes do envio. Numeros invalidos
+                    nao receberao mensagem.
+                  </span>
+                </span>
+              </label>
+              {!validateWhatsAppNumber ? (
+                <div className="mt-3 rounded-md border border-[#e6d9a8] bg-[#fff8e1] p-3">
+                  <p className="text-sm text-[#6b5a1e]">
+                    A validacao de existencia do WhatsApp sera desativada.
+                    Numeros invalidos poderao chegar ao fluxo de envio.
+                  </p>
+                  <label className="mt-2 flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={disableWhatsAppAck}
+                      onChange={(event) =>
+                        setDisableWhatsAppAck(event.target.checked)
+                      }
+                      required
+                    />
+                    <span>
+                      Confirmo explicitamente a desativacao desta blindagem.
+                    </span>
+                  </label>
+                </div>
+              ) : null}
+            </fieldset>
 
             <label className="block text-sm text-[#24382b]">
               Conteudo textual inicial
@@ -297,7 +356,8 @@ export default function NewDispatchPlanPage() {
                 saving ||
                 evolutionChannels.length === 0 ||
                 segments.length === 0 ||
-                selectedChannelIds.length === 0
+                selectedChannelIds.length === 0 ||
+                (!validateWhatsAppNumber && !disableWhatsAppAck)
               }
             >
               {saving ? 'Salvando...' : 'Criar rascunho'}

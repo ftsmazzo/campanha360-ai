@@ -57,8 +57,10 @@ export default function DispatchPlanDetailPage() {
   const [segmentId, setSegmentId] = useState('');
   const [selectedChannelIds, setSelectedChannelIds] = useState<string[]>([]);
   const [protectionProfile, setProtectionProfile] = useState<
-    'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE'
+    'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE' | 'CUSTOM'
   >('MODERATE');
+  const [validateWhatsAppNumber, setValidateWhatsAppNumber] = useState(true);
+  const [disableWhatsAppAck, setDisableWhatsAppAck] = useState(false);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -130,8 +132,13 @@ export default function DispatchPlanDetailPage() {
           (planItem.protectionPolicySnapshot?.profile as
             | 'CONSERVATIVE'
             | 'MODERATE'
-            | 'AGGRESSIVE') ?? 'MODERATE',
+            | 'AGGRESSIVE'
+            | 'CUSTOM') ?? 'MODERATE',
         );
+        setValidateWhatsAppNumber(
+          planItem.protectionPolicySnapshot?.validateWhatsAppNumber ?? true,
+        );
+        setDisableWhatsAppAck(false);
         setContent(planItem.content);
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
@@ -176,6 +183,10 @@ export default function DispatchPlanDetailPage() {
           channelAccountId,
         })),
         protectionProfile,
+        validateWhatsAppNumber,
+        ...(validateWhatsAppNumber
+          ? {}
+          : { validateWhatsAppNumberDisableAcknowledged: true }),
         content: content.trim(),
       });
       setPlan(updated);
@@ -191,8 +202,13 @@ export default function DispatchPlanDetailPage() {
         (updated.protectionPolicySnapshot?.profile as
           | 'CONSERVATIVE'
           | 'MODERATE'
-          | 'AGGRESSIVE') ?? 'MODERATE',
+          | 'AGGRESSIVE'
+          | 'CUSTOM') ?? 'MODERATE',
       );
+      setValidateWhatsAppNumber(
+        updated.protectionPolicySnapshot?.validateWhatsAppNumber ?? true,
+      );
+      setDisableWhatsAppAck(false);
       setContent(updated.content);
       setSuccess('Plano atualizado');
     } catch (err) {
@@ -292,8 +308,13 @@ export default function DispatchPlanDetailPage() {
       (updated.protectionPolicySnapshot?.profile as
         | 'CONSERVATIVE'
         | 'MODERATE'
-        | 'AGGRESSIVE') ?? 'MODERATE',
+        | 'AGGRESSIVE'
+        | 'CUSTOM') ?? 'MODERATE',
     );
+    setValidateWhatsAppNumber(
+      updated.protectionPolicySnapshot?.validateWhatsAppNumber ?? true,
+    );
+    setDisableWhatsAppAck(false);
     setContent(updated.content);
   }
 
@@ -465,15 +486,69 @@ export default function DispatchPlanDetailPage() {
                 disabled={!editable}
                 onChange={(event) =>
                   setProtectionProfile(
-                    event.target.value as 'CONSERVATIVE' | 'MODERATE' | 'AGGRESSIVE',
+                    event.target.value as
+                      | 'CONSERVATIVE'
+                      | 'MODERATE'
+                      | 'AGGRESSIVE'
+                      | 'CUSTOM',
                   )
                 }
               >
                 <option value="CONSERVATIVE">Conservador</option>
                 <option value="MODERATE">Moderado</option>
                 <option value="AGGRESSIVE">Agressivo</option>
+                <option value="CUSTOM">Custom</option>
               </select>
             </label>
+
+            <fieldset className="rounded-md border border-[#c9c8c0] bg-white p-4 text-sm text-[#24382b]">
+              <legend className="px-1 font-medium">Blindagens de envio</legend>
+              <label className="flex items-start gap-2">
+                <input
+                  type="checkbox"
+                  className="mt-1"
+                  checked={validateWhatsAppNumber}
+                  disabled={!editable}
+                  onChange={(event) => {
+                    const next = event.target.checked;
+                    setValidateWhatsAppNumber(next);
+                    if (next) setDisableWhatsAppAck(false);
+                  }}
+                />
+                <span>
+                  <span className="font-medium">
+                    Validar se o destinatario possui WhatsApp antes do envio
+                  </span>
+                  <span className="mt-1 block text-xs text-[#65655f]">
+                    Quando ativada, cada numero sera verificado pela Evolution
+                    antes da reserva do slot e antes do envio. Numeros invalidos
+                    nao receberao mensagem.
+                  </span>
+                </span>
+              </label>
+              {editable && !validateWhatsAppNumber ? (
+                <div className="mt-3 rounded-md border border-[#e6d9a8] bg-[#fff8e1] p-3">
+                  <p className="text-sm text-[#6b5a1e]">
+                    A validacao de existencia do WhatsApp sera desativada.
+                    Numeros invalidos poderao chegar ao fluxo de envio.
+                  </p>
+                  <label className="mt-2 flex items-start gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={disableWhatsAppAck}
+                      onChange={(event) =>
+                        setDisableWhatsAppAck(event.target.checked)
+                      }
+                      required
+                    />
+                    <span>
+                      Confirmo explicitamente a desativacao desta blindagem.
+                    </span>
+                  </label>
+                </div>
+              ) : null}
+            </fieldset>
 
             <label className="block text-sm text-[#24382b]">
               Conteudo textual
@@ -493,7 +568,11 @@ export default function DispatchPlanDetailPage() {
               <button
                 className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 type="submit"
-                disabled={saving || selectedChannelIds.length === 0}
+                disabled={
+                  saving ||
+                  selectedChannelIds.length === 0 ||
+                  (!validateWhatsAppNumber && !disableWhatsAppAck)
+                }
               >
                 {saving ? 'Salvando...' : 'Salvar alteracoes'}
               </button>
@@ -535,6 +614,14 @@ export default function DispatchPlanDetailPage() {
                   <dd>
                     {policy.allowedStartTime}–{policy.allowedEndTime} (
                     {policy.timezone})
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">Validacao WhatsApp</dt>
+                  <dd>
+                    {policy.validateWhatsAppNumber
+                      ? 'Ativada'
+                      : 'Desativada pelo operador'}
                   </dd>
                 </div>
               </dl>

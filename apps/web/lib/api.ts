@@ -1291,6 +1291,10 @@ export type DispatchItemListEntry = {
   errorMessage?: string | null;
   lastAttemptAt?: string | null;
   nextRetryAt?: string | null;
+  destinationValidationStatus?: string | null;
+  destinationValidatedAt?: string | null;
+  validationSource?: string | null;
+  validationCacheHit?: boolean | null;
   dispatchChannel?: DispatchItemChannelSummary | null;
   contentHash: string | null;
   createdAt: string;
@@ -1412,6 +1416,8 @@ export type CreateDispatchPlanPayload = {
   channelAccountId: string;
   channels?: DispatchPlanChannelInput[];
   protectionProfile?: ProtectionProfile;
+  validateWhatsAppNumber?: boolean;
+  validateWhatsAppNumberDisableAcknowledged?: boolean;
   content: string;
 };
 
@@ -1422,6 +1428,8 @@ export type UpdateDispatchPlanPayload = {
   channelAccountId?: string;
   channels?: DispatchPlanChannelInput[];
   protectionProfile?: ProtectionProfile;
+  validateWhatsAppNumber?: boolean;
+  validateWhatsAppNumberDisableAcknowledged?: boolean;
   content?: string;
 };
 
@@ -1708,6 +1716,17 @@ export type DispatchProtectionsPanel = {
     pauseReason: string | null;
   }>;
   violationCountTotal: number;
+  validationCounters?: {
+    validationPendingItems: number;
+    validDestinationItems: number;
+    invalidDestinationItems: number;
+    validationErrorItems: number;
+  };
+  whatsappValidation?: {
+    status: string;
+    configured: boolean;
+    label: string;
+  };
   atomicReservationStrategy: string;
   scope: string;
 };

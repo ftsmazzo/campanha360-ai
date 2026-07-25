@@ -2,6 +2,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMinSize,
   IsArray,
+  IsBoolean,
   IsEnum,
   IsInt,
   IsOptional,
@@ -70,6 +71,16 @@ export class CreateDispatchPlanDto {
   @IsOptional()
   @IsEnum(ProtectionProfile)
   protectionProfile?: ProtectionProfile;
+
+  /** Default true em todos os perfis. false exige aceite explicito. */
+  @IsOptional()
+  @IsBoolean()
+  validateWhatsAppNumber?: boolean;
+
+  /** Obrigatorio quando validateWhatsAppNumber=false. */
+  @IsOptional()
+  @IsBoolean()
+  validateWhatsAppNumberDisableAcknowledged?: boolean;
 
   @IsString()
   @MinLength(1)

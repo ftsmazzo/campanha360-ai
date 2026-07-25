@@ -1258,7 +1258,56 @@ export default function DispatchDetailPage() {
                       <dt className="text-[#65655f]">Violacoes</dt>
                       <dd>{protections.violationCountTotal}</dd>
                     </div>
+                    <div>
+                      <dt className="text-[#65655f]">Validacao WhatsApp</dt>
+                      <dd>
+                        {protections.whatsappValidation?.status ??
+                          (protections.policy.validateWhatsAppNumber
+                            ? 'ENFORCED_BLOCKING'
+                            : 'DISABLED_BY_POLICY')}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-[#65655f]">Politica WhatsApp</dt>
+                      <dd>
+                        {protections.whatsappValidation?.label ??
+                          (protections.policy.validateWhatsAppNumber
+                            ? 'Ativada'
+                            : 'Desativada pelo operador')}
+                      </dd>
+                    </div>
                   </dl>
+                  {protections.validationCounters ? (
+                    <dl className="grid gap-2 text-xs md:grid-cols-4">
+                      <div>
+                        <dt className="text-[#65655f]">Validacao pendente</dt>
+                        <dd>
+                          {protections.validationCounters.validationPendingItems}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[#65655f]">Destinos validos</dt>
+                        <dd>
+                          {protections.validationCounters.validDestinationItems}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[#65655f]">Destinos invalidos</dt>
+                        <dd>
+                          {
+                            protections.validationCounters
+                              .invalidDestinationItems
+                          }
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-[#65655f]">Erros de validacao</dt>
+                        <dd>
+                          {protections.validationCounters.validationErrorItems}
+                        </dd>
+                      </div>
+                    </dl>
+                  ) : null}
                   <div className="overflow-x-auto">
                     <table className="min-w-full text-left text-xs">
                       <thead>
@@ -1736,6 +1785,7 @@ export default function DispatchDetailPage() {
                         <th className="px-2 py-2 font-medium">Destino</th>
                         <th className="px-2 py-2 font-medium">Status</th>
                         <th className="px-2 py-2 font-medium">Diagnostico</th>
+                        <th className="px-2 py-2 font-medium">Validacao WA</th>
                         <th className="px-2 py-2 font-medium">Instancia</th>
                         <th className="px-2 py-2 font-medium">Realocacoes</th>
                         <th className="px-2 py-2 font-medium">Agendado</th>
@@ -1763,6 +1813,20 @@ export default function DispatchDetailPage() {
                             {item.errorCode || item.errorCategory
                               ? `${item.errorCategory ?? '—'} / ${item.errorCode ?? '—'}`
                               : '—'}
+                          </td>
+                          <td className="px-2 py-2 text-xs">
+                            {item.destinationValidationStatus === 'VALID'
+                              ? 'valida'
+                              : item.destinationValidationStatus === 'INVALID'
+                                ? 'invalida'
+                                : item.destinationValidationStatus ===
+                                      'UNKNOWN' ||
+                                    item.destinationValidationStatus ===
+                                      'PROVIDER_UNAVAILABLE'
+                                  ? 'erro'
+                                  : item.destinationValidationStatus
+                                    ? 'pendente'
+                                    : '—'}
                           </td>
                           <td className="px-2 py-2 font-mono text-xs">
                             {item.dispatchChannel?.channelAccountName ??
@@ -1875,6 +1939,51 @@ export default function DispatchDetailPage() {
                             <dt className="text-[#65655f]">Codigo</dt>
                             <dd className="font-mono text-xs">
                               {selectedItem.errorCode ?? '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Validacao WhatsApp</dt>
+                            <dd>
+                              {selectedItem.destinationValidationStatus ===
+                              'VALID'
+                                ? 'valida'
+                                : selectedItem.destinationValidationStatus ===
+                                    'INVALID'
+                                  ? 'invalida'
+                                  : selectedItem.destinationValidationStatus ===
+                                        'UNKNOWN' ||
+                                      selectedItem.destinationValidationStatus ===
+                                        'PROVIDER_UNAVAILABLE'
+                                    ? 'erro'
+                                    : selectedItem.destinationValidationStatus
+                                      ? 'pendente'
+                                      : '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Data da validacao</dt>
+                            <dd className="text-xs">
+                              {selectedItem.destinationValidatedAt
+                                ? new Date(
+                                    selectedItem.destinationValidatedAt,
+                                  ).toLocaleString('pt-BR')
+                                : '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Fonte</dt>
+                            <dd className="font-mono text-xs">
+                              {selectedItem.validationSource ?? '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Cache utilizado</dt>
+                            <dd>
+                              {selectedItem.validationCacheHit == null
+                                ? '—'
+                                : selectedItem.validationCacheHit
+                                  ? 'sim'
+                                  : 'nao'}
                             </dd>
                           </div>
                           <div>

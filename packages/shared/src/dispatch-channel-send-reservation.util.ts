@@ -97,7 +97,7 @@ export const DEFAULT_CHANNEL_SEND_PROTECTION_POLICY: ChannelSendProtectionPolicy
     rotationEnabled: true,
     pauseOn403: true,
     pauseOn429: true,
-    validateWhatsAppNumber: false,
+    validateWhatsAppNumber: true,
     optOutKeywords: [],
     repetitionWarningPercentage: 70,
   };

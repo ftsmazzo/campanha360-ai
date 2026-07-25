@@ -734,6 +734,10 @@ model Dispatch {
   skippedItems          Int            @default(0)
   canceledItems         Int            @default(0)
   unknownItems          Int            @default(0)
+  validationPendingItems Int           @default(0)
+  validDestinationItems Int            @default(0)
+  invalidDestinationItems Int          @default(0)
+  validationErrorItems  Int            @default(0)
   createdByUserId       String
   preparedAt            DateTime?
   queuedAt              DateTime?
@@ -898,6 +902,11 @@ model DispatchItem {
   protectionScheduledAt   DateTime?
   protectionRuleApplied   String?
   protectionSequenceNumber Int?
+  destinationValidationStatus String?
+  destinationValidatedAt  DateTime?
+  validationSource        String?
+  validationCacheHit      Boolean?
+  destinationValidationAttempts Int @default(0)
   metadata                Json?
   organization            Organization               @relation(fields: [organizationId], references: [id])
   campaign                Campaign                   @relation(fields: [campaignId], references: [id])
@@ -1000,6 +1009,8 @@ model DestinationWhatsAppValidationCache {
   destinationHash  String
   status           String
   source           String       @default("EVOLUTION_WHATSAPP_NUMBERS")
+  provider         String       @default("EVOLUTION")
+  lastErrorCode    String?
   checkedAt        DateTime
   expiresAt        DateTime
   organization     Organization @relation(fields: [organizationId], references: [id])
