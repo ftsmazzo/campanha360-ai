@@ -32,6 +32,46 @@ describe('classifyEvolutionSendFailure', () => {
     });
     assert.equal(r.category, 'PROVIDER_BAD_REQUEST');
     assert.notEqual(r.category, 'CONTENT_REJECTED');
+    assert.equal(r.evidence.providerErrorMessageSafe, 'Bad Request');
+  });
+
+  it('HTTP 400 Evolution com response.message[] preserva texto sanitizado', () => {
+    const r = classifyEvolutionSendFailure({
+      httpStatus: 400,
+      body: {
+        status: 400,
+        error: 'Bad Request',
+        response: {
+          message: ['Error: unable to send to +5511999887766'],
+        },
+      },
+    });
+    assert.equal(r.category, 'PROVIDER_BAD_REQUEST');
+    assert.ok(r.evidence.providerErrorMessageSafe);
+    assert.match(
+      r.evidence.providerErrorMessageSafe!,
+      /unable to send/i,
+    );
+    assert.doesNotMatch(
+      r.evidence.providerErrorMessageSafe!,
+      /5511999887766/,
+    );
+  });
+
+  it('HTTP 400 com corpo JSON sem message usa rawText sanitizado', () => {
+    const raw = JSON.stringify({
+      status: 400,
+      reason: 'exists=false for 5511888777666',
+    });
+    const r = classifyEvolutionSendFailure({
+      httpStatus: 400,
+      body: JSON.parse(raw),
+      rawText: raw,
+    });
+    assert.equal(r.category, 'PROVIDER_BAD_REQUEST');
+    assert.ok(r.evidence.providerErrorMessageSafe);
+    assert.match(r.evidence.providerErrorMessageSafe!, /exists=false/);
+    assert.doesNotMatch(r.evidence.providerErrorMessageSafe!, /5511888777666/);
   });
 
   it('Connection Closed → PROVIDER_CONNECTION_CLOSED', () => {

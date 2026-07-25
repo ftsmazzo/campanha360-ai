@@ -83,6 +83,39 @@ export function sanitizeProviderMessage(raw: string | null | undefined): string 
   return text || null;
 }
 
+/** Extrai texto utilizavel de message/error (string, array ou objeto aninhado). */
+function coerceProviderText(value: unknown): string | null {
+  if (typeof value === 'string' || typeof value === 'number') {
+    return asString(value);
+  }
+  if (Array.isArray(value)) {
+    const parts = value
+      .map((entry) => {
+        if (typeof entry === 'string' || typeof entry === 'number') {
+          return asString(entry);
+        }
+        const row = asRecord(entry);
+        return (
+          asString(row?.message) ??
+          asString(row?.error) ??
+          asString(row?.text) ??
+          null
+        );
+      })
+      .filter((part): part is string => Boolean(part));
+    return parts.length > 0 ? parts.join(' | ') : null;
+  }
+  const row = asRecord(value);
+  if (!row) return null;
+  return (
+    asString(row.message) ??
+    asString(row.error) ??
+    asString(row.errorMessage) ??
+    asString(row.text) ??
+    null
+  );
+}
+
 export function extractSafeErrorFields(
   body: unknown,
   rawText: string,
@@ -93,11 +126,13 @@ export function extractSafeErrorFields(
   requestId: string | null;
 } {
   const record = asRecord(body);
+  const nestedError = asRecord(record?.error);
   const nested =
-    asRecord(record?.error) ??
+    nestedError ??
     asRecord(record?.response) ??
     asRecord(record?.data) ??
     null;
+  const nestedResponse = asRecord(record?.response);
 
   const code =
     asString(record?.code) ??
@@ -110,21 +145,24 @@ export function extractSafeErrorFields(
   const type =
     asString(record?.name) ??
     asString(record?.type) ??
-    asString(record?.error) ??
+    (typeof record?.error === 'string' ? asString(record.error) : null) ??
     asString(nested?.name) ??
     asString(nested?.type) ??
     null;
 
-  const message =
-    sanitizeProviderMessage(
-      asString(record?.message) ??
-        asString(record?.errorMessage) ??
-        asString(nested?.message) ??
-        asString(record?.responseMessage) ??
-        (rawText && !rawText.trim().startsWith('{')
-          ? rawText.slice(0, 240)
-          : null),
-    ) ?? null;
+  const rawMessage =
+    coerceProviderText(record?.message) ??
+    coerceProviderText(record?.errorMessage) ??
+    coerceProviderText(record?.responseMessage) ??
+    coerceProviderText(nestedResponse?.message) ??
+    coerceProviderText(nested?.message) ??
+    // Evolution as vezes manda `error` como string ("Bad Request") sem `message`.
+    (typeof record?.error === 'string' ? asString(record.error) : null) ??
+    coerceProviderText(nestedError) ??
+    // Ultimo recurso: corpo bruto (JSON incluso), ja sanitizado/redigido.
+    (rawText?.trim() ? rawText.trim().slice(0, 240) : null);
+
+  const message = sanitizeProviderMessage(rawMessage);
 
   const requestId =
     asString(record?.requestId) ??

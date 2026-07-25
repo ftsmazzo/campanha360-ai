@@ -2046,11 +2046,13 @@ export default function DispatchDetailPage() {
                             </dd>
                           </div>
                           <div>
-                            <dt className="text-[#65655f]">Mensagem segura</dt>
+                            <dt className="text-[#65655f]">
+                              Mensagem do provider (sanitizada)
+                            </dt>
                             <dd className="mt-1 rounded bg-[#f7f6f1] p-2 text-xs">
-                              {selectedItem.providerErrorMessageSafe ??
-                                selectedItem.errorMessage ??
-                                '—'}
+                              {selectedItem.providerErrorMessageSafe?.trim()
+                                ? selectedItem.providerErrorMessageSafe
+                                : '— (corpo sem mensagem utilizavel)'}
                             </dd>
                           </div>
                           <div className="flex justify-between gap-3">

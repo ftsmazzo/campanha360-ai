@@ -151,6 +151,7 @@ describe('sendEvolutionText', () => {
       assert.equal(result.category, 'PROVIDER_BAD_REQUEST');
       assert.equal(result.httpStatus, 400);
       assert.equal(result.ambiguous, false);
+      assert.equal(result.evidence.providerErrorMessageSafe, 'Bad Request');
     }
   });
 

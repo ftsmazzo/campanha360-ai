@@ -1662,16 +1662,19 @@ async function runRealSend(input: {
       }
     }
 
+    // Nao substituir evidencia do provider pela mensagem classificada do motor:
+    // a UI separa "mensagem segura" (corpo) de "mensagem operacional" (categoria).
+    const providerMessageSafe = evidence.providerErrorMessageSafe ?? null;
+
     console.log(
-      `[provider-send-error] item=${item.id} channelAccount=${selectedChannel.channelAccountId} httpStatus=${failure.httpStatus ?? 'n/a'} providerErrorCode=${evidence.providerErrorCode ?? failure.errorCode} classifiedAs=${failure.category} acceptanceState=${acceptanceState} channelStatusAfterCheck=${channelStatusAfterFailure}`,
+      `[provider-send-error] item=${item.id} channelAccount=${selectedChannel.channelAccountId} httpStatus=${failure.httpStatus ?? 'n/a'} providerErrorCode=${evidence.providerErrorCode ?? failure.errorCode} classifiedAs=${failure.category} acceptanceState=${acceptanceState} channelStatusAfterCheck=${channelStatusAfterFailure} providerMessageSafe=${providerMessageSafe ? JSON.stringify(providerMessageSafe) : 'n/a'}`,
     );
 
     const diagnosticFields = {
       providerHttpStatus: failure.httpStatus,
       providerErrorCode: evidence.providerErrorCode ?? failure.errorCode,
       providerErrorType: evidence.providerErrorType,
-      providerErrorMessageSafe:
-        evidence.providerErrorMessageSafe ?? failure.errorMessage,
+      providerErrorMessageSafe: providerMessageSafe,
       providerRequestId: evidence.providerRequestId,
       providerResponseReceivedAt: responseReceivedAt,
       acceptanceState,

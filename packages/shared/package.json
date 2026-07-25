@@ -7,7 +7,7 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "npx --yes tsx --test src/dispatch-queue.constants.spec.ts src/dispatch-feature-flags.spec.ts src/dispatch-channel-selection.spec.ts src/dispatch-window.util.spec.ts src/dispatch-send-retry.spec.ts src/dispatch-recovery.util.spec.ts src/dispatch-channel-send-reservation.util.spec.ts src/dispatch-protection-enforcement.util.spec.ts src/dispatch-protection-homologation.spec.ts src/opt-out-keywords.util.spec.ts src/evolution-send.client.spec.ts"
+    "test": "npx --yes tsx --test src/dispatch-queue.constants.spec.ts src/dispatch-feature-flags.spec.ts src/dispatch-channel-selection.spec.ts src/dispatch-window.util.spec.ts src/dispatch-send-retry.spec.ts src/dispatch-recovery.util.spec.ts src/dispatch-channel-send-reservation.util.spec.ts src/dispatch-protection-enforcement.util.spec.ts src/dispatch-protection-homologation.spec.ts src/opt-out-keywords.util.spec.ts src/evolution-send.client.spec.ts src/evolution-error-classification.util.spec.ts"
   },
   "devDependencies": {
     "typescript": "^5.6.0"
