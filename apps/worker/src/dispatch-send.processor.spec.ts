@@ -1,6 +1,61 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
+import type {
+  EvolutionSendFailure,
+  EvolutionSendSuccess,
+  SafeEvolutionErrorEvidence,
+} from '@campanha360/shared';
 import { processDispatchSendJob } from './dispatch-send.processor';
+
+function mockEvidence(
+  overrides: Partial<SafeEvolutionErrorEvidence> = {},
+): SafeEvolutionErrorEvidence {
+  return {
+    httpStatus: null,
+    providerErrorCode: null,
+    providerErrorType: null,
+    providerErrorMessageSafe: null,
+    providerRequestId: null,
+    endpoint: 'message/sendText',
+    instanceName: 'inst-1',
+    ...overrides,
+  };
+}
+
+function sendOk(
+  overrides: Partial<Omit<EvolutionSendSuccess, 'success' | 'acceptanceState'>> = {},
+): EvolutionSendSuccess {
+  return {
+    success: true,
+    providerMessageId: 'wamid-123',
+    providerStatus: 'PENDING',
+    httpStatus: 200,
+    acceptanceState: 'ACCEPTED',
+    ...overrides,
+  };
+}
+
+function sendFail(
+  overrides: Partial<Omit<EvolutionSendFailure, 'success' | 'evidence'>> & {
+    evidence?: Partial<SafeEvolutionErrorEvidence>;
+  } = {},
+): EvolutionSendFailure {
+  const { evidence, ...rest } = overrides;
+  return {
+    success: false,
+    category: 'TRANSIENT_NETWORK',
+    errorCode: 'NETWORK_ERROR',
+    errorMessage: 'Falha de rede',
+    httpStatus: null,
+    ambiguous: false,
+    acceptanceState: 'NOT_ACCEPTED',
+    ...rest,
+    evidence: mockEvidence({
+      httpStatus: rest.httpStatus ?? null,
+      ...evidence,
+    }),
+  };
+}
 
 const FLAG_KEYS = [
   'DISPATCH_ENGINE_ENABLED',
@@ -73,6 +128,7 @@ function channelRow(overrides: Record<string, unknown> = {}) {
     effectiveDailyLimit: 5000,
     assignedItems: 0,
     sentItems: 0,
+    failedItems: 0,
     consecutiveErrors: 0,
     cooldownUntil: null,
     operationalStatus: 'READY',
@@ -603,12 +659,11 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
         now: () => INSIDE_WINDOW_NOW,
         sendText: async () => {
           calls += 1;
-          return {
-            success: true,
+          return sendOk({
             providerMessageId: 'wamid-123',
             providerStatus: 'PENDING',
             httpStatus: 200,
-          };
+          });
         },
       },
     );
@@ -643,7 +698,7 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
       { data: basePayload() },
       { prisma: harness.prisma, now: () => INSIDE_WINDOW_NOW, sendText: async () => {
         calls += 1;
-        return { success: true, providerMessageId: 'wamid-999', providerStatus: null, httpStatus: 200 };
+        return sendOk({ providerMessageId: 'wamid-999', providerStatus: null, httpStatus: 200 });
       } },
     );
     assert.ok(
@@ -666,7 +721,7 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
         now: () => INSIDE_WINDOW_NOW,
         sendText: async () => {
           called = true;
-          return { success: true, providerMessageId: null, providerStatus: null, httpStatus: 200 };
+          return sendOk({ providerMessageId: null, providerStatus: null, httpStatus: 200 });
         },
       },
     );
@@ -722,14 +777,14 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
       {
         prisma: harness.prisma,
         now: () => INSIDE_WINDOW_NOW,
-        sendText: async () => ({
-          success: false,
-          category: 'PROVIDER_RATE_LIMIT' as const,
-          errorCode: 'HTTP_429',
-          errorMessage: 'Provider retornou limite de taxa (429)',
-          httpStatus: 429,
-          ambiguous: false,
-        }),
+        sendText: async () =>
+          sendFail({
+            category: 'PROVIDER_RATE_LIMIT',
+            errorCode: 'HTTP_429',
+            errorMessage: 'Provider retornou limite de taxa (429)',
+            httpStatus: 429,
+            ambiguous: false,
+          }),
       },
     );
 
@@ -759,6 +814,8 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
           errorMessage: 'Timeout/abort na chamada',
           httpStatus: null,
           ambiguous: true,
+          acceptanceState: 'AMBIGUOUS',
+          evidence: mockEvidence({ httpStatus: null }),
         }),
       },
     );
@@ -784,6 +841,8 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
           errorMessage: 'Falha de rede',
           httpStatus: null,
           ambiguous: false,
+          acceptanceState: 'NOT_ACCEPTED',
+          evidence: mockEvidence({ httpStatus: null }),
         }),
       },
     );
@@ -809,6 +868,8 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
           errorMessage: 'Falha de rede',
           httpStatus: null,
           ambiguous: false,
+          acceptanceState: 'NOT_ACCEPTED',
+          evidence: mockEvidence({ httpStatus: null }),
         }),
       },
     );
@@ -862,6 +923,7 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
           providerMessageId: 'wamid-456',
           providerStatus: null,
           httpStatus: 200,
+          acceptanceState: 'ACCEPTED',
         }),
       },
     );
@@ -886,6 +948,7 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
           providerMessageId: 'wamid-789',
           providerStatus: null,
           httpStatus: 200,
+          acceptanceState: 'ACCEPTED',
         }),
       },
     );
@@ -919,6 +982,7 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
             providerMessageId: 'should-not',
             providerStatus: null,
             httpStatus: 200,
+            acceptanceState: 'ACCEPTED',
           };
         },
       },
@@ -958,6 +1022,7 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
             providerMessageId: 'x',
             providerStatus: null,
             httpStatus: 200,
+            acceptanceState: 'ACCEPTED',
           };
         },
       },
@@ -1018,6 +1083,7 @@ describe('processDispatchSendJob — envio real (worker 09.4)', () => {
           providerMessageId: 'wamid-a',
           providerStatus: 'PENDING',
           httpStatus: 200,
+          acceptanceState: 'ACCEPTED',
         }),
       },
     );
@@ -1335,6 +1401,7 @@ describe('processDispatchSendJob — validateWhatsAppNumber (09.6.3)', () => {
             providerMessageId: 'wamid-valid',
             providerStatus: 'PENDING',
             httpStatus: 200,
+            acceptanceState: 'ACCEPTED',
           };
         },
       },
@@ -1369,6 +1436,7 @@ describe('processDispatchSendJob — validateWhatsAppNumber (09.6.3)', () => {
             providerMessageId: 'should-not',
             providerStatus: null,
             httpStatus: 200,
+            acceptanceState: 'ACCEPTED',
           };
         },
       },
@@ -1404,6 +1472,7 @@ describe('processDispatchSendJob — validateWhatsAppNumber (09.6.3)', () => {
             providerMessageId: 'x',
             providerStatus: null,
             httpStatus: 200,
+            acceptanceState: 'ACCEPTED',
           };
         },
       },
@@ -1439,6 +1508,7 @@ describe('processDispatchSendJob — validateWhatsAppNumber (09.6.3)', () => {
           providerMessageId: 'wamid-skip-val',
           providerStatus: null,
           httpStatus: 200,
+          acceptanceState: 'ACCEPTED',
         }),
       },
     );
@@ -1479,6 +1549,7 @@ describe('processDispatchSendJob — validateWhatsAppNumber (09.6.3)', () => {
           providerMessageId: 'wamid-cache',
           providerStatus: null,
           httpStatus: 200,
+          acceptanceState: 'ACCEPTED',
         }),
       },
     );
