@@ -111,14 +111,22 @@ export function getDispatchItemErrorCategoryLabel(
       return 'Provider indisponível';
     case 'PROVIDER_TIMEOUT':
       return 'Timeout do provider';
+    case 'PROVIDER_BAD_REQUEST':
+      return 'Requisicao rejeitada (sem evidencia de conteudo)';
+    case 'PROVIDER_CONNECTION_CLOSED':
+      return 'Conexao encerrada';
     case 'CHANNEL_DISCONNECTED':
       return 'Canal desconectado';
+    case 'CHANNEL_NOT_FOUND':
+      return 'Instancia nao encontrada';
+    case 'CHANNEL_UNAVAILABLE':
+      return 'Canal indisponivel';
     case 'AUTHENTICATION_ERROR':
       return 'Autenticação';
     case 'INVALID_DESTINATION':
       return 'Destino inválido';
     case 'CONTENT_REJECTED':
-      return 'Conteúdo rejeitado';
+      return 'Conteúdo rejeitado (com evidencia)';
     case 'CONTACT_OPT_OUT':
       return 'Opt-out';
     case 'CONTACT_BLOCKED':

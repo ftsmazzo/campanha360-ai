@@ -1183,6 +1183,14 @@ export type DispatchDetail = {
   requiringRedistribution?: boolean;
   multiInstance?: boolean;
   channels?: DispatchChannelItem[];
+  throughputDisplay?: {
+    requestedMessagesPerMinute: number | null;
+    protectionCeilingMessagesPerMinute: number | null;
+    averageEstimateMessagesPerMinute: number | null;
+    effectiveMessagesPerMinute: number | null;
+    aggregateCapacityMessagesPerMinute: number | null;
+    instanceCount: number;
+  };
   totalItems: number;
   pendingItems: number;
   queuedItems: number;
@@ -1295,6 +1303,16 @@ export type DispatchItemListEntry = {
   destinationValidatedAt?: string | null;
   validationSource?: string | null;
   validationCacheHit?: boolean | null;
+  providerHttpStatus?: number | null;
+  providerErrorCode?: string | null;
+  providerErrorType?: string | null;
+  providerErrorMessageSafe?: string | null;
+  providerRequestId?: string | null;
+  providerResponseReceivedAt?: string | null;
+  acceptanceState?: string | null;
+  channelStatusAtSend?: string | null;
+  channelStatusAfterFailure?: string | null;
+  classificationConfidence?: string | null;
   dispatchChannel?: DispatchItemChannelSummary | null;
   contentHash: string | null;
   createdAt: string;

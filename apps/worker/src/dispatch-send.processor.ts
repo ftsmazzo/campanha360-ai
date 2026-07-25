@@ -25,6 +25,7 @@ import {
   resolveNextOperationalWindowStart,
   selectNextEligibleDispatchChannel,
   sendEvolutionText,
+  checkEvolutionConnectionState,
   validateWhatsAppNumber,
   cacheTtlMsForValidationStatus,
   WHATSAPP_VALIDATION_MAX_UNKNOWN_ATTEMPTS,
@@ -1511,8 +1512,15 @@ async function runRealSend(input: {
 
     await prisma.dispatchItem.updateMany({
       where: { id: item.id, status: DispatchItemStatus.PROCESSING },
-      data: { providerRequestStartedAt: requestStartedAt },
+      data: {
+        providerRequestStartedAt: requestStartedAt,
+        channelStatusAtSend: String(channelAccountMeta.status ?? 'UNKNOWN'),
+      } as never,
     });
+
+    console.log(
+      `[provider-send-start] item=${item.id} channelAccount=${selectedChannel.channelAccountId} connectionStatus=${String(channelAccountMeta.status ?? 'UNKNOWN')} providerRequestStartedAt=${requestStartedAt.toISOString()}`,
+    );
 
     const attemptNumber = (item.attemptCount ?? 0) + 1;
     const attemptId = await beginDispatchItemAttempt(prisma, {
@@ -1547,9 +1555,13 @@ async function runRealSend(input: {
       idempotencyKey: item.id,
     });
 
+    const responseReceivedAt = now();
     await prisma.dispatchItem.updateMany({
       where: { id: item.id },
-      data: { providerRequestCompletedAt: now() },
+      data: {
+        providerRequestCompletedAt: responseReceivedAt,
+        providerResponseReceivedAt: responseReceivedAt,
+      } as never,
     });
 
     const attemptCount = attemptNumber;
@@ -1591,14 +1603,84 @@ async function runRealSend(input: {
         usageDate: usageDateKey,
         now: now(),
       });
+      await reconcileDispatchChannelCounters(prisma, dispatch.id);
       await recomputeDispatchProgress(prisma, dispatch, now());
       return { action: 'SENT', send: true, dispatchItemId: item.id };
     }
 
     const failure = result;
+    const evidence =
+      'evidence' in failure && failure.evidence
+        ? failure.evidence
+        : {
+            httpStatus: failure.httpStatus,
+            providerErrorCode: failure.errorCode,
+            providerErrorType: null,
+            providerErrorMessageSafe: failure.errorMessage,
+            providerRequestId: null,
+            endpoint: 'message/sendText',
+            instanceName: channelAccountMeta.externalAccountId ?? null,
+          };
+    const acceptanceState =
+      ('acceptanceState' in failure && failure.acceptanceState) ||
+      (failure.ambiguous ? 'AMBIGUOUS' : 'NOT_ACCEPTED');
 
-    if (failure.ambiguous) {
-      await finalizeUnknown(prisma, item, now(), attemptCount, failure);
+    let channelStatusAfterFailure = String(channelAccountMeta.status ?? 'UNKNOWN');
+    const disconnectLike =
+      failure.category === 'CHANNEL_DISCONNECTED' ||
+      failure.category === 'PROVIDER_CONNECTION_CLOSED' ||
+      failure.category === 'CHANNEL_UNAVAILABLE' ||
+      failure.category === 'CHANNEL_NOT_FOUND';
+
+    if (disconnectLike) {
+      const check = await checkEvolutionConnectionState({
+        baseUrl: deps.evolutionBaseUrl ?? process.env.EVOLUTION_API_URL ?? '',
+        apiKey: deps.evolutionApiKey ?? process.env.EVOLUTION_API_KEY,
+        instanceName: channelAccountMeta.externalAccountId ?? '',
+      });
+      channelStatusAfterFailure = check.status;
+      if (
+        check.status === 'DISCONNECTED' ||
+        check.status === 'UNAVAILABLE' ||
+        check.status === 'UNKNOWN'
+      ) {
+        await prisma.channelAccount.updateMany({
+          where: { id: selectedChannel.channelAccountId },
+          data: {
+            status: ChannelAccountStatus.DISCONNECTED,
+            disconnectedAt: now(),
+            lastConnectionError: failure.errorCode,
+          } as never,
+        });
+        await prisma.dispatchChannel.updateMany({
+          where: { id: selectedChannel.id },
+          data: {
+            operationalStatus: DispatchChannelOperationalStatus.COOLDOWN,
+            cooldownUntil: new Date(now().getTime() + CHANNEL_COOLDOWN_STEP_MS),
+          },
+        });
+      }
+    }
+
+    console.log(
+      `[provider-send-error] item=${item.id} channelAccount=${selectedChannel.channelAccountId} httpStatus=${failure.httpStatus ?? 'n/a'} providerErrorCode=${evidence.providerErrorCode ?? failure.errorCode} classifiedAs=${failure.category} acceptanceState=${acceptanceState} channelStatusAfterCheck=${channelStatusAfterFailure}`,
+    );
+
+    const diagnosticFields = {
+      providerHttpStatus: failure.httpStatus,
+      providerErrorCode: evidence.providerErrorCode ?? failure.errorCode,
+      providerErrorType: evidence.providerErrorType,
+      providerErrorMessageSafe:
+        evidence.providerErrorMessageSafe ?? failure.errorMessage,
+      providerRequestId: evidence.providerRequestId,
+      providerResponseReceivedAt: responseReceivedAt,
+      acceptanceState,
+      channelStatusAfterFailure,
+      classificationConfidence: 'CONFIRMED',
+    };
+
+    if (failure.ambiguous || acceptanceState === 'AMBIGUOUS') {
+      await finalizeUnknown(prisma, item, now(), attemptCount, failure, diagnosticFields);
       await completeDispatchItemAttempt(prisma, attemptId, {
         completedAt: now(),
         outcome: 'UNKNOWN_PROVIDER_STATE',
@@ -1611,13 +1693,16 @@ async function runRealSend(input: {
         ambiguous: true,
         protectionDecision: 'UNKNOWN_PROVIDER_STATE',
       });
+      await reconcileDispatchChannelCounters(prisma, dispatch.id);
       await recomputeDispatchProgress(prisma, dispatch, now());
       return { action: 'UNKNOWN_PROVIDER_STATE', send: true, dispatchItemId: item.id };
     }
 
     if (
       (failure.category === 'PROVIDER_RATE_LIMIT' && policy.pauseOn429) ||
-      (failure.category === 'AUTHENTICATION_ERROR' && policy.pauseOn403)
+      ((failure.category === 'AUTHENTICATION_ERROR' ||
+        failure.category === 'PROVIDER_AUTH_ERROR') &&
+        policy.pauseOn403)
     ) {
       const nextConsecutiveErrors = (selectedChannel.consecutiveErrors ?? 0) + 1;
       const shouldPause =
@@ -1640,13 +1725,19 @@ async function runRealSend(input: {
         });
       }
 
-      const failoverCandidate = await resolveEffectiveChannel({
-        prisma,
-        dispatch,
-        item: { ...item, dispatchChannelId: selectedChannel.id },
-        now,
-        excludeCurrent: true,
-      });
+      const canFailover =
+        !item.providerMessageId &&
+        acceptanceState === 'NOT_ACCEPTED';
+
+      const failoverCandidate = canFailover
+        ? await resolveEffectiveChannel({
+            prisma,
+            dispatch,
+            item: { ...item, dispatchChannelId: selectedChannel.id },
+            now,
+            excludeCurrent: true,
+          })
+        : { effectiveChannel: null };
 
       const resumeAt = new Date(now().getTime() + CHANNEL_FAILOVER_RETRY_DELAY_MS);
 
@@ -1666,7 +1757,8 @@ async function runRealSend(input: {
             lockToken: null,
             lockExpiresAt: null,
             lastQueueError: `CHANNEL_COOLDOWN_${failure.errorCode}`,
-          },
+            ...diagnosticFields,
+          } as never,
         });
       } else {
         await prisma.dispatchItem.update({
@@ -1678,7 +1770,8 @@ async function runRealSend(input: {
             lockToken: null,
             lockExpiresAt: null,
             lastQueueError: `CHANNEL_COOLDOWN_NO_FAILOVER_${failure.errorCode}`,
-          },
+            ...diagnosticFields,
+          } as never,
         });
       }
       await recomputeDispatchProgress(prisma, dispatch, now());
@@ -1702,6 +1795,61 @@ async function runRealSend(input: {
       };
     }
 
+    // Queda de instancia confirmada (NOT_ACCEPTED): failover seguro se houver outra conta
+    if (
+      disconnectLike &&
+      acceptanceState === 'NOT_ACCEPTED' &&
+      !item.providerMessageId
+    ) {
+      const failoverCandidate = await resolveEffectiveChannel({
+        prisma,
+        dispatch,
+        item: { ...item, dispatchChannelId: selectedChannel.id },
+        now,
+        excludeCurrent: true,
+      });
+      if (failoverCandidate.effectiveChannel) {
+        const resumeAt = new Date(now().getTime() + CHANNEL_FAILOVER_RETRY_DELAY_MS);
+        await prisma.dispatchItem.update({
+          where: { id: item.id },
+          data: {
+            status: DispatchItemStatus.SCHEDULED,
+            scheduledAt: resumeAt,
+            dispatchChannelId: failoverCandidate.effectiveChannel.id,
+            channelAccountId: failoverCandidate.effectiveChannel.channelAccountId,
+            protectionDelaySeconds: null,
+            protectionScheduledAt: null,
+            protectionRuleApplied: null,
+            protectionSequenceNumber: null,
+            lockedAt: null,
+            lockToken: null,
+            lockExpiresAt: null,
+            lastQueueError: `CHANNEL_DISCONNECT_FAILOVER_${failure.errorCode}`,
+            ...diagnosticFields,
+          } as never,
+        });
+        await completeDispatchItemAttempt(prisma, attemptId, {
+          completedAt: now(),
+          outcome: 'RETRY_SCHEDULED',
+          providerStatus: null,
+          providerMessageId: null,
+          httpStatus: failure.httpStatus ?? null,
+          errorCategory: mapEvolutionCategoryToErrorCategory(failure.category),
+          errorCode: failure.errorCode,
+          errorMessage: failure.errorMessage,
+          ambiguous: false,
+          protectionDecision: 'FAILOVER_AFTER_DISCONNECT',
+        });
+        await recomputeDispatchProgress(prisma, dispatch, now());
+        return {
+          action: 'DEFERRED_CHANNEL_COOLDOWN',
+          send: true,
+          dispatchItemId: item.id,
+          delayUntil: resumeAt,
+        };
+      }
+    }
+
     const isTransient =
       failure.category === 'TRANSIENT_NETWORK' ||
       failure.category === 'PROVIDER_UNAVAILABLE' ||
@@ -1709,7 +1857,15 @@ async function runRealSend(input: {
 
     if (isTransient && !isDispatchRetryExhausted(attemptCount, maxAttempts)) {
       const nextRetryAt = computeDispatchNextRetryAt(now(), attemptCount);
-      await finalizeRetryScheduled(prisma, item, now(), attemptCount, nextRetryAt, failure);
+      await finalizeRetryScheduled(
+        prisma,
+        item,
+        now(),
+        attemptCount,
+        nextRetryAt,
+        failure,
+        diagnosticFields,
+      );
       await completeDispatchItemAttempt(prisma, attemptId, {
         completedAt: now(),
         outcome: 'RETRY_SCHEDULED',
@@ -1738,6 +1894,7 @@ async function runRealSend(input: {
       mapEvolutionCategoryToErrorCategory(failure.category),
       failure.errorMessage,
       attemptCount,
+      diagnosticFields,
     );
     await completeDispatchItemAttempt(prisma, attemptId, {
       completedAt: now(),
@@ -1750,6 +1907,13 @@ async function runRealSend(input: {
       errorMessage: failure.errorMessage,
       ambiguous: false,
     });
+    await prisma.dispatchChannel.updateMany({
+      where: { id: selectedChannel.id },
+      data: {
+        failedItems: { increment: 1 },
+      },
+    });
+    await reconcileDispatchChannelCounters(prisma, dispatch.id);
     await recomputeDispatchProgress(prisma, dispatch, now());
     return { action: 'FAILED', send: true, dispatchItemId: item.id };
   } catch (error) {
@@ -2014,6 +2178,7 @@ async function finalizeFailed(
   errorCategory: DispatchItemErrorCategory,
   errorMessage: string,
   attemptCount?: number,
+  diagnostics?: Record<string, unknown>,
 ): Promise<void> {
   await prisma.dispatchItem.update({
     where: { id: item.id },
@@ -2028,7 +2193,8 @@ async function finalizeFailed(
       lockedAt: null,
       lockToken: null,
       lockExpiresAt: null,
-    },
+      ...(diagnostics ?? {}),
+    } as never,
   });
 }
 
@@ -2054,10 +2220,11 @@ async function finalizeSent(
       errorCategory: null,
       errorCode: null,
       errorMessage: null,
+      acceptanceState: 'ACCEPTED',
       lockedAt: null,
       lockToken: null,
       lockExpiresAt: null,
-    },
+    } as never,
   });
 }
 
@@ -2068,6 +2235,7 @@ async function finalizeRetryScheduled(
   attemptCount: number,
   nextRetryAt: Date,
   failure: { errorCode: string; errorMessage: string; category: EvolutionSendCategory },
+  diagnostics?: Record<string, unknown>,
 ): Promise<void> {
   await prisma.dispatchItem.update({
     where: { id: item.id },
@@ -2082,7 +2250,8 @@ async function finalizeRetryScheduled(
       lockedAt: null,
       lockToken: null,
       lockExpiresAt: null,
-    },
+      ...(diagnostics ?? {}),
+    } as never,
   });
 }
 
@@ -2092,6 +2261,7 @@ async function finalizeUnknown(
   now: Date,
   attemptCount: number,
   failure: { errorCode: string; errorMessage: string },
+  diagnostics?: Record<string, unknown>,
 ): Promise<void> {
   await prisma.dispatchItem.update({
     where: { id: item.id },
@@ -2106,8 +2276,45 @@ async function finalizeUnknown(
       lockedAt: null,
       lockToken: null,
       lockExpiresAt: null,
-    },
+      ...(diagnostics ?? {}),
+    } as never,
   });
+}
+
+/** Reconcilia sentItems/failedItems do DispatchChannel a partir dos DispatchItems. */
+export async function reconcileDispatchChannelCounters(
+  prisma: PrismaClient,
+  dispatchId: string,
+): Promise<void> {
+  const channels = await prisma.dispatchChannel.findMany({
+    where: { dispatchId },
+    select: { id: true },
+  });
+  for (const channel of channels) {
+    const grouped = await prisma.dispatchItem.groupBy({
+      by: ['status'],
+      where: { dispatchId, dispatchChannelId: channel.id },
+      _count: { _all: true },
+    } as never);
+    let sent = 0;
+    let failed = 0;
+    for (const row of grouped as Array<{ status: string; _count: { _all: number } }>) {
+      if (
+        row.status === DispatchItemStatus.SENT ||
+        row.status === DispatchItemStatus.DELIVERED ||
+        row.status === DispatchItemStatus.READ
+      ) {
+        sent += row._count._all;
+      }
+      if (row.status === DispatchItemStatus.FAILED) {
+        failed += row._count._all;
+      }
+    }
+    await prisma.dispatchChannel.updateMany({
+      where: { id: channel.id },
+      data: { sentItems: sent, failedItems: failed },
+    });
+  }
 }
 
 async function upsertChannelUsageDaily(
@@ -2598,12 +2805,25 @@ export function mapEvolutionCategoryToErrorCategory(
       return DispatchItemErrorCategory.PROVIDER_UNAVAILABLE;
     case 'PROVIDER_TIMEOUT':
       return DispatchItemErrorCategory.PROVIDER_TIMEOUT;
+    case 'PROVIDER_BAD_REQUEST':
+      return DispatchItemErrorCategory.PROVIDER_BAD_REQUEST;
+    case 'PROVIDER_CONNECTION_CLOSED':
+      return DispatchItemErrorCategory.PROVIDER_CONNECTION_CLOSED;
+    case 'PROVIDER_AUTH_ERROR':
     case 'AUTHENTICATION_ERROR':
       return DispatchItemErrorCategory.AUTHENTICATION_ERROR;
+    case 'CHANNEL_DISCONNECTED':
+      return DispatchItemErrorCategory.CHANNEL_DISCONNECTED;
+    case 'CHANNEL_NOT_FOUND':
+      return DispatchItemErrorCategory.CHANNEL_NOT_FOUND;
+    case 'CHANNEL_UNAVAILABLE':
+      return DispatchItemErrorCategory.CHANNEL_UNAVAILABLE;
     case 'INVALID_DESTINATION':
       return DispatchItemErrorCategory.INVALID_DESTINATION;
     case 'CONTENT_REJECTED':
       return DispatchItemErrorCategory.CONTENT_REJECTED;
+    case 'UNKNOWN_PROVIDER_STATE':
+      return DispatchItemErrorCategory.UNKNOWN;
     default:
       return DispatchItemErrorCategory.UNKNOWN;
   }

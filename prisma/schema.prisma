@@ -155,7 +155,11 @@ enum DispatchItemErrorCategory {
   PROVIDER_RATE_LIMIT
   PROVIDER_UNAVAILABLE
   PROVIDER_TIMEOUT
+  PROVIDER_BAD_REQUEST
+  PROVIDER_CONNECTION_CLOSED
   CHANNEL_DISCONNECTED
+  CHANNEL_NOT_FOUND
+  CHANNEL_UNAVAILABLE
   AUTHENTICATION_ERROR
   INVALID_DESTINATION
   CONTENT_REJECTED
@@ -473,6 +477,8 @@ model ChannelAccount {
    */
   accountOperationalSince DateTime?
   verifiedAccountAgeSource String?
+  disconnectedAt    DateTime?
+  lastConnectionError String?
   dispatchPlans     DispatchPlan[]
   dispatchPlanChannels DispatchPlanChannel[]
   dispatches        Dispatch[]
@@ -907,6 +913,16 @@ model DispatchItem {
   validationSource        String?
   validationCacheHit      Boolean?
   destinationValidationAttempts Int @default(0)
+  providerHttpStatus      Int?
+  providerErrorCode       String?
+  providerErrorType       String?
+  providerErrorMessageSafe String?
+  providerRequestId       String?
+  providerResponseReceivedAt DateTime?
+  acceptanceState         String?
+  channelStatusAtSend     String?
+  channelStatusAfterFailure String?
+  classificationConfidence String?
   metadata                Json?
   organization            Organization               @relation(fields: [organizationId], references: [id])
   campaign                Campaign                   @relation(fields: [campaignId], references: [id])

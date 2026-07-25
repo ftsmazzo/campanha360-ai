@@ -388,6 +388,16 @@ function createRealSendHarness(options: {
           data.consecutiveErrors =
             current + Number((data.consecutiveErrors as { increment: number }).increment);
         }
+        if (
+          data.failedItems &&
+          typeof data.failedItems === 'object' &&
+          data.failedItems !== null &&
+          'increment' in (data.failedItems as object)
+        ) {
+          const current = Number(channels[idx]!.failedItems ?? 0);
+          data.failedItems =
+            current + Number((data.failedItems as { increment: number }).increment);
+        }
         channels[idx] = { ...channels[idx], ...data };
         dispatchChannelUpdates.push({ id: args.where.id, data });
         return { count: 1 };
@@ -430,16 +440,17 @@ function createRealSendHarness(options: {
       findUnique: async (args: { where: { id: string } }) => {
         const channel = channels.find((c) => c.channelAccountId === args.where.id);
         const account = channel?.channelAccount as
-          | { externalAccountId?: string; createdAt?: Date }
+          | { externalAccountId?: string; createdAt?: Date; status?: string }
           | undefined;
         return {
           externalAccountId: account?.externalAccountId ?? 'instance-1',
           createdAt: account?.createdAt ?? new Date('2020-01-01T00:00:00.000Z'),
           accountOperationalSince: null,
           verifiedAccountAgeSource: null,
-          status: 'CONNECTED',
+          status: account?.status ?? 'CONNECTED',
         };
       },
+      updateMany: async () => ({ count: 1 }),
     },
     contact: {
       findFirst: async () => (contact ? { ...contact } : null),

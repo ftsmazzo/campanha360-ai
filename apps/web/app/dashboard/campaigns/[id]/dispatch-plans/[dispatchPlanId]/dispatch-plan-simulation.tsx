@@ -30,15 +30,26 @@ export function DispatchPlanSimulation({
   onPlanUpdated,
 }: Props) {
   const existing = plan.simulationSnapshot;
+  const policy = plan.protectionPolicySnapshot;
   const [messagesPerMinute, setMessagesPerMinute] = useState(4);
-  const [minDelaySeconds, setMinDelaySeconds] = useState(10);
-  const [maxDelaySeconds, setMaxDelaySeconds] = useState(20);
-  const [batchSize, setBatchSize] = useState(20);
+  const [minDelaySeconds, setMinDelaySeconds] = useState(
+    policy?.minDelaySeconds ?? 10,
+  );
+  const [maxDelaySeconds, setMaxDelaySeconds] = useState(
+    policy?.maxDelaySeconds ?? 20,
+  );
+  const [batchSize, setBatchSize] = useState(policy?.batchSize ?? 20);
   const [pauseBetweenBatchesSeconds, setPauseBetweenBatchesSeconds] =
-    useState(120);
-  const [timezone, setTimezone] = useState('America/Sao_Paulo');
-  const [allowedStartTime, setAllowedStartTime] = useState('08:00');
-  const [allowedEndTime, setAllowedEndTime] = useState('20:00');
+    useState(policy?.pauseBetweenBatchesSeconds ?? 120);
+  const [timezone, setTimezone] = useState(
+    policy?.timezone ?? 'America/Sao_Paulo',
+  );
+  const [allowedStartTime, setAllowedStartTime] = useState(
+    policy?.allowedStartTime ?? '08:00',
+  );
+  const [allowedEndTime, setAllowedEndTime] = useState(
+    policy?.allowedEndTime ?? '20:00',
+  );
   const [allowedDays, setAllowedDays] = useState<number[]>(DEFAULT_DAYS);
   const [plannedStartAt, setPlannedStartAt] = useState('');
   const [loading, setLoading] = useState(false);
@@ -46,24 +57,40 @@ export function DispatchPlanSimulation({
   const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!existing) return;
-    setMessagesPerMinute(existing.configuration.requestedMessagesPerMinute);
-    setMinDelaySeconds(existing.configuration.minDelaySeconds);
-    setMaxDelaySeconds(existing.configuration.maxDelaySeconds);
-    setBatchSize(existing.configuration.batchSize);
-    setPauseBetweenBatchesSeconds(
-      existing.configuration.pauseBetweenBatchesSeconds,
-    );
-    setTimezone(existing.configuration.timezone);
-    setAllowedStartTime(existing.configuration.allowedStartTime);
-    setAllowedEndTime(existing.configuration.allowedEndTime);
-    setAllowedDays(existing.configuration.allowedDays);
-    setPlannedStartAt(
-      existing.configuration.plannedStartAt
-        ? existing.configuration.plannedStartAt.slice(0, 16)
-        : '',
-    );
-  }, [existing]);
+    if (existing) {
+      setMessagesPerMinute(existing.configuration.requestedMessagesPerMinute);
+      setMinDelaySeconds(existing.configuration.minDelaySeconds);
+      setMaxDelaySeconds(existing.configuration.maxDelaySeconds);
+      setBatchSize(existing.configuration.batchSize);
+      setPauseBetweenBatchesSeconds(
+        existing.configuration.pauseBetweenBatchesSeconds,
+      );
+      setTimezone(existing.configuration.timezone);
+      setAllowedStartTime(existing.configuration.allowedStartTime);
+      setAllowedEndTime(existing.configuration.allowedEndTime);
+      setAllowedDays(existing.configuration.allowedDays ?? DEFAULT_DAYS);
+      setPlannedStartAt(
+        existing.configuration.plannedStartAt
+          ? existing.configuration.plannedStartAt.slice(0, 16)
+          : '',
+      );
+      return;
+    }
+    if (policy) {
+      const avg =
+        (policy.minDelaySeconds + policy.maxDelaySeconds) / 2;
+      setMinDelaySeconds(policy.minDelaySeconds);
+      setMaxDelaySeconds(policy.maxDelaySeconds);
+      setBatchSize(policy.batchSize);
+      setPauseBetweenBatchesSeconds(policy.pauseBetweenBatchesSeconds);
+      setTimezone(policy.timezone);
+      setAllowedStartTime(policy.allowedStartTime);
+      setAllowedEndTime(policy.allowedEndTime);
+      setMessagesPerMinute(
+        Math.max(1, Math.min(20, Math.round(60 / avg))),
+      );
+    }
+  }, [existing, policy]);
 
   const canSimulate =
     canWrite &&

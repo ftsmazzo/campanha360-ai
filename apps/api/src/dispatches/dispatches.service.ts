@@ -41,8 +41,12 @@ import {
   maskProviderMessageId,
 } from './dispatch-prepare.util';
 import {
+  buildLegacyUnconfirmedUpdate,
   evaluateManualRetryEligibility,
+  extractFullSendProtectionPolicy,
   isDispatchSendEnabled,
+  resolveProtectionThroughputDisplay,
+  shouldMarkUnconfirmedLegacyContentRejected,
 } from '@campanha360/shared';
 import { CreateDispatchDto } from './dto/create-dispatch.dto';
 import { ListDispatchItemsQueryDto } from './dto/list-dispatch-items-query.dto';
@@ -523,9 +527,94 @@ export class DispatchesService {
       orderBy: [{ priority: 'asc' }, { weight: 'desc' }],
     });
 
+    // 09.6.4 — banco e fonte da verdade: reconcilia contadores por canal
+    for (const channel of channels) {
+      const byStatus = await this.prisma.dispatchItem.groupBy({
+        by: ['status'],
+        where: {
+          dispatchId: dispatch.id,
+          dispatchChannelId: channel.id,
+        },
+        _count: { _all: true },
+      });
+      let sent = 0;
+      let failed = 0;
+      for (const row of byStatus) {
+        if (
+          row.status === 'SENT' ||
+          row.status === 'DELIVERED' ||
+          row.status === 'READ'
+        ) {
+          sent += row._count._all;
+        }
+        if (row.status === 'FAILED') {
+          failed += row._count._all;
+        }
+      }
+      if (channel.sentItems !== sent || channel.failedItems !== failed) {
+        await this.prisma.dispatchChannel.update({
+          where: { id: channel.id },
+          data: { sentItems: sent, failedItems: failed },
+        });
+        channel.sentItems = sent;
+        channel.failedItems = failed;
+      }
+    }
+
+    const policy = extractFullSendProtectionPolicy(dispatch.approvalSnapshot);
+    const configSnap = (dispatch.configurationSnapshot ?? {}) as {
+      requestedMessagesPerMinute?: number | null;
+      minDelaySeconds?: number | null;
+      maxDelaySeconds?: number | null;
+    };
+    const throughputDisplay = resolveProtectionThroughputDisplay({
+      requestedMessagesPerMinute:
+        configSnap.requestedMessagesPerMinute ?? null,
+      minDelaySeconds:
+        configSnap.minDelaySeconds ?? policy.minDelaySeconds ?? null,
+      maxDelaySeconds:
+        configSnap.maxDelaySeconds ?? policy.maxDelaySeconds ?? null,
+      instanceCount: Math.max(1, channels.length),
+    });
+
+    // 09.6.4 — marca CONTENT_REJECTED legados sem evidencia (nao inventa desconexao)
+    const legacyFailed = await this.prisma.dispatchItem.findMany({
+      where: {
+        dispatchId: dispatch.id,
+        errorCategory: 'CONTENT_REJECTED',
+        errorCode: { in: ['HTTP_400', 'HTTP_422'] },
+        OR: [
+          { classificationConfidence: null },
+          {
+            classificationConfidence: {
+              not: 'UNCONFIRMED_LEGACY_CLASSIFICATION',
+            },
+          },
+        ],
+      },
+      select: {
+        id: true,
+        errorCategory: true,
+        errorCode: true,
+        providerErrorMessageSafe: true,
+        providerErrorCode: true,
+        classificationConfidence: true,
+      },
+      take: 50,
+    });
+    for (const row of legacyFailed) {
+      if (shouldMarkUnconfirmedLegacyContentRejected(row)) {
+        await this.prisma.dispatchItem.update({
+          where: { id: row.id },
+          data: buildLegacyUnconfirmedUpdate() as never,
+        });
+      }
+    }
+
     return {
       ...dispatch,
       channels,
+      throughputDisplay,
       allowedActions: buildDispatchAllowedActionsForPrepare({
         role: membership.role,
         status: dispatch.status,
@@ -1261,6 +1350,15 @@ export class DispatchesService {
           destinationValidatedAt: true,
           validationSource: true,
           validationCacheHit: true,
+          providerHttpStatus: true,
+          providerErrorCode: true,
+          providerErrorType: true,
+          providerErrorMessageSafe: true,
+          providerRequestId: true,
+          acceptanceState: true,
+          channelStatusAtSend: true,
+          channelStatusAfterFailure: true,
+          classificationConfidence: true,
           createdAt: true,
           dispatchChannel: {
             select: {
@@ -1318,6 +1416,14 @@ export class DispatchesService {
           destinationValidatedAt: item.destinationValidatedAt,
           validationSource: item.validationSource,
           validationCacheHit: item.validationCacheHit,
+          providerHttpStatus: item.providerHttpStatus,
+          providerErrorCode: item.providerErrorCode,
+          providerErrorType: item.providerErrorType,
+          providerErrorMessageSafe: item.providerErrorMessageSafe,
+          acceptanceState: item.acceptanceState,
+          channelStatusAtSend: item.channelStatusAtSend,
+          channelStatusAfterFailure: item.channelStatusAfterFailure,
+          classificationConfidence: item.classificationConfidence,
           dispatchChannel: item.dispatchChannel
             ? {
                 id: item.dispatchChannel.id,
@@ -1417,6 +1523,16 @@ export class DispatchesService {
         destinationValidatedAt: true,
         validationSource: true,
         validationCacheHit: true,
+        providerHttpStatus: true,
+        providerErrorCode: true,
+        providerErrorType: true,
+        providerErrorMessageSafe: true,
+        providerRequestId: true,
+        providerResponseReceivedAt: true,
+        acceptanceState: true,
+        channelStatusAtSend: true,
+        channelStatusAfterFailure: true,
+        classificationConfidence: true,
         createdAt: true,
         updatedAt: true,
         dispatchPlanRecipient: {
@@ -1511,6 +1627,16 @@ export class DispatchesService {
       destinationValidatedAt: item.destinationValidatedAt,
       validationSource: item.validationSource,
       validationCacheHit: item.validationCacheHit,
+      providerHttpStatus: item.providerHttpStatus,
+      providerErrorCode: item.providerErrorCode,
+      providerErrorType: item.providerErrorType,
+      providerErrorMessageSafe: item.providerErrorMessageSafe,
+      providerRequestId: item.providerRequestId,
+      providerResponseReceivedAt: item.providerResponseReceivedAt,
+      acceptanceState: item.acceptanceState,
+      channelStatusAtSend: item.channelStatusAtSend,
+      channelStatusAfterFailure: item.channelStatusAfterFailure,
+      classificationConfidence: item.classificationConfidence,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
       dispatchPlanRecipient: item.dispatchPlanRecipient,

@@ -1151,6 +1151,15 @@ export default function DispatchDetailPage() {
                     </div>
                   </dl>
                 ) : null}
+                {recovery && recovery.summary.manualReview > 0 ? (
+                  <p className="mt-3 rounded-md border border-[#e6d9a8] bg-[#fff8e1] px-3 py-2 text-xs text-[#6b5a1e]">
+                    Revisao manual inclui falhas nao retryable automaticamente
+                    (ex.: CONTENT_REJECTED, PROVIDER_BAD_REQUEST, UNKNOWN). Abra
+                    o item para ver categoria, HTTP, certeza de aceite e se retry
+                    e permitido. UNKNOWN e CONTENT_REJECTED exigem resolucao
+                    explicita — sem retry cego.
+                  </p>
+                ) : null}
                 {showRecoverConfirm ? (
                   <div className="mt-4 rounded-md border border-[#1e3a5f] bg-[#f7f9fc] p-3">
                     <p className="text-sm text-[#24382b]">
@@ -1701,11 +1710,44 @@ export default function DispatchDetailPage() {
               <h3 className="font-semibold text-[#151515]">Configuracao</h3>
               <dl className="mt-3 grid gap-3 text-sm md:grid-cols-2">
                 <div>
-                  <dt className="text-[#65655f]">Velocidade</dt>
+                  <dt className="text-[#65655f]">Velocidade solicitada</dt>
                   <dd>
-                    solicitada {configuration?.requestedMessagesPerMinute ?? '—'}{' '}
-                    · efetiva{' '}
-                    {configuration?.effectiveMessagesPerMinute ?? '—'} msg/min
+                    {dispatch.throughputDisplay
+                      ?.requestedMessagesPerMinute ??
+                      configuration?.requestedMessagesPerMinute ??
+                      '—'}{' '}
+                    msg/min
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">
+                    Teto pelas blindagens (min delay)
+                  </dt>
+                  <dd>
+                    {dispatch.throughputDisplay
+                      ?.protectionCeilingMessagesPerMinute ?? '—'}{' '}
+                    msg/min
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">Estimativa media</dt>
+                  <dd>
+                    {dispatch.throughputDisplay
+                      ?.averageEstimateMessagesPerMinute ??
+                      dispatch.throughputDisplay?.effectiveMessagesPerMinute ??
+                      '—'}{' '}
+                    msg/min
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-[#65655f]">
+                    Capacidade agregada ({dispatch.throughputDisplay?.instanceCount ?? 1}{' '}
+                    inst.)
+                  </dt>
+                  <dd>
+                    {dispatch.throughputDisplay
+                      ?.aggregateCapacityMessagesPerMinute ?? '—'}{' '}
+                    msg/min
                   </dd>
                 </div>
                 <div>
@@ -1737,6 +1779,11 @@ export default function DispatchDetailPage() {
                   </dd>
                 </div>
               </dl>
+              <p className="mt-2 text-xs text-[#65655f]">
+                A velocidade efetiva respeita o intervalo do perfil (ex.:
+                Conservador 30–60s ≈ 1,33 msg/min por instancia). Nao use a
+                solicitada isolada como capacidade real.
+              </p>
             </section>
 
             {(dispatch.status === 'READY' || dispatch.totalItems > 0) && (
@@ -1984,6 +2031,61 @@ export default function DispatchDetailPage() {
                                 : selectedItem.validationCacheHit
                                   ? 'sim'
                                   : 'nao'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">HTTP status</dt>
+                            <dd>{selectedItem.providerHttpStatus ?? '—'}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">
+                              Codigo seguro Evolution
+                            </dt>
+                            <dd className="font-mono text-xs">
+                              {selectedItem.providerErrorCode ?? '—'}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt className="text-[#65655f]">Mensagem segura</dt>
+                            <dd className="mt-1 rounded bg-[#f7f6f1] p-2 text-xs">
+                              {selectedItem.providerErrorMessageSafe ??
+                                selectedItem.errorMessage ??
+                                '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">
+                              Instancia no envio
+                            </dt>
+                            <dd>{selectedItem.channelStatusAtSend ?? '—'}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">
+                              Instancia apos falha
+                            </dt>
+                            <dd>
+                              {selectedItem.channelStatusAfterFailure ?? '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Certeza de aceite</dt>
+                            <dd>{selectedItem.acceptanceState ?? '—'}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Confianca</dt>
+                            <dd>
+                              {selectedItem.classificationConfidence ?? '—'}
+                            </dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-[#65655f]">Retry permitido</dt>
+                            <dd>
+                              {selectedItem.allowedActions?.canRetryManually
+                                ? 'sim'
+                                : 'nao'}
+                              {selectedItem.allowedActions?.retryBlockedReason
+                                ? ` (${selectedItem.allowedActions.retryBlockedReason})`
+                                : ''}
                             </dd>
                           </div>
                           <div>

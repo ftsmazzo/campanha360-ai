@@ -141,13 +141,42 @@ describe('sendEvolutionText', () => {
     assert.equal(called, false);
   });
 
+  it('HTTP 400: classifica por corpo (nao CONTENT_REJECTED generico)', async () => {
+    const fetchImpl = mockFetch(() =>
+      jsonResponse(400, { message: 'Bad Request' }),
+    );
+    const result = await sendEvolutionText(baseInput({ fetchImpl }));
+    assert.equal(result.success, false);
+    if (!result.success) {
+      assert.equal(result.category, 'PROVIDER_BAD_REQUEST');
+      assert.equal(result.httpStatus, 400);
+      assert.equal(result.ambiguous, false);
+    }
+  });
+
+  it('HTTP 400 instance disconnected → CHANNEL_DISCONNECTED', async () => {
+    const fetchImpl = mockFetch(() =>
+      jsonResponse(400, { message: 'Instance disconnected' }),
+    );
+    const result = await sendEvolutionText(baseInput({ fetchImpl }));
+    assert.equal(result.success, false);
+    if (!result.success) {
+      assert.equal(result.category, 'CHANNEL_DISCONNECTED');
+    }
+  });
+
   it('nunca inclui apiKey/destino/conteudo nas mensagens de erro', async () => {
-    const fetchImpl = mockFetch(() => jsonResponse(400, { message: 'bad request with +5511999990001' }));
+    const fetchImpl = mockFetch(() =>
+      jsonResponse(400, { message: 'bad request with +5511999990001' }),
+    );
     const result = await sendEvolutionText(baseInput({ fetchImpl }));
     assert.equal(result.success, false);
     if (!result.success) {
       assert.ok(!result.errorMessage.includes('5511999990001'));
       assert.ok(!result.errorMessage.includes('secret-key'));
+      assert.ok(
+        !(result.evidence.providerErrorMessageSafe ?? '').includes('5511999990001'),
+      );
     }
   });
 });

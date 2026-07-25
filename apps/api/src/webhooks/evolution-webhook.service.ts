@@ -183,7 +183,21 @@ export class EvolutionWebhookService {
     if (nextStatus !== account.status) {
       await this.prisma.channelAccount.update({
         where: { id: account.id },
-        data: { status: nextStatus },
+        data: {
+          status: nextStatus,
+          ...(nextStatus === ChannelAccountStatus.DISCONNECTED ||
+          nextStatus === ChannelAccountStatus.ERROR
+            ? {
+                disconnectedAt: new Date(),
+                lastConnectionError: evolutionState ?? 'connection.update',
+              }
+            : nextStatus === ChannelAccountStatus.CONNECTED
+              ? {
+                  disconnectedAt: null,
+                  lastConnectionError: null,
+                }
+              : {}),
+        } as never,
       });
     }
 

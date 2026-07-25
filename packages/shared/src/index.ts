@@ -26,4 +26,7 @@ export * from './dispatch-repetition.util';
 export * from './opt-out-keywords.util';
 export * from './evolution-validate-number.client';
 export * from './whatsapp-validation.util';
+export * from './evolution-error-classification.util';
+export * from './evolution-connection-check.client';
+export * from './dispatch-legacy-classification.util';
 export * from './evolution-send.client';

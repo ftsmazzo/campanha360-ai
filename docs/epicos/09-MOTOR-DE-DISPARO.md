@@ -2830,3 +2830,20 @@ Nao iniciar 09.7 ate homologar 09.6.2. Nao ha garantia anti-ban da plataforma.
 Cache: `DestinationWhatsAppValidationCache` por `organizationId + destinationHash` (TTL VALID 7d / INVALID 24h / UNKNOWN ~10min). Contadores: `validationPendingItems`, `validDestinationItems`, `invalidDestinationItems`, `validationErrorItems`.
 
 `DISPATCH_SEND_ENABLED` permanece default `false`. Nao iniciar **09.7**.
+
+### Correcao obrigatoria 09.6.4 — Diagnostico verdadeiro de falhas Evolution
+
+**Status: implementada (codigo + testes). Homologacao operacional pendente.**
+
+Regras:
+
+- HTTP status isolado nao define categoria. CONTENT_REJECTED exige evidencia explicita de payload/conteudo.
+- HTTP 400 generico ? PROVIDER_BAD_REQUEST; instance disconnected / connection closed ? CHANNEL_DISCONNECTED / PROVIDER_CONNECTION_CLOSED.
+- Resposta Evolution sanitizada persistida (providerHttpStatus, providerErrorCode, providerErrorMessageSafe, acceptanceState, etc.).
+- Queda de instancia: atualiza ChannelAccount + checagem connectionState apos erro; failover so com aceite NOT_ACCEPTED e sem providerMessageId.
+- UNKNOWN / ambiguidade: sem retry automatico e sem failover.
+- Contadores DispatchChannel.sentItems/failedItems reconciliados a partir de DispatchItem (banco = verdade).
+- Velocidade: UI mostra solicitada / teto (60/minDelay) / media (60/avgDelay) / capacidade agregada — nao exibe efetiva 4 sob Conservador 30–60s.
+- Itens legados CONTENT_REJECTED+HTTP_400 sem evidencia ? UNCONFIRMED_LEGACY_CLASSIFICATION (nao inventa desconexao retroativa).
+
+Validacao WhatsApp (09.6.3) permanece intacta. DISPATCH_SEND_ENABLED default false. Nao iniciar 09.7.

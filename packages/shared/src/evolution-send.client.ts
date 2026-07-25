@@ -1,24 +1,25 @@
 /**
- * Cliente Evolution "Nest-free" para envio de texto (subetapa 09.4).
- * Usa fetch nativo, sem dependencia de @nestjs/*, para ser reutilizavel
- * pelo Worker (apps/worker) sem acoplar ao framework da API.
+ * Cliente Evolution "Nest-free" para envio de texto (subetapa 09.4 / 09.6.4).
+ * Usa fetch nativo, sem dependencia de @nestjs/*.
  *
  * Regras de seguranca:
  * - NUNCA loga apiKey, destino/telefone ou conteudo da mensagem.
- * - Mensagens de erro retornadas sao genericas (nao ecoam corpo bruto do
- *   provider, que poderia conter o numero de destino).
+ * - Mensagens de erro sao sanitizadas (sem ecoar corpo bruto com telefone).
+ * - HTTP status isolado NAO define CONTENT_REJECTED (09.6.4).
  */
 
-export type EvolutionSendCategory =
-  | 'TRANSIENT_NETWORK'
-  | 'PROVIDER_RATE_LIMIT'
-  | 'PROVIDER_UNAVAILABLE'
-  | 'PROVIDER_TIMEOUT'
-  | 'AUTHENTICATION_ERROR'
-  | 'INVALID_DESTINATION'
-  | 'CONTENT_REJECTED'
-  | 'UNKNOWN_PROVIDER_STATE'
-  | 'UNKNOWN';
+import {
+  classifyEvolutionSendFailure,
+  type AcceptanceState,
+  type EvolutionSendCategory,
+  type SafeEvolutionErrorEvidence,
+} from './evolution-error-classification.util';
+
+export type {
+  AcceptanceState,
+  EvolutionSendCategory,
+  SafeEvolutionErrorEvidence,
+} from './evolution-error-classification.util';
 
 export type EvolutionSendInput = {
   baseUrl: string;
@@ -36,6 +37,7 @@ export type EvolutionSendSuccess = {
   providerMessageId: string | null;
   providerStatus: string | null;
   httpStatus: number;
+  acceptanceState: 'ACCEPTED';
 };
 
 export type EvolutionSendFailure = {
@@ -46,6 +48,8 @@ export type EvolutionSendFailure = {
   httpStatus: number | null;
   /** true quando a requisicao pode ter sido processada pelo provider mesmo sem resposta confirmada (timeout/abort). */
   ambiguous: boolean;
+  acceptanceState: AcceptanceState;
+  evidence: SafeEvolutionErrorEvidence;
 };
 
 export type EvolutionSendResult = EvolutionSendSuccess | EvolutionSendFailure;
@@ -73,84 +77,24 @@ function isAbortError(error: unknown): boolean {
   );
 }
 
-function failure(
-  category: EvolutionSendCategory,
-  errorCode: string,
-  errorMessage: string,
-  httpStatus: number | null,
-  ambiguous: boolean,
+function toFailure(
+  classified: ReturnType<typeof classifyEvolutionSendFailure>,
 ): EvolutionSendFailure {
-  return { success: false, category, errorCode, errorMessage, httpStatus, ambiguous };
-}
-
-function classifyHttpError(status: number): EvolutionSendFailure {
-  if (status === 429) {
-    return failure(
-      'PROVIDER_RATE_LIMIT',
-      'HTTP_429',
-      'Provider retornou limite de taxa (429)',
-      status,
-      false,
-    );
-  }
-  if (status === 401 || status === 403) {
-    return failure(
-      'AUTHENTICATION_ERROR',
-      `HTTP_${status}`,
-      'Provider recusou autenticacao',
-      status,
-      false,
-    );
-  }
-  if (status === 404) {
-    return failure(
-      'INVALID_DESTINATION',
-      'HTTP_404',
-      'Provider nao encontrou instancia/destino',
-      status,
-      false,
-    );
-  }
-  if (status === 400 || status === 422) {
-    return failure(
-      'CONTENT_REJECTED',
-      `HTTP_${status}`,
-      'Provider rejeitou o conteudo ou a requisicao',
-      status,
-      false,
-    );
-  }
-  if (status === 502 || status === 503 || status === 504) {
-    return failure(
-      'PROVIDER_UNAVAILABLE',
-      `HTTP_${status}`,
-      'Provider indisponivel temporariamente',
-      status,
-      false,
-    );
-  }
-  if (status >= 500) {
-    return failure(
-      'PROVIDER_UNAVAILABLE',
-      `HTTP_${status}`,
-      'Provider retornou erro interno',
-      status,
-      false,
-    );
-  }
-  return failure(
-    'UNKNOWN',
-    `HTTP_${status}`,
-    'Provider retornou erro nao mapeado',
-    status,
-    false,
-  );
+  return {
+    success: false,
+    category: classified.category,
+    errorCode: classified.errorCode,
+    errorMessage: classified.errorMessage,
+    httpStatus: classified.httpStatus,
+    ambiguous: classified.ambiguous,
+    acceptanceState: classified.acceptanceState,
+    evidence: classified.evidence,
+  };
 }
 
 /**
  * Envia texto via Evolution API (`POST /message/sendText/{instanceName}`).
- * Nunca lanca — sempre retorna um `EvolutionSendResult` normalizado para
- * que o Worker decida SENT/RETRY_SCHEDULED/FAILED/UNKNOWN_PROVIDER_STATE.
+ * Nunca lanca — sempre retorna um `EvolutionSendResult` normalizado.
  */
 export async function sendEvolutionText(
   input: EvolutionSendInput,
@@ -160,18 +104,67 @@ export async function sendEvolutionText(
   const destination = (input.destination || '').replace(/\D/g, '');
   const text = (input.text || '').trim();
   const fetchFn = input.fetchImpl ?? fetch;
+  const endpoint = 'message/sendText';
 
   if (!baseUrl) {
-    return failure('UNKNOWN', 'MISSING_BASE_URL', 'EVOLUTION_API_URL nao configurada', null, false);
+    return toFailure(
+      classifyEvolutionSendFailure({
+        httpStatus: null,
+        rawText: 'EVOLUTION_API_URL nao configurada',
+        endpoint,
+        instanceName,
+      }),
+    );
   }
   if (!instanceName) {
-    return failure('UNKNOWN', 'MISSING_INSTANCE', 'instanceName ausente', null, false);
+    return toFailure(
+      classifyEvolutionSendFailure({
+        httpStatus: null,
+        rawText: 'instanceName ausente',
+        endpoint,
+        instanceName: null,
+      }),
+    );
   }
   if (!destination) {
-    return failure('INVALID_DESTINATION', 'MISSING_DESTINATION', 'Destino invalido', null, false);
+    return {
+      success: false,
+      category: 'INVALID_DESTINATION',
+      errorCode: 'MISSING_DESTINATION',
+      errorMessage: 'Destino invalido',
+      httpStatus: null,
+      ambiguous: false,
+      acceptanceState: 'NOT_ACCEPTED',
+      evidence: {
+        httpStatus: null,
+        providerErrorCode: 'MISSING_DESTINATION',
+        providerErrorType: null,
+        providerErrorMessageSafe: 'Destino invalido',
+        providerRequestId: null,
+        endpoint,
+        instanceName,
+      },
+    };
   }
   if (!text) {
-    return failure('CONTENT_REJECTED', 'EMPTY_CONTENT', 'Conteudo vazio', null, false);
+    return {
+      success: false,
+      category: 'CONTENT_REJECTED',
+      errorCode: 'EMPTY_CONTENT',
+      errorMessage: 'Conteudo vazio',
+      httpStatus: null,
+      ambiguous: false,
+      acceptanceState: 'NOT_ACCEPTED',
+      evidence: {
+        httpStatus: null,
+        providerErrorCode: 'EMPTY_CONTENT',
+        providerErrorType: null,
+        providerErrorMessageSafe: 'Conteudo vazio',
+        providerRequestId: null,
+        endpoint,
+        instanceName,
+      },
+    };
   }
 
   const controller = new AbortController();
@@ -207,7 +200,15 @@ export async function sendEvolutionText(
     }
 
     if (!response.ok) {
-      return classifyHttpError(response.status);
+      return toFailure(
+        classifyEvolutionSendFailure({
+          httpStatus: response.status,
+          body: data,
+          rawText: raw,
+          endpoint,
+          instanceName,
+        }),
+      );
     }
 
     const record = asRecord(data) ?? {};
@@ -222,23 +223,27 @@ export async function sendEvolutionText(
       providerMessageId,
       providerStatus,
       httpStatus: response.status,
+      acceptanceState: 'ACCEPTED',
     };
   } catch (error) {
     if (isAbortError(error)) {
-      return failure(
-        'UNKNOWN_PROVIDER_STATE',
-        'TIMEOUT_OR_ABORT',
-        'Timeout/abort na chamada: envio pode ter sido processado pelo provider',
-        null,
-        true,
+      return toFailure(
+        classifyEvolutionSendFailure({
+          httpStatus: null,
+          aborted: true,
+          endpoint,
+          instanceName,
+        }),
       );
     }
-    return failure(
-      'TRANSIENT_NETWORK',
-      'NETWORK_ERROR',
-      'Falha de rede antes de resposta do provider',
-      null,
-      false,
+    const message = error instanceof Error ? error.message : 'NETWORK_ERROR';
+    return toFailure(
+      classifyEvolutionSendFailure({
+        httpStatus: null,
+        networkErrorMessage: message,
+        endpoint,
+        instanceName,
+      }),
     );
   } finally {
     clearTimeout(timeoutHandle);
