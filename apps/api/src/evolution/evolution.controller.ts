@@ -89,6 +89,43 @@ export class EvolutionController {
     return this.lifecycle.resetSession(user.id, campaignId, channelAccountId, body ?? {});
   }
 
+  @Post('platform-restriction')
+  recordPlatformRestriction(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('channelAccountId') channelAccountId: string,
+    @Body()
+    body: {
+      status: 'DEVICE_LINKING_RESTRICTED' | 'PLATFORM_RESTRICTED' | 'MANUAL_COOLDOWN_REQUIRED';
+      restrictedUntil?: string | null;
+      reasonSafe?: string | null;
+      confirm?: boolean;
+      source?: 'MANUAL' | 'PROVIDER_RESPONSE' | 'WEBHOOK' | 'UNKNOWN';
+    },
+  ) {
+    return this.lifecycle.recordPlatformRestriction(
+      user.id,
+      campaignId,
+      channelAccountId,
+      body ?? ({} as never),
+    );
+  }
+
+  @Post('clear-platform-restriction')
+  clearPlatformRestriction(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('channelAccountId') channelAccountId: string,
+    @Body() body: { confirm?: boolean; adminOverrideDeadline?: boolean },
+  ) {
+    return this.lifecycle.clearPlatformRestriction(
+      user.id,
+      campaignId,
+      channelAccountId,
+      body ?? {},
+    );
+  }
+
   @Get('qrcode')
   getQrCode(
     @CurrentUser() user: AuthUser,

@@ -18,10 +18,15 @@ import {
   isChannelOperationallyReady,
   isQrAllowedForRemoteState,
   mapRemoteStateToChannelAccountStatus,
+  normalizePlatformRestrictionStatus,
+  assertNoActivePlatformRestriction,
+  sanitizePlatformRestrictionReason,
   sanitizeLogText,
   type EvolutionInstanceStateSnapshot,
   type EvolutionRemoteConnectionState,
   type EvolutionSessionState,
+  type PlatformRestrictionSource,
+  type PlatformRestrictionStatus,
 } from '@campanha360/shared';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
@@ -65,6 +70,14 @@ const channelAccountLifecycleSelect = {
   restartAttemptCount: true,
   disconnectedAt: true,
   lastConnectionError: true,
+  platformRestrictionStatus: true,
+  platformRestrictedAt: true,
+  platformRestrictedUntil: true,
+  platformRestrictionSource: true,
+  platformRestrictionReasonSafe: true,
+  requiresManualReview: true,
+  platformRestrictionClearedAt: true,
+  platformRestrictionClearedByUserId: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ChannelAccountSelect;
@@ -104,6 +117,9 @@ export class EvolutionLifecycleService {
       sessionState: (snapshot.account.sessionState as EvolutionSessionState) ?? null,
       lastRemoteVerificationAt: snapshot.account.lastRemoteVerificationAt,
       operationInProgress: snapshot.account.operationInProgress,
+      platformRestrictionStatus: snapshot.account.platformRestrictionStatus,
+      platformRestrictedUntil: snapshot.account.platformRestrictedUntil,
+      requiresManualReview: snapshot.account.requiresManualReview,
     });
 
     await this.audit.log({
@@ -150,6 +166,7 @@ export class EvolutionLifecycleService {
       campaignId,
       channelAccountId,
     );
+    this.assertNoPlatformRestrictionOrThrow(account, userId, 'create-instance');
     const instanceName = this.sanitizeInstanceName(
       input.instanceName || this.resolveInstanceName(account),
     );
@@ -328,6 +345,7 @@ export class EvolutionLifecycleService {
       campaignId,
       channelAccountId,
     );
+    this.assertNoPlatformRestrictionOrThrow(account, userId, 'link-instance');
     const instanceName = this.sanitizeInstanceName(input.instanceName);
     await this.assertInstanceNameAvailableForOrg(
       campaign.organizationId,
@@ -417,6 +435,7 @@ export class EvolutionLifecycleService {
       campaignId,
       channelAccountId,
     );
+    this.assertNoPlatformRestrictionOrThrow(account, userId, 'reconnect');
     const instanceName = this.requireBoundInstanceName(account);
     const before = await this.probeRemote(instanceName);
 
@@ -544,6 +563,7 @@ export class EvolutionLifecycleService {
       campaignId,
       channelAccountId,
     );
+    this.assertNoPlatformRestrictionOrThrow(account, userId, 'restart');
     const instanceName = this.requireBoundInstanceName(account);
 
     if ((account.restartAttemptCount ?? 0) >= 1) {
@@ -618,6 +638,7 @@ export class EvolutionLifecycleService {
       campaignId,
       channelAccountId,
     );
+    this.assertNoPlatformRestrictionOrThrow(account, userId, 'reset-session');
     const instanceName = this.requireBoundInstanceName(account);
 
     await this.prisma.channelAccount.update({
@@ -732,6 +753,7 @@ export class EvolutionLifecycleService {
       campaignId,
       channelAccountId,
     );
+    this.assertNoPlatformRestrictionOrThrow(account, userId, 'qrcode');
     const probe = await this.probeAndPersist(account, 'MANUAL', userId);
     const allowed = isQrAllowedForRemoteState(
       probe.state.normalizedConnectionState,
@@ -1060,6 +1082,240 @@ export class EvolutionLifecycleService {
     throw new ConflictException(
       `O nome "${normalized}" ja esta em uso por outro ChannelAccount desta organizacao.`,
     );
+  }
+
+  async recordPlatformRestriction(
+    userId: string,
+    campaignId: string,
+    channelAccountId: string,
+    input: {
+      status: PlatformRestrictionStatus;
+      restrictedUntil?: string | null;
+      reasonSafe?: string | null;
+      confirm?: boolean;
+      source?: PlatformRestrictionSource;
+    },
+  ) {
+    if (!input.confirm) {
+      throw new BadRequestException(
+        'Confirmacao obrigatoria: confirm=true para registrar restricao da plataforma.',
+      );
+    }
+    const status = normalizePlatformRestrictionStatus(input.status);
+    if (status === 'NONE') {
+      throw new BadRequestException(
+        'Use clear-platform-restriction para remover restricao (status NONE invalido aqui).',
+      );
+    }
+
+    const { campaign, account } = await this.getWritableAccount(
+      userId,
+      campaignId,
+      channelAccountId,
+    );
+
+    const now = new Date();
+    let until: Date | null = null;
+    if (input.restrictedUntil) {
+      until = new Date(input.restrictedUntil);
+      if (Number.isNaN(until.getTime())) {
+        throw new BadRequestException('restrictedUntil invalido');
+      }
+      if (until.getTime() < now.getTime()) {
+        throw new BadRequestException(
+          'restrictedUntil nao pode ser anterior ao momento do registro.',
+        );
+      }
+    }
+
+    const reasonSafe = sanitizePlatformRestrictionReason(input.reasonSafe);
+    const source = input.source ?? 'MANUAL';
+    const wasActive =
+      normalizePlatformRestrictionStatus(account.platformRestrictionStatus) !==
+      'NONE';
+
+    const updated = await this.prisma.channelAccount.update({
+      where: { id: account.id },
+      data: {
+        platformRestrictionStatus: status,
+        platformRestrictedAt: account.platformRestrictedAt ?? now,
+        platformRestrictedUntil: until,
+        platformRestrictionSource: source,
+        platformRestrictionReasonSafe: reasonSafe,
+        requiresManualReview: true,
+        platformRestrictionClearedAt: null,
+        platformRestrictionClearedByUserId: null,
+        // Retira do pool operacional do Dispatch (motor consome status CONNECTED).
+        status: ChannelAccountStatus.DISCONNECTED,
+        disconnectedAt: account.disconnectedAt ?? now,
+        lastConnectionError:
+          account.lastConnectionError ?? 'PLATFORM_RESTRICTION_ACTIVE',
+      },
+      select: channelAccountLifecycleSelect,
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: wasActive
+        ? 'INSTANCE_PLATFORM_RESTRICTION_UPDATED'
+        : 'INSTANCE_PLATFORM_RESTRICTION_RECORDED',
+      entityType: 'ChannelAccount',
+      entityId: account.id,
+      metadata: {
+        status,
+        source,
+        restrictedUntil: until?.toISOString() ?? null,
+        hasReason: Boolean(reasonSafe),
+      },
+    });
+
+    return {
+      channelAccount: updated,
+      message:
+        'Restricao registrada. Nao tente reconectar ou gerar QR repetidamente. Aguarde o prazo e faca verificacao manual.',
+    };
+  }
+
+  async clearPlatformRestriction(
+    userId: string,
+    campaignId: string,
+    channelAccountId: string,
+    input: {
+      confirm?: boolean;
+      adminOverrideDeadline?: boolean;
+    } = {},
+  ) {
+    if (!input.confirm) {
+      throw new BadRequestException(
+        'Confirmacao obrigatoria: confirm=true para limpar restricao.',
+      );
+    }
+
+    const { campaign, account } = await this.getWritableAccount(
+      userId,
+      campaignId,
+      channelAccountId,
+    );
+
+    const status = normalizePlatformRestrictionStatus(
+      account.platformRestrictionStatus,
+    );
+    if (status === 'NONE') {
+      throw new BadRequestException('Nao ha restricao ativa nesta conta.');
+    }
+
+    const now = new Date();
+    if (
+      account.platformRestrictedUntil &&
+      new Date(account.platformRestrictedUntil).getTime() > now.getTime() &&
+      !input.adminOverrideDeadline
+    ) {
+      throw new BadRequestException(
+        'O prazo informado ainda nao encerrou. Aguarde ou use adminOverrideDeadline=true com responsabilidade.',
+      );
+    }
+
+    if (account.operationInProgress) {
+      throw new BadRequestException(
+        'Existe operacao em andamento. Aguarde concluir antes de limpar a restricao.',
+      );
+    }
+
+    const probe = await this.probeAndPersist(account, 'MANUAL', userId);
+    if (probe.state.normalizedConnectionState !== 'CONNECTED') {
+      throw new BadRequestException(
+        `Liberacao exige remoteConnectionState=CONNECTED (atual: ${probe.state.normalizedConnectionState}). Sincronize e verifique no aparelho.`,
+      );
+    }
+    if (
+      probe.state.normalizedSessionState === 'INVALID' ||
+      probe.state.normalizedSessionState === 'REMOVED' ||
+      probe.state.normalizedSessionState === 'ABSENT'
+    ) {
+      throw new BadRequestException(
+        'Liberacao exige sessao utilizavel. Estado atual nao permite.',
+      );
+    }
+
+    const updated = await this.prisma.channelAccount.update({
+      where: { id: account.id },
+      data: {
+        platformRestrictionStatus: 'NONE',
+        requiresManualReview: false,
+        platformRestrictionClearedAt: now,
+        platformRestrictionClearedByUserId: userId,
+        // Nao forca CONNECTED: usa o estado remoto real do probe.
+        status: this.toPrismaStatus(probe.state.normalizedConnectionState),
+        lastConnectionError: null,
+        disconnectedAt:
+          probe.state.normalizedConnectionState === 'CONNECTED'
+            ? null
+            : account.disconnectedAt,
+      },
+      select: channelAccountLifecycleSelect,
+    });
+
+    const readiness = isChannelOperationallyReady({
+      localStatus: updated.status,
+      remoteConnectionState:
+        (updated.remoteConnectionState as EvolutionRemoteConnectionState) ?? null,
+      sessionState: (updated.sessionState as EvolutionSessionState) ?? null,
+      lastRemoteVerificationAt: updated.lastRemoteVerificationAt,
+      operationInProgress: updated.operationInProgress,
+      platformRestrictionStatus: updated.platformRestrictionStatus,
+      platformRestrictedUntil: updated.platformRestrictedUntil,
+      requiresManualReview: updated.requiresManualReview,
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'INSTANCE_PLATFORM_RESTRICTION_CLEARED',
+      entityType: 'ChannelAccount',
+      entityId: account.id,
+      metadata: {
+        previousStatus: status,
+        remoteConnectionState: probe.state.normalizedConnectionState,
+        ready: readiness.ready,
+        adminOverrideDeadline: Boolean(input.adminOverrideDeadline),
+      },
+    });
+
+    return { channelAccount: updated, readiness };
+  }
+
+  private assertNoPlatformRestrictionOrThrow(
+    account: ChannelAccountLifecycleView,
+    actorUserId: string,
+    action: string,
+  ) {
+    const guard = assertNoActivePlatformRestriction({
+      platformRestrictionStatus: account.platformRestrictionStatus,
+      platformRestrictedUntil: account.platformRestrictedUntil,
+      requiresManualReview: account.requiresManualReview,
+    });
+    if (guard.ok) return;
+
+    void this.audit
+      .log({
+        organizationId: account.organizationId,
+        campaignId: account.campaignId,
+        actorUserId,
+        action: 'INSTANCE_ACTION_BLOCKED_BY_PLATFORM_RESTRICTION',
+        entityType: 'ChannelAccount',
+        entityId: account.id,
+        metadata: {
+          blockedAction: action,
+          reason: guard.reason,
+          status: account.platformRestrictionStatus,
+        },
+      })
+      .catch(() => undefined);
+
+    throw new BadRequestException(guard.message);
   }
 
   private async syncWebhook(

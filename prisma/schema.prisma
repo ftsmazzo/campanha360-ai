@@ -503,6 +503,16 @@ model ChannelAccount {
   operationInProgress String?
   restartAttemptCount Int @default(0)
 
+  /** Restricao administrativa informada pela plataforma (spam/cooldown/vinculo). */
+  platformRestrictionStatus String? @default("NONE")
+  platformRestrictedAt DateTime?
+  platformRestrictedUntil DateTime?
+  platformRestrictionSource String?
+  platformRestrictionReasonSafe String?
+  requiresManualReview Boolean @default(false)
+  platformRestrictionClearedAt DateTime?
+  platformRestrictionClearedByUserId String?
+
   dispatchPlans     DispatchPlan[]
   dispatchPlanChannels DispatchPlanChannel[]
   dispatches        Dispatch[]

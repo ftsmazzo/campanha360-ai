@@ -516,3 +516,7 @@ Identidade: `organizationId` + `instanceName` + owner hash/last4; bloqueio cross
 Pendencia operacional: **rotacionar API key** se exposta em logs da Evolution; Campanha360 sanitiza logs/audit.
 
 Readiness operacional de Dispatch depende do estado remoto `CONNECTED` com verificacao recente (modulo de canais); o motor 09.6 nao foi reescrito.
+
+### Restricao operacional da plataforma
+
+Campo administrativo separado (`platformRestrictionStatus`, prazo, motivo seguro). Enquanto ativo: readiness bloqueada (`PLATFORM_RESTRICTION_ACTIVE` / `PLATFORM_RESTRICTION_REVIEW_REQUIRED`), conta fora do pool (`status=DISCONNECTED`), reconnect/restart/QR/reset bloqueados. Liberacao somente manual apos prazo + Evolution `CONNECTED`. Endpoints: `POST .../platform-restriction` e `POST .../clear-platform-restriction`.

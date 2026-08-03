@@ -2379,6 +2379,12 @@ export type ChannelAccountItem = {
   operationInProgress?: string | null;
   reconnectResult?: string | null;
   reconnectErrorSafe?: string | null;
+  platformRestrictionStatus?: string | null;
+  platformRestrictedAt?: string | null;
+  platformRestrictedUntil?: string | null;
+  platformRestrictionSource?: string | null;
+  platformRestrictionReasonSafe?: string | null;
+  requiresManualReview?: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -2615,6 +2621,44 @@ export function fetchChannelEvolutionQrCode(
   return request<EvolutionQrCodeResponse>(
     `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/qrcode`,
     {},
+    token,
+  );
+}
+
+export function recordChannelPlatformRestriction(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+  payload: {
+    status:
+      | 'DEVICE_LINKING_RESTRICTED'
+      | 'PLATFORM_RESTRICTED'
+      | 'MANUAL_COOLDOWN_REQUIRED';
+    restrictedUntil?: string | null;
+    reasonSafe?: string | null;
+    confirm: true;
+    source?: 'MANUAL' | 'PROVIDER_RESPONSE' | 'WEBHOOK' | 'UNKNOWN';
+  },
+) {
+  return request<{ channelAccount: ChannelAccountItem; message: string }>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/platform-restriction`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function clearChannelPlatformRestriction(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+  payload: { confirm: true; adminOverrideDeadline?: boolean },
+) {
+  return request<{
+    channelAccount: ChannelAccountItem;
+    readiness: { ready: boolean; reason: string | null };
+  }>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/clear-platform-restriction`,
+    { method: 'POST', body: JSON.stringify(payload) },
     token,
   );
 }

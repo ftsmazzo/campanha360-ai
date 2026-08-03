@@ -23,6 +23,8 @@ import {
   prepareChannelEvolution,
   previewEvolutionLink,
   reconnectEvolutionInstance,
+  recordChannelPlatformRestriction,
+  clearChannelPlatformRestriction,
   resetEvolutionSession,
   restartEvolutionInstance,
   updateChannelAccount,
@@ -522,6 +524,125 @@ export default function CampaignChannelsPage() {
     }
   }
 
+  async function handleRecordPlatformRestriction(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+    const hoursRaw = window.prompt(
+      'Prazo em horas a partir de agora (ex.: 5). Deixe vazio se nao houver prazo explicito.',
+      '5',
+    );
+    if (hoursRaw === null) return;
+    let restrictedUntil: string | null = null;
+    if (hoursRaw.trim()) {
+      const hours = Number(hoursRaw);
+      if (!Number.isFinite(hours) || hours <= 0) {
+        patchCardState(account.id, { error: 'Prazo invalido.' });
+        return;
+      }
+      restrictedUntil = new Date(Date.now() + hours * 3600_000).toISOString();
+    }
+    const reasonSafe =
+      window.prompt(
+        'Motivo seguro (sem telefone/segredos). Ex.: WhatsApp informou bloqueio de vinculacao por suspeita de spam.',
+        account.platformRestrictionReasonSafe ??
+          'Restricao de vinculacao informada no aplicativo (suspeita de spam / cooldown).',
+      ) ?? '';
+    const ok = window.confirm(
+      'Registrar restricao da plataforma? A conta saira do pool operacional imediatamente.',
+    );
+    if (!ok) return;
+    patchCardState(account.id, { preparing: true, error: null });
+    try {
+      const result = await recordChannelPlatformRestriction(token, campaignId, account.id, {
+        status: 'DEVICE_LINKING_RESTRICTED',
+        restrictedUntil,
+        reasonSafe: reasonSafe.trim() || null,
+        confirm: true,
+        source: 'MANUAL',
+      });
+      applyAccountUpdate(result.channelAccount);
+      patchCardState(account.id, { message: result.message, qrBase64: null });
+    } catch (err) {
+      patchCardState(account.id, {
+        error: err instanceof ApiError ? err.message : 'Falha ao registrar restricao',
+      });
+    } finally {
+      patchCardState(account.id, { preparing: false });
+    }
+  }
+
+  async function handleUpdateRestrictionDeadline(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+    const hoursRaw = window.prompt('Novo prazo em horas a partir de agora:', '5');
+    if (hoursRaw === null) return;
+    const hours = Number(hoursRaw);
+    if (!Number.isFinite(hours) || hours <= 0) {
+      patchCardState(account.id, { error: 'Prazo invalido.' });
+      return;
+    }
+    const ok = window.confirm('Atualizar prazo da restricao?');
+    if (!ok) return;
+    try {
+      const result = await recordChannelPlatformRestriction(token, campaignId, account.id, {
+        status:
+          (account.platformRestrictionStatus as
+            | 'DEVICE_LINKING_RESTRICTED'
+            | 'PLATFORM_RESTRICTED'
+            | 'MANUAL_COOLDOWN_REQUIRED') || 'DEVICE_LINKING_RESTRICTED',
+        restrictedUntil: new Date(Date.now() + hours * 3600_000).toISOString(),
+        reasonSafe: account.platformRestrictionReasonSafe ?? null,
+        confirm: true,
+        source: 'MANUAL',
+      });
+      applyAccountUpdate(result.channelAccount);
+      patchCardState(account.id, { message: 'Prazo da restricao atualizado.' });
+    } catch (err) {
+      patchCardState(account.id, {
+        error: err instanceof ApiError ? err.message : 'Falha ao atualizar prazo',
+      });
+    }
+  }
+
+  async function handleClearPlatformRestriction(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+    const deadlinePassed =
+      !account.platformRestrictedUntil ||
+      new Date(account.platformRestrictedUntil).getTime() <= Date.now();
+    let adminOverride = false;
+    if (!deadlinePassed) {
+      adminOverride = window.confirm(
+        'O prazo ainda nao encerrou. Confirmar override administrativo para limpar mesmo assim?',
+      );
+      if (!adminOverride) return;
+    } else {
+      const ok = window.confirm(
+        'Limpar restricao? Exige Evolution CONNECTED e sessao utilizavel apos sincronizacao.',
+      );
+      if (!ok) return;
+    }
+    patchCardState(account.id, { preparing: true, error: null });
+    try {
+      const result = await clearChannelPlatformRestriction(token, campaignId, account.id, {
+        confirm: true,
+        adminOverrideDeadline: adminOverride || undefined,
+      });
+      applyAccountUpdate(result.channelAccount);
+      patchCardState(account.id, {
+        message: result.readiness.ready
+          ? 'Restricao limpa. Conta pronta operacionalmente.'
+          : `Restricao limpa. Readiness: ${result.readiness.reason ?? 'pendente'}.`,
+      });
+    } catch (err) {
+      patchCardState(account.id, {
+        error: err instanceof ApiError ? err.message : 'Falha ao limpar restricao',
+      });
+    } finally {
+      patchCardState(account.id, { preparing: false });
+    }
+  }
+
   async function handleClearLocalBinding(account: ChannelAccountItem) {
     const token = getStoredToken();
     if (!token || !canWrite) return;
@@ -790,18 +911,31 @@ export default function CampaignChannelsPage() {
               const ui = getCardState(account.id);
               const isConnected = account.status === 'CONNECTED';
               const instanceMissing = isInstanceNotFoundMessage(ui.error);
+              const hasPlatformRestriction =
+                Boolean(account.platformRestrictionStatus) &&
+                account.platformRestrictionStatus !== 'NONE';
+              const restrictionDeadlinePassed =
+                hasPlatformRestriction &&
+                account.platformRestrictedUntil &&
+                new Date(account.platformRestrictedUntil).getTime() <= Date.now();
+              const actionsBlockedByRestriction = hasPlatformRestriction;
               const remote = account.remoteConnectionState ?? null;
               const showReconnect =
-                remote === 'DISCONNECTED_WITH_SESSION' || remote === 'DISCONNECTED_UNKNOWN_SESSION';
+                !actionsBlockedByRestriction &&
+                (remote === 'DISCONNECTED_WITH_SESSION' ||
+                  remote === 'DISCONNECTED_UNKNOWN_SESSION');
               const showRestartRemote =
-                remote === 'RESTART_REQUIRED' || showReconnect;
+                !actionsBlockedByRestriction &&
+                (remote === 'RESTART_REQUIRED' || showReconnect);
               const showResetSession =
-                remote === 'LOGGED_OUT' ||
-                remote === 'DEVICE_REMOVED' ||
-                remote === 'SESSION_INVALID' ||
-                remote === 'DISCONNECTED_WITH_SESSION' ||
-                remote === 'QR_REQUIRED';
+                !actionsBlockedByRestriction &&
+                (remote === 'LOGGED_OUT' ||
+                  remote === 'DEVICE_REMOVED' ||
+                  remote === 'SESSION_INVALID' ||
+                  remote === 'DISCONNECTED_WITH_SESSION' ||
+                  remote === 'QR_REQUIRED');
               const showQrButton =
+                !actionsBlockedByRestriction &&
                 !isConnected &&
                 !instanceMissing &&
                 (remote === 'QR_REQUIRED' ||
@@ -810,6 +944,7 @@ export default function CampaignChannelsPage() {
                   remote === 'DEVICE_REMOVED' ||
                   account.status === 'CONNECTING');
               const showPrepare =
+                !actionsBlockedByRestriction &&
                 !isConnected &&
                 (!account.provisioningMode ||
                   remote === 'NOT_FOUND' ||
@@ -896,6 +1031,50 @@ export default function CampaignChannelsPage() {
                     </p>
                   ) : null}
 
+                  {hasPlatformRestriction ? (
+                    <div className="space-y-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                      <p className="font-semibold">Restricao da plataforma</p>
+                      <p>Tipo: {account.platformRestrictionStatus}</p>
+                      <p>
+                        Inicio:{' '}
+                        {account.platformRestrictedAt
+                          ? formatDate(account.platformRestrictedAt)
+                          : '—'}
+                      </p>
+                      <p>
+                        Termino informado:{' '}
+                        {account.platformRestrictedUntil
+                          ? formatDate(account.platformRestrictedUntil)
+                          : '—'}
+                        {account.platformRestrictedUntil
+                          ? restrictionDeadlinePassed
+                            ? ' · prazo encerrado — faca verificacao manual'
+                            : ` · restante ~${Math.max(
+                                0,
+                                Math.ceil(
+                                  (new Date(account.platformRestrictedUntil).getTime() -
+                                    Date.now()) /
+                                    3600_000,
+                                ),
+                              )}h`
+                          : ''}
+                      </p>
+                      <p>Origem: {account.platformRestrictionSource ?? '—'}</p>
+                      <p>
+                        Motivo: {account.platformRestrictionReasonSafe ?? '—'}
+                      </p>
+                      <p>
+                        Revisao manual:{' '}
+                        {account.requiresManualReview ? 'pendente' : 'nao'}
+                      </p>
+                      <p className="font-medium">
+                        Nao tente reconectar ou gerar QR repetidamente. Aguarde o
+                        prazo informado no aplicativo e faca nova verificacao
+                        manual.
+                      </p>
+                    </div>
+                  ) : null}
+
                   {canWrite ? (
                     <div className="flex flex-wrap gap-2">
                       {showPrepare ? (
@@ -956,6 +1135,34 @@ export default function CampaignChannelsPage() {
                       >
                         {ui.refreshing ? 'Atualizando...' : 'Sincronizar estado'}
                       </button>
+                      {!hasPlatformRestriction ? (
+                        <button
+                          className="rounded-md border border-amber-700 px-3 py-2 text-sm font-medium text-amber-900 disabled:opacity-60"
+                          type="button"
+                          disabled={ui.preparing}
+                          onClick={() => handleRecordPlatformRestriction(account)}
+                        >
+                          Registrar restricao
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            className="rounded-md border border-amber-700 px-3 py-2 text-sm font-medium text-amber-900"
+                            type="button"
+                            onClick={() => handleUpdateRestrictionDeadline(account)}
+                          >
+                            Atualizar prazo
+                          </button>
+                          <button
+                            className="rounded-md border border-[#24382b] px-3 py-2 text-sm font-semibold text-[#24382b] disabled:opacity-60"
+                            type="button"
+                            disabled={ui.preparing}
+                            onClick={() => handleClearPlatformRestriction(account)}
+                          >
+                            Limpar restricao
+                          </button>
+                        </>
+                      )}
                       <button
                         className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#65655f] disabled:opacity-60"
                         type="button"

@@ -33,3 +33,4 @@ export * from './evolution-send.client';
 export * from './whatsapp-jid.util';
 export * from './log-sanitizer.util';
 export * from './evolution-instance-state.util';
+export * from './platform-restriction.util';

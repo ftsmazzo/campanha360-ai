@@ -36,6 +36,12 @@ const channelAccountPublicSelect = {
   operationInProgress: true,
   reconnectResult: true,
   reconnectErrorSafe: true,
+  platformRestrictionStatus: true,
+  platformRestrictedAt: true,
+  platformRestrictedUntil: true,
+  platformRestrictionSource: true,
+  platformRestrictionReasonSafe: true,
+  requiresManualReview: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ChannelAccountSelect;

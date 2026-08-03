@@ -2850,4 +2850,4 @@ Validacao WhatsApp (09.6.3) permanece intacta. DISPATCH_SEND_ENABLED default fal
 
 ### Nota ? readiness de canal (modulo 04)
 
-A aptidao operacional de uma `ChannelAccount` para Dispatch (`CONNECTED` + sessao remota saudavel) e fornecida pelo modulo de canais/Evolution (estados remotos, reconnect/reset). A 09.6 consome o status final; nao reescreve o lifecycle de instancias.
+A aptidao operacional de uma `ChannelAccount` para Dispatch (`CONNECTED` + sessao remota saudavel) e fornecida pelo modulo de canais/Evolution (estados remotos, reconnect/reset). A 09.6 consome o status final; nao reescreve o lifecycle de instancias. Contas sob restricao administrativa da plataforma (`platformRestrictionStatus`) tambem ficam fora do pool ate liberacao manual.

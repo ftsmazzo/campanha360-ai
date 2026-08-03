@@ -3,6 +3,8 @@
  * Separado do ChannelAccountStatus operacional (CONNECTED/DISCONNECTED/...).
  */
 
+import { platformRestrictionReadinessReason } from './platform-restriction.util';
+
 export type EvolutionRemoteConnectionState =
   | 'NOT_FOUND'
   | 'CREATED'
@@ -286,7 +288,22 @@ export function isChannelOperationallyReady(input: {
   operationInProgress?: string | null;
   ttlMs?: number;
   now?: Date;
+  platformRestrictionStatus?: string | null;
+  platformRestrictedUntil?: Date | string | null;
+  requiresManualReview?: boolean | null;
 }): { ready: boolean; reason: string | null } {
+  const now = input.now ?? new Date();
+  const restrictionReason = platformRestrictionReadinessReason(
+    {
+      platformRestrictionStatus: input.platformRestrictionStatus,
+      platformRestrictedUntil: input.platformRestrictedUntil,
+      requiresManualReview: input.requiresManualReview,
+    },
+    now,
+  );
+  if (restrictionReason) {
+    return { ready: false, reason: restrictionReason };
+  }
   if (input.operationInProgress) {
     return { ready: false, reason: 'OPERATION_IN_PROGRESS' };
   }
@@ -312,7 +329,6 @@ export function isChannelOperationallyReady(input: {
       ? new Date(input.lastRemoteVerificationAt)
       : input.lastRemoteVerificationAt;
   const ttl = input.ttlMs ?? 15 * 60_000;
-  const now = input.now ?? new Date();
   if (Number.isNaN(checked.getTime()) || now.getTime() - checked.getTime() > ttl) {
     return { ready: false, reason: 'VERIFICATION_STALE' };
   }

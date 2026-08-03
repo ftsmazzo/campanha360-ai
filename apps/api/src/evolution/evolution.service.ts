@@ -20,6 +20,7 @@ import {
   EvolutionAdapter,
 } from './evolution.adapter';
 import { EvolutionApiException } from './evolution.errors';
+import { assertNoActivePlatformRestriction } from '@campanha360/shared';
 
 const channelAccountSelect = {
   id: true,
@@ -32,6 +33,9 @@ const channelAccountSelect = {
   config: true,
   provisioningMode: true,
   evolutionInstanceName: true,
+  platformRestrictionStatus: true,
+  platformRestrictedUntil: true,
+  requiresManualReview: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ChannelAccountSelect;
@@ -77,6 +81,18 @@ export class EvolutionService {
     );
 
     const instanceName = this.resolveInstanceName(account);
+
+    const restrictionGuard = assertNoActivePlatformRestriction({
+      platformRestrictionStatus: (account as { platformRestrictionStatus?: string | null })
+        .platformRestrictionStatus,
+      platformRestrictedUntil: (account as { platformRestrictedUntil?: Date | null })
+        .platformRestrictedUntil,
+      requiresManualReview: (account as { requiresManualReview?: boolean })
+        .requiresManualReview,
+    });
+    if (!restrictionGuard.ok) {
+      throw new BadRequestException(restrictionGuard.message);
+    }
 
     try {
       const health = await this.evolutionAdapter.checkHealth();
