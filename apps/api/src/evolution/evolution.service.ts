@@ -30,6 +30,8 @@ const channelAccountSelect = {
   status: true,
   externalAccountId: true,
   config: true,
+  provisioningMode: true,
+  evolutionInstanceName: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ChannelAccountSelect;
@@ -42,6 +44,15 @@ const channelAccountPublicSelect = {
   name: true,
   status: true,
   externalAccountId: true,
+  provisioningMode: true,
+  evolutionInstanceName: true,
+  remoteConnectionState: true,
+  sessionState: true,
+  lastRemoteVerificationAt: true,
+  remoteOwnerLast4: true,
+  statusReason: true,
+  lastStateSource: true,
+  operationInProgress: true,
   createdAt: true,
   updatedAt: true,
 } satisfies Prisma.ChannelAccountSelect;
@@ -76,11 +87,36 @@ export class EvolutionService {
         );
       }
 
-      // Se o ID externo existir mas nao estiver na Evolution, prepareInstance cria a instancia.
       const existing = await this.evolutionAdapter.findInstance(instanceName);
+
+      // Nao vincular silenciosamente instancia pre-existente CONNECTED.
+      if (existing && !account.externalAccountId && !account.provisioningMode) {
+        throw new BadRequestException(
+          `A instancia "${existing.instanceName}" ja existe na Evolution. ` +
+            'Use Vincular existente (com confirmacao) ou escolha outro nome em Criar nova.',
+        );
+      }
+
+      if (!existing && account.provisioningMode === 'LINKED') {
+        throw new BadRequestException(
+          'Modo LINKED exige instancia existente na Evolution. Use preview/link ou recriar.',
+        );
+      }
+
       const prepared = existing
         ? await this.evolutionAdapter.prepareInstance(existing.instanceName)
         : await this.evolutionAdapter.prepareInstance(instanceName);
+
+      // Se prepare criou, marcar CREATED; se reusou, exigir que ja fosse provisionada.
+      const provisioningMode =
+        account.provisioningMode ??
+        (prepared.created ? 'CREATED' : account.externalAccountId ? 'LINKED' : 'CREATED');
+
+      if (!prepared.created && !account.provisioningMode && !account.externalAccountId) {
+        throw new BadRequestException(
+          'Instancia existente detectada. Use o fluxo Vincular existente.',
+        );
+      }
 
       const nextStatus =
         this.mapEvolutionStateToStatus(prepared.state) ??
@@ -90,8 +126,13 @@ export class EvolutionService {
         where: { id: account.id },
         data: {
           externalAccountId: prepared.instanceName,
+          evolutionInstanceName: prepared.instanceName,
+          provisioningMode,
           status: nextStatus,
-        },
+          lastRemoteVerificationAt: new Date(),
+          lastRemoteState: prepared.state ?? null,
+          lastStateSource: 'PREPARE',
+        } as never,
         select: channelAccountPublicSelect,
       });
 
@@ -107,7 +148,7 @@ export class EvolutionService {
         organizationId: campaign.organizationId,
         campaignId,
         actorUserId: userId,
-        action: 'CHANNEL_EVOLUTION_PREPARED',
+        action: prepared.created ? 'INSTANCE_CREATED' : 'INSTANCE_STATE_SYNCED',
         entityType: 'ChannelAccount',
         entityId: account.id,
         metadata: {
@@ -120,6 +161,7 @@ export class EvolutionService {
           ),
           webhookSynced: webhookSync.synced,
           webhookAuthMode: webhookSync.authMode,
+          provisioningMode,
         },
       });
 
@@ -144,7 +186,9 @@ export class EvolutionService {
         },
       };
     } catch (error) {
-      await this.markAccountError(account.id);
+      if (!(error instanceof BadRequestException)) {
+        await this.markAccountError(account.id);
+      }
       throw error;
     }
   }

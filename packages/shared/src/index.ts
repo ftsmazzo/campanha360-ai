@@ -30,3 +30,6 @@ export * from './evolution-error-classification.util';
 export * from './evolution-connection-check.client';
 export * from './dispatch-legacy-classification.util';
 export * from './evolution-send.client';
+export * from './whatsapp-jid.util';
+export * from './log-sanitizer.util';
+export * from './evolution-instance-state.util';

@@ -167,6 +167,143 @@ export class EvolutionAdapter {
     }
   }
 
+  /**
+   * Restart oficial Evolution API 2.3.7 — nao apaga credenciais.
+   * POST /instance/restart/{instance}
+   */
+  async restartInstance(instanceName: string): Promise<{ ok: boolean; rawState?: string }> {
+    try {
+      const payload = await this.request(
+        'POST',
+        `/instance/restart/${encodeURIComponent(instanceName)}`,
+      );
+      return {
+        ok: true,
+        rawState: this.extractState(payload),
+      };
+    } catch (error) {
+      throw this.mapMissingInstanceError(error);
+    }
+  }
+
+  /**
+   * Logout oficial — invalida sessao autenticada.
+   * DELETE /instance/logout/{instance}
+   */
+  async logoutInstance(instanceName: string): Promise<{ ok: boolean }> {
+    try {
+      await this.request(
+        'DELETE',
+        `/instance/logout/${encodeURIComponent(instanceName)}`,
+      );
+      return { ok: true };
+    } catch (error) {
+      throw this.mapMissingInstanceError(error);
+    }
+  }
+
+  /**
+   * Delete oficial da instancia na Evolution.
+   * DELETE /instance/delete/{instance}
+   */
+  async deleteInstance(instanceName: string): Promise<{ ok: boolean }> {
+    try {
+      await this.request(
+        'DELETE',
+        `/instance/delete/${encodeURIComponent(instanceName)}`,
+      );
+      return { ok: true };
+    } catch (error) {
+      if (this.isInstanceNotFoundError(error)) {
+        return { ok: true };
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Reconnect seguro: usa /instance/connect sem exigir QR quando ha sessao.
+   * Se retornar QR, a sessao nao estava recuperavel automaticamente.
+   */
+  async reconnectInstance(instanceName: string): Promise<{
+    ok: boolean;
+    state?: string;
+    hasQr: boolean;
+    qrcode?: EvolutionQrCodeResult;
+  }> {
+    try {
+      const payload = await this.request(
+        'GET',
+        `/instance/connect/${encodeURIComponent(instanceName)}`,
+      );
+      const qr = this.extractQrCodeFields(payload);
+      const hasQr = Boolean(qr.base64 || qr.code || qr.pairingCode);
+      let state = this.extractState(payload);
+      if (!state) {
+        try {
+          const connection = await this.getConnectionState(instanceName);
+          state = connection.state;
+        } catch {
+          // mantem undefined
+        }
+      }
+      return {
+        ok: true,
+        state,
+        hasQr,
+        qrcode: hasQr
+          ? {
+              instanceName,
+              base64: qr.base64,
+              code: qr.code,
+              pairingCode: qr.pairingCode,
+            }
+          : undefined,
+      };
+    } catch (error) {
+      throw this.mapMissingInstanceError(error);
+    }
+  }
+
+  async getInstanceOwnerHints(instanceName: string): Promise<{
+    ownerJid: string | null;
+    ownerDigits: string | null;
+  }> {
+    const instances = await this.listInstancesRaw();
+    const target = this.normalizeName(instanceName);
+    for (const item of instances) {
+      const record = this.asRecord(item);
+      if (!record) continue;
+      const nested =
+        this.asRecord(record.instance) ??
+        this.asRecord(record.Instance) ??
+        record;
+      const name =
+        this.asString(nested.instanceName) ??
+        this.asString(nested.name) ??
+        this.asString(record.instanceName);
+      if (!name || this.normalizeName(name) !== target) continue;
+
+      const ownerJid =
+        this.asString(nested.owner) ??
+        this.asString(nested.ownerJid) ??
+        this.asString(nested.wuid) ??
+        this.asString(nested.wid) ??
+        this.asString(record.owner) ??
+        null;
+      const digits = ownerJid
+        ? ownerJid.replace(/@.+$/, '').replace(/\D/g, '')
+        : this.asString(nested.number)?.replace(/\D/g, '') ?? null;
+      return { ownerJid, ownerDigits: digits || null };
+    }
+    return { ownerJid: null, ownerDigits: null };
+  }
+
+  private async listInstancesRaw(): Promise<unknown[]> {
+    const payload = await this.request('GET', '/instance/fetchInstances');
+    return this.collectInstanceCandidates(payload);
+  }
+
   private extractQrCodeFields(payload: unknown): {
     base64?: string;
     code?: string;
@@ -355,7 +492,7 @@ export class EvolutionAdapter {
         url,
         byEvents: false,
         base64: false,
-        events: ['MESSAGES_UPSERT'],
+        events: ['MESSAGES_UPSERT', 'CONNECTION_UPDATE'],
         ...(jwtKey
           ? {
               headers: {
@@ -536,7 +673,7 @@ export class EvolutionAdapter {
       }
 
       if (!response.ok) {
-        this.logger.warn(
+      this.logger.warn(
           `Evolution ${method} ${path} retornou ${response.status}`,
         );
         throw new EvolutionApiException(

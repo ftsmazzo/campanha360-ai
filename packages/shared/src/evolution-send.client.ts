@@ -14,6 +14,7 @@ import {
   type EvolutionSendCategory,
   type SafeEvolutionErrorEvidence,
 } from './evolution-error-classification.util';
+import { toEvolutionSendNumber } from './whatsapp-jid.util';
 
 export type {
   AcceptanceState,
@@ -101,7 +102,7 @@ export async function sendEvolutionText(
 ): Promise<EvolutionSendResult> {
   const baseUrl = (input.baseUrl || '').trim().replace(/\/+$/, '');
   const instanceName = (input.instanceName || '').trim();
-  const destination = (input.destination || '').replace(/\D/g, '');
+  const destination = toEvolutionSendNumber(input.destination) ?? (input.destination || '').replace(/\D/g, '');
   const text = (input.text || '').trim();
   const fetchFn = input.fetchImpl ?? fetch;
   const endpoint = 'message/sendText';

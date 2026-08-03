@@ -11,6 +11,7 @@ import {
   ChannelAccountItem,
   clearStoredToken,
   createChannelAccount,
+  createEvolutionInstance,
   fetchCampaign,
   fetchChannelAccount,
   fetchChannelAccounts,
@@ -18,7 +19,12 @@ import {
   fetchChannelEvolutionStatus,
   fetchMe,
   getStoredToken,
+  linkEvolutionInstance,
   prepareChannelEvolution,
+  previewEvolutionLink,
+  reconnectEvolutionInstance,
+  resetEvolutionSession,
+  restartEvolutionInstance,
   updateChannelAccount,
 } from '../../../../../lib/api';
 import {
@@ -96,6 +102,8 @@ export default function CampaignChannelsPage() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [createName, setCreateName] = useState('');
   const [createInstanceName, setCreateInstanceName] = useState('');
+  const [createMode, setCreateMode] = useState<'CREATE' | 'LINK'>('CREATE');
+  const [linkPreview, setLinkPreview] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [pageError, setPageError] = useState<string | null>(null);
   const [pageSuccess, setPageSuccess] = useState<string | null>(null);
@@ -236,50 +244,79 @@ export default function CampaignChannelsPage() {
     event.preventDefault();
     const token = getStoredToken();
     if (!token || !canWrite || !createName.trim()) return;
+    if (!createInstanceName.trim()) {
+      setPageError('Informe o nome da instancia Evolution.');
+      return;
+    }
 
     setCreating(true);
     setPageError(null);
     setPageSuccess(null);
-
-    let created: ChannelAccountItem | null = null;
+    setLinkPreview(null);
 
     try {
-      created = await createChannelAccount(token, campaignId, {
+      const instanceName = createInstanceName.trim();
+      const created = await createChannelAccount(token, campaignId, {
         name: createName.trim(),
         provider: 'WHATSAPP_EVOLUTION',
         status: 'DISCONNECTED',
-        externalAccountId: createInstanceName.trim() || undefined,
+        externalAccountId: instanceName,
       });
       applyAccountUpdate(created);
+      const mode = createMode;
       setCreateName('');
       setCreateInstanceName('');
       setShowCreateForm(false);
       patchCardState(created.id, {
         preparing: true,
         error: null,
-        message: 'Canal criado. Preparando conexao Evolution...',
+        message:
+          mode === 'CREATE'
+            ? 'Canal criado. Criando instancia na Evolution...'
+            : 'Canal criado. Consultando instancia existente...',
         qrBase64: null,
       });
 
       try {
-        const prepared = await prepareChannelEvolution(token, campaignId, created.id);
-        applyPrepareResult(created.id, prepared);
-        setPageSuccess(`Canal "${created.name}" criado e preparado.`);
+        if (mode === 'CREATE') {
+          const prepared = await createEvolutionInstance(token, campaignId, created.id, {
+            instanceName,
+            confirmCreate: true,
+          });
+          applyPrepareResult(created.id, prepared);
+          setPageSuccess(`Canal "${created.name}" criado (nova instancia).`);
+        } else {
+          const preview = await previewEvolutionLink(token, campaignId, created.id, {
+            instanceName,
+          });
+          setLinkPreview(
+            `Encontrada: ${preview.preview.instanceName} · estado ${preview.preview.remoteConnectionState}` +
+              (preview.preview.ownerLast4 ? ` · owner ***${preview.preview.ownerLast4}` : '') +
+              '. Confirmando vinculacao...',
+          );
+          const linked = await linkEvolutionInstance(token, campaignId, created.id, {
+            instanceName,
+            confirmLink: true,
+          });
+          applyPrepareResult(created.id, linked);
+          setPageSuccess(
+            `Canal "${created.name}" vinculado a instancia existente (sem QR se ja CONNECTED).`,
+          );
+        }
       } catch (prepareError) {
         const message =
           prepareError instanceof ApiError
             ? prepareError.message
-            : 'Canal criado, mas a conexao Evolution nao foi preparada.';
+            : 'Canal criado, mas a Evolution nao concluiu o provisionamento.';
         patchCardState(created.id, {
-          error: `${message} Use Preparar conexao no card para tentar novamente.`,
+          error: message,
           message: null,
           qrBase64: null,
         });
-        setPageSuccess(
-          `Canal "${created.name}" criado. A preparacao da conexao falhou — tente Preparar conexao no card.`,
-        );
+        setPageSuccess(`Canal "${created.name}" criado. Conclua criar/vincular no card.`);
       } finally {
         patchCardState(created.id, { preparing: false });
+        setLinkPreview(null);
       }
     } catch (err) {
       setPageError(
@@ -336,9 +373,9 @@ export default function CampaignChannelsPage() {
       if (result.channelAccount.status === 'CONNECTED') {
         patchCardState(account.id, {
           qrBase64: null,
-          message: 'WhatsApp conectado.',
+          message: result.evolution.message ?? 'WhatsApp conectado.',
         });
-      } else if (result.evolution.qrcode.base64) {
+      } else if (result.evolution.qrcode?.base64) {
         patchCardState(account.id, {
           qrBase64: result.evolution.qrcode.base64,
           message: 'QR Code gerado. Escaneie no WhatsApp do celular.',
@@ -346,7 +383,9 @@ export default function CampaignChannelsPage() {
       } else {
         patchCardState(account.id, {
           qrBase64: null,
-          message: 'Solicitacao enviada, mas a Evolution nao retornou QR Code neste momento.',
+          message:
+            result.evolution.message ??
+            'Solicitacao enviada, mas a Evolution nao retornou QR Code neste momento.',
         });
       }
     } catch (err) {
@@ -376,16 +415,22 @@ export default function CampaignChannelsPage() {
     try {
       const result = await fetchChannelEvolutionStatus(token, campaignId, account.id);
       applyAccountUpdate(result.channelAccount);
+      const remote =
+        result.evolution.normalizedConnectionState ??
+        result.evolution.rawStateSafe ??
+        result.evolution.state ??
+        '—';
       if (result.channelAccount.status === 'CONNECTED') {
         patchCardState(account.id, {
           qrBase64: null,
-          evolutionState: result.evolution.state,
-          message: 'WhatsApp conectado.',
+          evolutionState: remote,
+          message: `WhatsApp conectado. Remoto: ${remote}.`,
         });
       } else {
         patchCardState(account.id, {
-          evolutionState: result.evolution.state,
-          message: `Status atualizado: ${getChannelAccountStatusLabel(result.channelAccount.status)}.`,
+          evolutionState: remote,
+          message: `Status: ${getChannelAccountStatusLabel(result.channelAccount.status)} · remoto ${remote}` +
+            (result.recommendedAction ? ` · acao: ${result.recommendedAction}` : ''),
         });
       }
     } catch (err) {
@@ -404,6 +449,80 @@ export default function CampaignChannelsPage() {
   }
 
   async function handleRestart(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+
+    patchCardState(account.id, {
+      resetting: true,
+      error: null,
+      message: null,
+    });
+
+    try {
+      const result = await restartEvolutionInstance(token, campaignId, account.id);
+      applyAccountUpdate(result.channelAccount);
+      patchCardState(account.id, {
+        message: `Restart solicitado. Estado: ${String(result.evolution.normalizedConnectionState ?? '—')}`,
+        evolutionState: String(result.evolution.normalizedConnectionState ?? ''),
+      });
+    } catch (err) {
+      patchCardState(account.id, {
+        error: err instanceof ApiError ? err.message : 'Falha ao reiniciar instancia',
+      });
+    } finally {
+      patchCardState(account.id, { resetting: false });
+    }
+  }
+
+  async function handleReconnect(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+    patchCardState(account.id, { preparing: true, error: null, message: null });
+    try {
+      const result = await reconnectEvolutionInstance(token, campaignId, account.id);
+      applyAccountUpdate(result.channelAccount);
+      patchCardState(account.id, {
+        message: result.success
+          ? 'Reconexao bem-sucedida.'
+          : `Reconexao nao restaurou CONNECTED (${String(result.evolution.normalizedConnectionState ?? '—')}).`,
+        qrBase64: null,
+      });
+    } catch (err) {
+      patchCardState(account.id, {
+        error: err instanceof ApiError ? err.message : 'Falha ao reconectar',
+      });
+    } finally {
+      patchCardState(account.id, { preparing: false });
+    }
+  }
+
+  async function handleResetSession(account: ChannelAccountItem) {
+    const token = getStoredToken();
+    if (!token || !canWrite) return;
+    const ok = window.confirm(
+      'Reset destrutivo: a sessao atual sera apagada e um novo QR sera necessario. O dispositivo podera precisar ser revinculado. Continuar?',
+    );
+    if (!ok) return;
+    patchCardState(account.id, { resetting: true, error: null, message: null, qrBase64: null });
+    try {
+      const result = await resetEvolutionSession(token, campaignId, account.id, {
+        confirmReset: true,
+      });
+      applyAccountUpdate(result.channelAccount);
+      patchCardState(account.id, {
+        qrBase64: result.evolution.qrcode?.base64 ?? null,
+        message: 'Sessao resetada. Escaneie o novo QR Code.',
+      });
+    } catch (err) {
+      patchCardState(account.id, {
+        error: err instanceof ApiError ? err.message : 'Falha no reset de sessao',
+      });
+    } finally {
+      patchCardState(account.id, { resetting: false });
+    }
+  }
+
+  async function handleClearLocalBinding(account: ChannelAccountItem) {
     const token = getStoredToken();
     if (!token || !canWrite) return;
 
@@ -590,6 +709,27 @@ export default function CampaignChannelsPage() {
             onSubmit={handleCreateChannel}
           >
             <h3 className="font-medium text-[#24382b]">Novo canal WhatsApp</h3>
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium text-[#34342f]">Modo de provisionamento</legend>
+              <label className="flex items-center gap-2 text-sm text-[#34342f]">
+                <input
+                  type="radio"
+                  name="createMode"
+                  checked={createMode === 'CREATE'}
+                  onChange={() => setCreateMode('CREATE')}
+                />
+                Criar nova instancia (falha se o nome ja existir na Evolution)
+              </label>
+              <label className="flex items-center gap-2 text-sm text-[#34342f]">
+                <input
+                  type="radio"
+                  name="createMode"
+                  checked={createMode === 'LINK'}
+                  onChange={() => setCreateMode('LINK')}
+                />
+                Vincular instancia existente (exige confirmacao; sem QR se ja CONNECTED)
+              </label>
+            </fieldset>
             <label className="block">
               <span className="text-sm font-medium text-[#34342f]">Nome do canal</span>
               <input
@@ -603,24 +743,31 @@ export default function CampaignChannelsPage() {
             </label>
             <label className="block">
               <span className="text-sm font-medium text-[#34342f]">
-                Nome da instancia Evolution (opcional)
+                Nome da instancia Evolution
               </span>
               <input
                 className="mt-1 w-full rounded-md border border-[#d7d6cd] bg-white px-3 py-2"
                 value={createInstanceName}
                 onChange={(event) => setCreateInstanceName(event.target.value)}
-                placeholder="Ex.: atendimento-campanha"
+                placeholder="Ex.: wp01"
+                required
               />
-              <span className="mt-1 block text-xs text-[#65655f]">
-                Se ficar vazio, a instancia sera gerada a partir do nome do canal na preparacao.
-              </span>
             </label>
+            {linkPreview ? (
+              <p className="text-sm text-[#47624f]">{linkPreview}</p>
+            ) : null}
             <button
               className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
               type="submit"
               disabled={creating}
             >
-              {creating ? 'Criando e conectando...' : 'Criar e conectar'}
+              {creating
+                ? createMode === 'LINK'
+                  ? 'Vinculando...'
+                  : 'Criando...'
+                : createMode === 'LINK'
+                  ? 'Criar canal e vincular'
+                  : 'Criar canal e nova instancia'}
             </button>
           </form>
         ) : null}
@@ -643,21 +790,33 @@ export default function CampaignChannelsPage() {
               const ui = getCardState(account.id);
               const isConnected = account.status === 'CONNECTED';
               const instanceMissing = isInstanceNotFoundMessage(ui.error);
-              const showPrepare =
-                !isConnected &&
-                (account.status === 'DISCONNECTED' ||
-                  account.status === 'ERROR' ||
-                  instanceMissing);
+              const remote = account.remoteConnectionState ?? null;
+              const showReconnect =
+                remote === 'DISCONNECTED_WITH_SESSION' || remote === 'DISCONNECTED_UNKNOWN_SESSION';
+              const showRestartRemote =
+                remote === 'RESTART_REQUIRED' || showReconnect;
+              const showResetSession =
+                remote === 'LOGGED_OUT' ||
+                remote === 'DEVICE_REMOVED' ||
+                remote === 'SESSION_INVALID' ||
+                remote === 'DISCONNECTED_WITH_SESSION' ||
+                remote === 'QR_REQUIRED';
               const showQrButton =
                 !isConnected &&
                 !instanceMissing &&
-                (account.status === 'CONNECTING' ||
-                  account.status === 'DISCONNECTED' ||
-                  account.status === 'ERROR');
-              const canShowQr =
+                (remote === 'QR_REQUIRED' ||
+                  remote === 'CREATED' ||
+                  remote === 'LOGGED_OUT' ||
+                  remote === 'DEVICE_REMOVED' ||
+                  account.status === 'CONNECTING');
+              const showPrepare =
                 !isConnected &&
-                ['CONNECTING', 'DISCONNECTED', 'ERROR'].includes(account.status) &&
-                Boolean(ui.qrBase64);
+                (!account.provisioningMode ||
+                  remote === 'NOT_FOUND' ||
+                  remote === 'REMOVED' ||
+                  instanceMissing);
+              const canShowQr =
+                !isConnected && Boolean(ui.qrBase64);
               const qrImageSrc = ui.qrBase64 ? toQrCodeImageSrc(ui.qrBase64) : null;
 
               return (
@@ -669,20 +828,45 @@ export default function CampaignChannelsPage() {
                     <div>
                       <h3 className="font-medium text-[#24382b]">{account.name}</h3>
                       <p className="mt-1 text-sm text-[#65655f]">
-                        Status: {getChannelAccountStatusLabel(account.status)}
+                        Status local: {getChannelAccountStatusLabel(account.status)}
+                      </p>
+                      <p className="mt-1 text-sm text-[#65655f]">
+                        Modo:{' '}
+                        {account.provisioningMode === 'LINKED'
+                          ? 'Vinculada da Evolution'
+                          : account.provisioningMode === 'CREATED'
+                            ? 'Criada pelo Campanha360'
+                            : '—'}
                       </p>
                       {account.externalAccountId ? (
                         <p className="mt-1 text-sm text-[#65655f]">
-                          Instancia Evolution: {account.externalAccountId}
+                          Instancia: {account.externalAccountId}
+                          {account.remoteOwnerLast4
+                            ? ` · owner ***${account.remoteOwnerLast4}`
+                            : ''}
                         </p>
                       ) : (
                         <p className="mt-1 text-sm text-[#65655f]">
-                          Instancia Evolution: sera definida na preparacao
+                          Instancia Evolution: ainda nao provisionada
                         </p>
                       )}
+                      <p className="mt-1 text-xs text-[#65655f]">
+                        Remoto: {account.remoteConnectionState ?? '—'} · Sessao:{' '}
+                        {account.sessionState ?? '—'}
+                        {account.statusReason ? ` · reason ${account.statusReason}` : ''}
+                      </p>
+                      <p className="mt-1 text-xs text-[#65655f]">
+                        Fonte: {account.lastStateSource ?? '—'}
+                        {account.lastRemoteVerificationAt
+                          ? ` · verificado ${formatDate(account.lastRemoteVerificationAt)}`
+                          : ''}
+                        {account.operationInProgress
+                          ? ` · operacao ${account.operationInProgress}`
+                          : ''}
+                      </p>
                       {ui.evolutionState ? (
                         <p className="mt-1 text-xs text-[#65655f]">
-                          Estado Evolution: {ui.evolutionState}
+                          Ultimo estado consultado: {ui.evolutionState}
                         </p>
                       ) : null}
                       <p className="mt-1 text-xs text-[#65655f]">
@@ -706,9 +890,9 @@ export default function CampaignChannelsPage() {
                       {ui.message}
                     </p>
                   ) : null}
-                  {instanceMissing ? (
+                  {account.reconnectErrorSafe ? (
                     <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-                      A instancia nao foi encontrada na Evolution. Prepare a conexao novamente.
+                      {account.reconnectErrorSafe}
                     </p>
                   ) : null}
 
@@ -721,11 +905,27 @@ export default function CampaignChannelsPage() {
                           disabled={ui.preparing}
                           onClick={() => handlePrepare(account)}
                         >
-                          {ui.preparing
-                            ? 'Preparando...'
-                            : instanceMissing
-                              ? 'Preparar conexao novamente'
-                              : 'Preparar conexao'}
+                          {ui.preparing ? 'Preparando...' : 'Sincronizar / preparar'}
+                        </button>
+                      ) : null}
+                      {showReconnect ? (
+                        <button
+                          className="rounded-md bg-[#24382b] px-3 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                          type="button"
+                          disabled={ui.preparing}
+                          onClick={() => handleReconnect(account)}
+                        >
+                          {ui.preparing ? 'Reconectando...' : 'Tentar reconectar'}
+                        </button>
+                      ) : null}
+                      {showRestartRemote ? (
+                        <button
+                          className="rounded-md border border-amber-700 px-3 py-2 text-sm font-medium text-amber-900 disabled:opacity-60"
+                          type="button"
+                          disabled={ui.resetting}
+                          onClick={() => handleRestart(account)}
+                        >
+                          {ui.resetting ? 'Reiniciando...' : 'Reiniciar instancia'}
                         </button>
                       ) : null}
                       {showQrButton ? (
@@ -735,7 +935,17 @@ export default function CampaignChannelsPage() {
                           disabled={ui.loadingQr}
                           onClick={() => handleGenerateQr(account)}
                         >
-                          {ui.loadingQr ? 'Gerando QR...' : 'Gerar QR Code'}
+                          {ui.loadingQr ? 'Gerando QR...' : 'Mostrar / atualizar QR'}
+                        </button>
+                      ) : null}
+                      {showResetSession ? (
+                        <button
+                          className="rounded-md border border-red-700 px-3 py-2 text-sm font-medium text-red-800 disabled:opacity-60"
+                          type="button"
+                          disabled={ui.resetting}
+                          onClick={() => handleResetSession(account)}
+                        >
+                          {ui.resetting ? 'Resetando...' : 'Resetar sessao e gerar novo QR'}
                         </button>
                       ) : null}
                       <button
@@ -744,15 +954,15 @@ export default function CampaignChannelsPage() {
                         disabled={ui.refreshing}
                         onClick={() => handleRefresh(account)}
                       >
-                        {ui.refreshing ? 'Atualizando...' : 'Atualizar status'}
+                        {ui.refreshing ? 'Atualizando...' : 'Sincronizar estado'}
                       </button>
                       <button
-                        className="rounded-md border border-amber-700 px-3 py-2 text-sm font-medium text-amber-900 disabled:opacity-60"
+                        className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#65655f] disabled:opacity-60"
                         type="button"
                         disabled={ui.resetting}
-                        onClick={() => handleRestart(account)}
+                        onClick={() => handleClearLocalBinding(account)}
                       >
-                        {ui.resetting ? 'Reiniciando...' : 'Reiniciar conexao'}
+                        Limpar vinculo local
                       </button>
                       <button
                         className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#65655f] disabled:opacity-60"

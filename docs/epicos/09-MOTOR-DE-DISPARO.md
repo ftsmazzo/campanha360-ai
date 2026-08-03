@@ -2847,3 +2847,7 @@ Regras:
 - Itens legados CONTENT_REJECTED+HTTP_400 sem evidencia ? UNCONFIRMED_LEGACY_CLASSIFICATION (nao inventa desconexao retroativa).
 
 Validacao WhatsApp (09.6.3) permanece intacta. DISPATCH_SEND_ENABLED default false. Nao iniciar 09.7.
+
+### Nota ? readiness de canal (modulo 04)
+
+A aptidao operacional de uma `ChannelAccount` para Dispatch (`CONNECTED` + sessao remota saudavel) e fornecida pelo modulo de canais/Evolution (estados remotos, reconnect/reset). A 09.6 consome o status final; nao reescreve o lifecycle de instancias.

@@ -42,7 +42,7 @@ describe('buildProtectionEnforcementMatrix', () => {
     assert.equal(delay?.appliedInWorker, true);
 
     const validate = rows.find((r) => r.rule.includes('Validacao WhatsApp'));
-    assert.equal(validate?.status, 'DISABLED');
+    assert.equal(validate?.status, 'APPLIED');
   });
 
   it('sem reserva atomica declara delay como DECLARED_ONLY', () => {

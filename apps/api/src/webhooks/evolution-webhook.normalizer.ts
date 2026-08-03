@@ -137,6 +137,46 @@ export function extractEvolutionConnectionState(
   );
 }
 
+export function extractEvolutionConnectionMeta(payload: unknown): {
+  state: string | null;
+  statusReason: string | null;
+  reasonCode: string | null;
+  reasonType: string | null;
+  eventAt: Date | null;
+} {
+  const root = asRecord(payload);
+  const data = asRecord(root?.data);
+  const state = extractEvolutionConnectionState(payload);
+
+  const statusReason =
+    asString(data?.statusReason) ??
+    asString(root?.statusReason) ??
+    asString(data?.reason) ??
+    null;
+
+  const conflict = asRecord(data?.error) ?? asRecord(root?.error);
+  const reasonType =
+    asString(conflict?.type) ??
+    asString(data?.type) ??
+    asString(asRecord(data?.conflict)?.type) ??
+    null;
+
+  const reasonCode =
+    asString(conflict?.code) ??
+    asString(data?.code) ??
+    (typeof data?.statusReason === 'number' ? String(data.statusReason) : null) ??
+    statusReason;
+
+  const eventAt =
+    extractTimestamp(data?.messageTimestamp) ??
+    extractTimestamp(data?.timestamp) ??
+    extractTimestamp(root?.date_time) ??
+    extractTimestamp(root?.dateTime) ??
+    null;
+
+  return { state, statusReason, reasonCode, reasonType, eventAt };
+}
+
 export function normalizeEvolutionWebhookPayload(
   payload: unknown,
 ): NormalizedEvolutionInbound[] {

@@ -479,6 +479,30 @@ model ChannelAccount {
   verifiedAccountAgeSource String?
   disconnectedAt    DateTime?
   lastConnectionError String?
+
+  /** CREATED | LINKED — modo de provisionamento Evolution. */
+  provisioningMode String?
+  evolutionInstanceId String?
+  evolutionInstanceName String?
+  linkedAt DateTime?
+  lastRemoteVerificationAt DateTime?
+  lastRemoteState String?
+  remoteConnectionState String?
+  sessionState String?
+  remoteOwnerHash String?
+  remoteOwnerLast4 String?
+  statusReason String?
+  lastStateSource String?
+  lastStateEventAt DateTime?
+  reconnectRequestedAt DateTime?
+  reconnectFinishedAt DateTime?
+  reconnectResult String?
+  reconnectErrorSafe String?
+  remoteStateBefore String?
+  remoteStateAfter String?
+  operationInProgress String?
+  restartAttemptCount Int @default(0)
+
   dispatchPlans     DispatchPlan[]
   dispatchPlanChannels DispatchPlanChannel[]
   dispatches        Dispatch[]
@@ -490,6 +514,8 @@ model ChannelAccount {
   updatedAt         DateTime             @updatedAt
 
   @@index([organizationId, campaignId])
+  @@index([organizationId, evolutionInstanceName])
+  @@index([organizationId, externalAccountId])
 }
 
 /**

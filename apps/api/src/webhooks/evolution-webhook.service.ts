@@ -31,13 +31,12 @@ import {
 } from './evolution-webhook.auth';
 import {
   NormalizedEvolutionInbound,
-  extractEvolutionConnectionState,
+  extractEvolutionConnectionMeta,
   isConnectionUpdateEvent,
   normalizeEvolutionWebhookPayload,
 } from './evolution-webhook.normalizer';
-import {
-  mapEvolutionConnectionStateToStatus,
-} from '../evolution/evolution-connection.util';
+import { EvolutionLifecycleService } from '../evolution/evolution-lifecycle.service';
+import { sanitizeLogText } from '@campanha360/shared';
 
 type ProcessResult = {
   ok: true;
@@ -56,6 +55,7 @@ export class EvolutionWebhookService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly audit: AuditService,
+    private readonly evolutionLifecycle: EvolutionLifecycleService,
   ) {}
 
   async getHealth(channelAccountId: string) {
@@ -158,63 +158,60 @@ export class EvolutionWebhookService {
     payload: unknown,
     event: string | null,
   ): Promise<ProcessResult> {
-    const evolutionState = extractEvolutionConnectionState(payload);
-    const nextStatus = mapEvolutionConnectionStateToStatus(evolutionState);
+    const meta = extractEvolutionConnectionMeta(payload);
+    const receivedAt = new Date();
 
-    if (!nextStatus) {
+    const result = await this.evolutionLifecycle.applyWebhookConnectionState({
+      accountId: account.id,
+      rawState: meta.state,
+      statusReason: meta.statusReason,
+      reasonCode: meta.reasonCode,
+      reasonType: meta.reasonType,
+      eventAt: meta.eventAt,
+      receivedAt,
+      eventName: event,
+    });
+
+    if (!result.applied) {
       this.logger.warn(
-        `Webhook connection.update ignorado channelAccountId=${account.id} state=${evolutionState ?? 'n/a'}`,
+        sanitizeLogText(
+          `Webhook connection.update ignorado channelAccountId=${account.id} reason=${result.reason} state=${meta.state ?? 'n/a'}`,
+        ),
       );
       await this.safeAudit(account, 'CHANNEL_EVOLUTION_CONNECTION_IGNORED', {
-        reason: 'unmapped_state',
+        reason: result.reason,
         event,
-        evolutionState,
+        evolutionState: meta.state,
+        statusReason: meta.statusReason,
       });
       return {
         ok: true,
         ignored: true,
-        reason: 'unmapped_connection_state',
+        reason: result.reason ?? 'unmapped_connection_state',
         processed: 0,
         duplicates: 0,
         skippedOutbound: 0,
       };
     }
 
-    if (nextStatus !== account.status) {
-      await this.prisma.channelAccount.update({
-        where: { id: account.id },
-        data: {
-          status: nextStatus,
-          ...(nextStatus === ChannelAccountStatus.DISCONNECTED ||
-          nextStatus === ChannelAccountStatus.ERROR
-            ? {
-                disconnectedAt: new Date(),
-                lastConnectionError: evolutionState ?? 'connection.update',
-              }
-            : nextStatus === ChannelAccountStatus.CONNECTED
-              ? {
-                  disconnectedAt: null,
-                  lastConnectionError: null,
-                }
-              : {}),
-        } as never,
-      });
-    }
-
     await this.safeAudit(account, 'CHANNEL_EVOLUTION_CONNECTION_UPDATED', {
       event,
-      evolutionState,
+      evolutionState: meta.state,
+      statusReason: meta.statusReason,
+      reasonType: meta.reasonType,
       previousStatus: account.status,
-      status: nextStatus,
+      remoteConnectionState: result.state?.normalizedConnectionState,
     });
 
     this.logger.log(
-      `Webhook connection.update channelAccountId=${account.id} ${account.status} -> ${nextStatus} state=${evolutionState ?? 'n/a'}`,
+      sanitizeLogText(
+        `Webhook connection.update channelAccountId=${account.id} state=${meta.state ?? 'n/a'} remote=${result.state?.normalizedConnectionState ?? 'n/a'}`,
+      ),
     );
 
     return {
       ok: true,
-      processed: nextStatus !== account.status ? 1 : 0,
+      processed: 1,
       duplicates: 0,
       skippedOutbound: 0,
     };

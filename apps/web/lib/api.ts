@@ -2368,6 +2368,17 @@ export type ChannelAccountItem = {
   status: string;
   externalAccountId: string | null;
   config?: Record<string, unknown> | null;
+  provisioningMode?: string | null;
+  evolutionInstanceName?: string | null;
+  remoteConnectionState?: string | null;
+  sessionState?: string | null;
+  lastRemoteVerificationAt?: string | null;
+  remoteOwnerLast4?: string | null;
+  statusReason?: string | null;
+  lastStateSource?: string | null;
+  operationInProgress?: string | null;
+  reconnectResult?: string | null;
+  reconnectErrorSafe?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -2451,9 +2462,20 @@ export type EvolutionPrepareResponse = {
 export type EvolutionStatusResponse = {
   channelAccount: ChannelAccountItem;
   evolution: {
-    instanceName: string;
-    state: string;
+    normalizedConnectionState?: string;
+    normalizedSessionState?: string;
+    rawStateSafe?: string | null;
+    statusReason?: string | null;
+    recommendedAction?: string;
+    instanceExists?: boolean;
+    ownerLast4?: string | null;
+    checkedAt?: string;
+    source?: string;
+    instanceName?: string;
+    state?: string;
   };
+  readiness?: { ready: boolean; reason: string | null };
+  recommendedAction?: string;
 };
 
 export type EvolutionQrCodeResponse = {
@@ -2464,7 +2486,9 @@ export type EvolutionQrCodeResponse = {
       base64: string | null;
       code: string | null;
       pairingCode: string | null;
-    };
+    } | null;
+    message?: string;
+    snapshot?: Record<string, unknown>;
   };
 };
 
@@ -2476,6 +2500,97 @@ export function prepareChannelEvolution(
   return request<EvolutionPrepareResponse>(
     `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/prepare`,
     { method: 'POST' },
+    token,
+  );
+}
+
+export function createEvolutionInstance(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+  payload: { instanceName?: string; confirmCreate: true },
+) {
+  return request<EvolutionPrepareResponse>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/create-instance`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function previewEvolutionLink(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+  payload: { instanceName: string },
+) {
+  return request<{
+    preview: {
+      instanceName: string;
+      remoteConnectionState: string;
+      sessionState: string;
+      ownerLast4: string | null;
+      ownerHash: string | null;
+      rawState: string | null;
+      requiresConfirmation: boolean;
+      willRequestQr: boolean;
+    };
+  }>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/preview-link`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function linkEvolutionInstance(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+  payload: { instanceName: string; confirmLink: true },
+) {
+  return request<EvolutionPrepareResponse & { evolution: { linked?: boolean } }>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/link-instance`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function reconnectEvolutionInstance(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+) {
+  return request<{
+    channelAccount: ChannelAccountItem;
+    success: boolean;
+    evolution: Record<string, unknown>;
+  }>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/reconnect`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function restartEvolutionInstance(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+) {
+  return request<{ channelAccount: ChannelAccountItem; evolution: Record<string, unknown> }>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/restart`,
+    { method: 'POST' },
+    token,
+  );
+}
+
+export function resetEvolutionSession(
+  token: string,
+  campaignId: string,
+  channelAccountId: string,
+  payload: { confirmReset: true },
+) {
+  return request<EvolutionQrCodeResponse>(
+    `/campaigns/${campaignId}/channel-accounts/${channelAccountId}/evolution/reset-session`,
+    { method: 'POST', body: JSON.stringify(payload) },
     token,
   );
 }

@@ -497,3 +497,22 @@ O épico **04 — Canais e WhatsApp Evolution** fica operacionalmente fechado pa
 Próximo épico documentado: **05 — Base de Contatos da Campanha** (`docs/epicos/05-BASE-CONTATOS-CAMPANHA.md`), começando por **05.1**.
 
 Próximos épicos de IA/automações apenas quando autorizados.
+
+## 16. Gestao confiavel de instancias (pos-04.7 / 2026-08)
+
+Separacao explicita de modos:
+
+- **Criar nova instancia** (`POST .../evolution/create-instance`, `confirmCreate=true`) — falha se o nome ja existir;
+- **Vincular existente** (`POST .../evolution/preview-link` + `.../link-instance`, `confirmLink=true`) — sem QR se ja `CONNECTED`.
+
+Estados remotos normalizados (`packages/shared/src/evolution-instance-state.util.ts`): `CONNECTED`, `DISCONNECTED_WITH_SESSION`, `DEVICE_REMOVED`, `LOGGED_OUT`, `RESTART_REQUIRED`, etc.
+
+Acoes: `reconnect`, `restart`, `reset-session` (destrutivo com confirmacao), `qrcode` somente quando o estado permitir.
+
+Webhook `CONNECTION_UPDATE` assinado na Evolution; freshness impede evento antigo sobrescrever estado novo.
+
+Identidade: `organizationId` + `instanceName` + owner hash/last4; bloqueio cross-org.
+
+Pendencia operacional: **rotacionar API key** se exposta em logs da Evolution; Campanha360 sanitiza logs/audit.
+
+Readiness operacional de Dispatch depende do estado remoto `CONNECTED` com verificacao recente (modulo de canais); o motor 09.6 nao foi reescrito.
