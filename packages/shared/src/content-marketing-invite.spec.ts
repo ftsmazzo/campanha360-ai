@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import {
   DEFAULT_INVITE_INTENTION,
   buildInviteMarketingBriefFromCandidate,
+  composeInviteOperatorInstructions,
   marketingBriefQualityHints,
 } from './content-marketing.util';
 
@@ -25,18 +26,21 @@ describe('buildInviteMarketingBriefFromCandidate', () => {
     assert.equal(hints.readyForGeneration, true);
     assert.match(brief.candidateCharacteristics ?? '', /Maria Silva/);
     assert.match(brief.differentiators ?? '', /1\. Saude na ponta/);
-    assert.match(brief.additionalInstructions ?? '', /materia-prima|criterio|criatividade/i);
+    assert.match(brief.additionalInstructions ?? '', /MATERIAL CONCRETO/);
+    assert.match(brief.additionalInstructions ?? '', /Saude na ponta/);
     assert.doesNotMatch(brief.additionalInstructions ?? '', /PAUTAS OBRIGATORIAS/);
     assert.equal(brief.personalizationPlacement, 'GREETING');
-    assert.match(brief.additionalInstructions ?? '', new RegExp(DEFAULT_INVITE_INTENTION.slice(0, 40)));
+    assert.match(
+      brief.additionalInstructions ?? '',
+      new RegExp(DEFAULT_INVITE_INTENTION.slice(0, 40)),
+    );
     assert.ok((brief.forbiddenClaims ?? []).some((c) => /voto/i.test(c)));
-    assert.equal(
-      (brief.forbiddenClaims ?? []).some((c) => /uma por variacao|generica sem citar/i.test(c)),
-      false,
+    assert.ok(
+      (brief.forbiddenClaims ?? []).some((c) => /generico sem ancoragem/i.test(c)),
     );
   });
 
-  it('prioriza a intencao customizada do operador', () => {
+  it('prioriza a intencao customizada do operador e mantem as pautas', () => {
     const brief = buildInviteMarketingBriefFromCandidate(
       { name: 'Ana', mainProposals: ['Protecao as mulheres'] },
       'Quero um tom mais emocional e proximo',
@@ -44,5 +48,22 @@ describe('buildInviteMarketingBriefFromCandidate', () => {
     assert.match(brief.additionalInstructions ?? '', /tom mais emocional/);
     assert.match(brief.additionalInstructions ?? '', /Protecao as mulheres/);
     assert.ok(brief.objective);
+  });
+});
+
+describe('composeInviteOperatorInstructions', () => {
+  it('nunca devolve so a intencao quando ha pautas', () => {
+    const text = composeInviteOperatorInstructions({
+      intention: 'Faca convites persuasivos',
+      proposals: ['Creche em tempo integral', 'Transporte para idosos'],
+      bio: 'Assistente social',
+      toneOfVoice: 'proximo',
+    });
+    assert.match(text, /PEDIDO DO OPERADOR/);
+    assert.match(text, /MATERIAL CONCRETO/);
+    assert.match(text, /Creche em tempo integral/);
+    assert.match(text, /Assistente social/);
+    assert.match(text, /proximo/);
+    assert.match(text, /Proibido soar institucional/);
   });
 });

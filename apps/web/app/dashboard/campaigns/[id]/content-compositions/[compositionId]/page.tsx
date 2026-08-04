@@ -50,7 +50,7 @@ const TYPE_LABELS: Record<ContentVariantType, string> = {
 };
 
 const DEFAULT_INTENTION =
-  'Escreva convites iniciais de WhatsApp impactantes, criativos e persuasivos para a pessoa acompanhar conteúdos e informações. Use com inteligência o tom, a bio e as pautas do contexto — sem soar robótico, sem pedido de voto e sem panfleto de candidatura. Varie ângulos entre as mensagens.';
+  'Escreva convites iniciais de WhatsApp impactantes, criativos e persuasivos para a pessoa querer continuar recebendo conteudo. Fale como gente real, com substancia do contexto — sem soar robotico, sem pedir voto e sem panfleto de candidatura. Varie angulos entre as mensagens.';
 
 const EMPTY_BRIEF: ContentMarketingBrief = {
   objective: '',

@@ -29,7 +29,7 @@ export const CONTENT_AI_GENERATION_MODES = [
 export type ContentAiGenerationMode =
   (typeof CONTENT_AI_GENERATION_MODES)[number];
 
-export const CONTENT_PROMPT_VERSION = 'v6-context-creative-2026-08';
+export const CONTENT_PROMPT_VERSION = 'v7-grounded-creative-2026-08';
 
 /** Contexto coletivo permitido no briefing (nao vira variavel individual). */
 export const COLLECTIVE_CONTEXT_ALLOWLIST = [
@@ -474,10 +474,11 @@ export function isContentPersonalizationPlacement(
 export const DEFAULT_INVITE_COMPOSITION_NAME = 'Convite inicial';
 
 export const DEFAULT_INVITE_INTENTION =
-  'Escreva convites iniciais de WhatsApp impactantes, criativos e persuasivos para a pessoa acompanhar conteúdos e informações. Use com inteligência o tom, a bio e as pautas do contexto — sem soar robótico, sem pedido de voto e sem panfleto de candidatura. Varie ângulos entre as mensagens.';
+  'Escreva convites iniciais de WhatsApp impactantes, criativos e persuasivos para a pessoa querer continuar recebendo conteudo. Fale como gente real, com substancia do contexto — sem soar robotico, sem pedir voto e sem panfleto de candidatura. Varie angulos entre as mensagens.';
 
+/** Scaffold minimo: a IA nao deve parafrasear isto. */
 export const DEFAULT_INVITE_BASE_BODY =
-  'Oi, {{firstName}}! Quero te convidar a acompanhar conteúdos e informações que tenho compartilhado. Se fizer sentido pra você, fico feliz em seguir conversando por aqui.';
+  'Oi, {{firstName}}!';
 
 export type InviteCandidateInput = {
   name: string;
@@ -493,6 +494,41 @@ function listProposals(candidate: InviteCandidateInput | null | undefined): stri
   return (candidate?.mainProposals ?? [])
     .map((item) => String(item).trim())
     .filter(Boolean);
+}
+
+/**
+ * Junta o pedido do operador com o material concreto do candidato.
+ * Nunca devolve so a intencao — isso faz a IA cair em texto generico.
+ */
+export function composeInviteOperatorInstructions(input: {
+  intention?: string | null;
+  proposals?: string[] | null;
+  bio?: string | null;
+  toneOfVoice?: string | null;
+}): string {
+  const intention = input.intention?.trim() || DEFAULT_INVITE_INTENTION;
+  const proposals = (input.proposals ?? [])
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+  const proposalsList = proposals
+    .map((item, index) => `${index + 1}. ${item}`)
+    .join('\n');
+  const bio = input.bio?.trim();
+  const tone = input.toneOfVoice?.trim();
+
+  const parts = [
+    `PEDIDO DO OPERADOR:\n${intention}`,
+    proposalsList
+      ? `MATERIAL CONCRETO (ancore cada mensagem nisto — escolha angulo livremente, combine temas se fizer sentido, mas NUNCA escreva convite vazio):\n${proposalsList}`
+      : null,
+    bio ? `BIO / TRAJETORIA:\n${bio}` : null,
+    tone ? `TOM DE VOZ PEDIDO:\n${tone}` : null,
+    'Criatividade livre no angulo e na emocao; substancia obrigatoria quando houver material.',
+    'Proibido soar institucional/vago: "temas relevantes", "questoes importantes", "pautas que defendo", "bem coletivo", "nossa comunidade/sociedade" sem dizer O QUE.',
+    'Proibido parafrasear a mensagem-base. As variacoes precisam ser distintas entre si.',
+  ].filter(Boolean);
+
+  return parts.join('\n\n').slice(0, 2000);
 }
 
 /** Monta briefing rico a partir do candidato + intenção do operador (sem regras engessadas). */
@@ -515,22 +551,24 @@ export function buildInviteMarketingBriefFromCandidate(
 
   const brief = emptyMarketingBrief();
   brief.objective =
-    'Gerar convites de WhatsApp que a pessoa sinta vontade de continuar recebendo — com autenticidade e persuasao leve, sem pedir voto.';
+    'Convites de WhatsApp que a pessoa sinta vontade de continuar recebendo — humanos, concretos e persuasivos, sem pedir voto.';
   brief.offerName = 'Convite para acompanhar conteudos';
   brief.offerDescription =
-    'Abrir dialogo e oferecer informacoes uteis alinhadas ao que a pessoa pode se importar, a partir do contexto disponivel.';
-  brief.targetAudience =
-    'Base de contatos que pode se interessar por protecao social, familia, mulheres, criancas, juventude, idosos, transparencia e temas do cotidiano.';
+    'Abrir dialogo com informacao util e especifica, ancorada no material do remetente.';
+  brief.targetAudience = proposals.length
+    ? `Pessoas que podem se importar com: ${proposals.slice(0, 4).join('; ')}.`
+    : 'Base de contatos da campanha.';
   brief.candidateCharacteristics =
     characteristics || 'Responsavel pela comunicacao da campanha.';
-  brief.painPoints =
-    'Falta de informacao clara e humana sobre temas que afetam a vida real das pessoas.';
+  brief.painPoints = proposals.length
+    ? `Desinformacao e distancia sobre: ${proposals.slice(0, 3).join('; ')}.`
+    : 'Falta de informacao clara e humana sobre a vida real das pessoas.';
   brief.primaryBenefit =
-    proposals[0] || 'Receber informacoes claras e proximas sobre temas relevantes.';
+    proposals[0] || 'Receber informacoes claras e proximas.';
   brief.secondaryBenefits = proposals.slice(1).join(' | ') || null;
   brief.differentiators = proposalsList || null;
   brief.callToAction =
-    'Convidar a responder, acompanhar ou seguir a conversa de forma natural e especifica ao angulo da mensagem.';
+    'Convite natural a responder ou continuar a conversa, coerente com o angulo escolhido.';
   brief.tone =
     candidate?.toneOfVoice?.trim() ||
     'acolhedor, firme, proximo e esperancoso; primeira pessoa; frases curtas';
@@ -545,18 +583,14 @@ export function buildInviteMarketingBriefFromCandidate(
     'propaganda agressiva de candidatura',
     'promessas ilegais ou inventadas',
     'afirmacoes falsas sobre pesquisa ou percentual',
+    'convite generico sem ancoragem no material concreto disponivel',
   ];
-  const contextBlock = proposalsList
-    ? `Material de contexto disponivel (use com criterio e criatividade, conforme o pedido do operador — nao precisa seguir ordem mecanica):\n${proposalsList}`
-    : 'Use o contexto do remetente com criterio; evite textos vazios.';
-  brief.additionalInstructions = [
-    intention?.trim() || DEFAULT_INVITE_INTENTION,
-    contextBlock,
-    'Priorize o pedido do operador. O contexto (bio, tom, pautas) e materia-prima, nao um checklist engessado.',
-    'As variacoes devem ser distintas entre si (angulo, abertura, emocao ou CTA) — nao parafrases da mesma frase.',
-  ]
-    .join('\n')
-    .slice(0, 2000);
+  brief.additionalInstructions = composeInviteOperatorInstructions({
+    intention,
+    proposals,
+    bio: candidate?.bio,
+    toneOfVoice: candidate?.toneOfVoice,
+  });
   return brief;
 }
 

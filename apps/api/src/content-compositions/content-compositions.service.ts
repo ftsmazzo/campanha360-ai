@@ -11,6 +11,7 @@ import {
   buildAiSetsValidationLogMeta,
   buildContentAiFormatCorrectionUserMessage,
   buildInviteMarketingBriefFromCandidate,
+  composeInviteOperatorInstructions,
   classifyContentSimilarity,
   contentAiModelSupportsJsonSchema,
   countTheoreticalCombinations,
@@ -577,56 +578,86 @@ export class ContentCompositionsService {
     if (dto.objective?.trim()) brief.objective = dto.objective.trim();
     if (dto.tone?.trim()) brief.tone = dto.tone.trim();
     if (dto.maxChars) brief.maxLength = dto.maxChars;
-    if (dto.intention?.trim()) {
-      brief.additionalInstructions = dto.intention.trim().slice(0, 2000);
-    }
     if (
       isContentPersonalizationPlacement(existing.personalizationPlacement)
     ) {
       brief.personalizationPlacement = existing.personalizationPlacement;
     }
 
-    // Fluxo Convite: se briefing ainda estiver vazio, completa a partir do candidato.
-    const hintsBefore = marketingBriefQualityHints(brief);
-    if (!hintsBefore.readyForGeneration || dto.intention?.trim()) {
-      const candidate = await this.prisma.candidate.findUnique({
-        where: { campaignId },
-      });
-      if (candidate || dto.intention?.trim()) {
-        const inviteBrief = buildInviteMarketingBriefFromCandidate(
-          candidate
-            ? {
-                name: candidate.name,
-                party: candidate.party,
-                office: candidate.office,
-                bio: candidate.bio,
-                toneOfVoice: candidate.toneOfVoice,
-                mainProposals: Array.isArray(candidate.mainProposals)
-                  ? (candidate.mainProposals as string[])
-                  : null,
-                restrictedTopics: Array.isArray(candidate.restrictedTopics)
-                  ? (candidate.restrictedTopics as string[])
-                  : null,
-              }
+    // Sempre reidrata o material do candidato na geracao.
+    // NUNCA substituir additionalInstructions so pela intention — isso apagava as pautas
+    // e a IA caia em parafrase generica da mensagem-base.
+    const candidate = await this.prisma.candidate.findUnique({
+      where: { campaignId },
+    });
+    const candidateInput = candidate
+      ? {
+          name: candidate.name,
+          party: candidate.party,
+          office: candidate.office,
+          bio: candidate.bio,
+          toneOfVoice: candidate.toneOfVoice,
+          mainProposals: Array.isArray(candidate.mainProposals)
+            ? (candidate.mainProposals as string[])
             : null,
-          dto.intention ?? brief.additionalInstructions,
-        );
-        for (const key of Object.keys(inviteBrief) as Array<
-          keyof ContentMarketingBrief
-        >) {
-          const current = brief[key];
-          const empty =
-            current == null ||
-            (typeof current === 'string' && !current.trim()) ||
-            (Array.isArray(current) && current.length === 0);
-          if (empty && inviteBrief[key] != null) {
-            (brief as Record<string, unknown>)[key] = inviteBrief[key];
-          }
+          restrictedTopics: Array.isArray(candidate.restrictedTopics)
+            ? (candidate.restrictedTopics as string[])
+            : null,
         }
-        if (dto.intention?.trim()) {
-          brief.additionalInstructions = dto.intention.trim().slice(0, 2000);
+      : null;
+    const proposals = (candidateInput?.mainProposals ?? []).filter(Boolean);
+    const operatorIntention =
+      dto.intention?.trim() ||
+      brief.additionalInstructions?.trim() ||
+      null;
+
+    if (candidateInput || operatorIntention) {
+      const inviteBrief = buildInviteMarketingBriefFromCandidate(
+        candidateInput,
+        operatorIntention,
+      );
+      // Campos de combustivel criativo: sempre atualizar a partir do candidato.
+      const refreshKeys: Array<keyof ContentMarketingBrief> = [
+        'candidateCharacteristics',
+        'differentiators',
+        'primaryBenefit',
+        'secondaryBenefits',
+        'targetAudience',
+        'painPoints',
+        'tone',
+        'protectedFacts',
+        'forbiddenClaims',
+        'offerDescription',
+        'offerName',
+      ];
+      for (const key of refreshKeys) {
+        const next = inviteBrief[key];
+        const usable =
+          next != null &&
+          !(typeof next === 'string' && !next.trim()) &&
+          !(Array.isArray(next) && next.length === 0);
+        if (usable) {
+          (brief as Record<string, unknown>)[key] = next;
         }
       }
+      for (const key of Object.keys(inviteBrief) as Array<
+        keyof ContentMarketingBrief
+      >) {
+        const current = brief[key];
+        const empty =
+          current == null ||
+          (typeof current === 'string' && !current.trim()) ||
+          (Array.isArray(current) && current.length === 0);
+        if (empty && inviteBrief[key] != null) {
+          (brief as Record<string, unknown>)[key] = inviteBrief[key];
+        }
+      }
+      brief.additionalInstructions = composeInviteOperatorInstructions({
+        intention: operatorIntention,
+        proposals,
+        bio: candidateInput?.bio,
+        toneOfVoice: candidateInput?.toneOfVoice,
+      });
     }
 
     const hints = marketingBriefQualityHints(brief);
@@ -1692,9 +1723,12 @@ export class ContentCompositionsService {
 
     const system = [
       'Voce e redatora experiente de WhatsApp em portugues do Brasil.',
-      'Sua tarefa e ENTENDER o pedido do operador e usar TODO o contexto disponivel (tom, bio, pautas, restricoes) para escrever mensagens impactantes, criativas e persuasivas — humanas, nao roboticas.',
-      'O pedido do operador tem prioridade. O contexto e materia-prima para interpretar e criar, nao um checklist mecanico.',
-      'Varie angulos, emocao e CTAs entre conjuntos; evite parafrases da mesma ideia.',
+      'ENTENDA o pedido do operador e use TODO o material concreto (tom, bio, pautas) para escrever mensagens impactantes, criativas e persuasivas — humanas, nao roboticas.',
+      'Quando houver material concreto, cada conjunto DEVE ancorar em situacao, tema ou beneficio especifico desse material. Criatividade no angulo; zero vazio.',
+      'Proibido: "temas relevantes", "questoes importantes", "pautas que defendo", "bem coletivo", "nossa comunidade/sociedade" sem dizer o que.',
+      'Proibido parafrasear a mensagem-base ou repetir a mesma ideia com sinonimos.',
+      'O pedido do operador tem prioridade. Material e combustivel criativo, nao checklist mecanico de uma pauta por mensagem.',
+      'Varie angulos, emocao e CTAs entre conjuntos.',
       'Guardrails: nao peca voto; nao invente fatos, pesquisa, percentual, link ou alianca; nao ataque pessoas; nao infira dados sensiveis.',
       'Nao finja conhecimento individual do destinatario alem das variaveis permitidas.',
       'Respeite o tom pedido no briefing quando houver.',
@@ -1705,8 +1739,9 @@ export class ContentCompositionsService {
         ? [
             `FULL_SETS exige de 3 a ${maxSets} itens em sets (prefira ${maxSets}).`,
             'Cada set DEVE ter greeting, body e closing como objetos { "text": string nao vazia, "requiresVariables": string[] }.',
-            'Saudacao curta com {{firstName}} quando permitido; corpo e fechamento coerentes com o angulo do conjunto.',
+            'Saudacao curta com {{firstName}} quando permitido; corpo carrega a substancia; fechamento com CTA natural.',
             'Nao coloque o corpo dentro da saudacao. Nao deixe campos vazios.',
+            'marketingAngle deve nomear o angulo concreto (nao generico).',
             'preservedFacts deve ser true.',
             `Exemplo apenas de estrutura: ${JSON.stringify(CONTENT_AI_ELECTORAL_SETS_EXAMPLE)}`,
           ].join(' ')
@@ -1718,23 +1753,25 @@ export class ContentCompositionsService {
     const userParts = [
       `Modo: ${input.mode}`,
       `Campanha: ${input.campaignName}`,
-      `PEDIDO DO OPERADOR (prioridade):\n${input.brief.additionalInstructions ?? ''}`,
+      `=== MATERIAL E PEDIDO (leia primeiro) ===`,
+      input.brief.additionalInstructions ?? '',
+      `Contexto do remetente (bio/tom/trajetoria):\n${input.brief.candidateCharacteristics ?? ''}`,
+      `Pautas e material de apoio:\n${input.brief.differentiators ?? ''}`,
+      `Beneficio/tema em destaque: ${input.brief.primaryBenefit ?? ''}`,
+      `Outros temas: ${input.brief.secondaryBenefits ?? ''}`,
+      `Tom: ${input.brief.tone ?? ''}; Formalidade: ${input.brief.formality ?? ''}`,
+      `=== BRIEF COMPLEMENTAR ===`,
       `Objetivo: ${input.brief.objective ?? ''}`,
       `Proposta/oferta: ${input.brief.offerName ?? ''} — ${input.brief.offerDescription ?? ''}`,
       `Publico: ${input.brief.targetAudience ?? ''}`,
-      `Contexto do remetente (bio/tom/trajetoria):\n${input.brief.candidateCharacteristics ?? ''}`,
       `Contexto coletivo: ${JSON.stringify(input.brief.collectiveContext ?? {})}`,
       `Dores/preocupacoes: ${input.brief.painPoints ?? ''}`,
-      `Beneficios/temas em destaque: ${input.brief.primaryBenefit ?? ''}`,
-      `Outros temas disponiveis: ${input.brief.secondaryBenefits ?? ''}`,
-      `Pautas e material de apoio:\n${input.brief.differentiators ?? ''}`,
-      `Direcao de CTA (oriente, nao engessse): ${input.brief.callToAction ?? ''}`,
-      `Tom: ${input.brief.tone ?? ''}; Formalidade: ${input.brief.formality ?? ''}`,
+      `Direcao de CTA: ${input.brief.callToAction ?? ''}`,
       `Idioma: ${input.brief.language ?? 'pt-BR'}`,
       `MaxLength: ${input.brief.maxLength ?? 700}`,
       `Fatos protegidos (preservar): ${protectedFacts}`,
       `Proibicoes: ${(input.brief.forbiddenClaims ?? []).join(' | ')}`,
-      `Mensagem-base BODY (referencia opcional de tom — nao copie em todos os sets):\n${input.baseText.slice(0, input.maxInputChars)}`,
+      `Mensagem-base BODY (APENAS scaffold de saudacao/formato — NAO parafrasear nem expandir em todos os sets):\n${input.baseText.slice(0, input.maxInputChars)}`,
       wantsSets ? `Quantidade desejada de conjuntos: ${maxSets}.` : '',
     ].filter(Boolean);
     if (input.existingBlocks) {
@@ -1770,7 +1807,7 @@ export class ContentCompositionsService {
         },
         body: JSON.stringify({
           model: input.model,
-          temperature: 0.7,
+          temperature: 0.9,
           response_format: responseFormat,
           messages: [
             { role: 'system', content: system },
@@ -1792,7 +1829,7 @@ export class ContentCompositionsService {
           },
           body: JSON.stringify({
             model: input.model,
-            temperature: 0.7,
+            temperature: 0.9,
             response_format: { type: 'json_object' },
             messages: [
               { role: 'system', content: system },
