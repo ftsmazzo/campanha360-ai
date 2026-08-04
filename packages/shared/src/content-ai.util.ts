@@ -4,7 +4,7 @@
 
 export const CONTENT_AI_DEFAULTS = {
   ENABLED: false,
-  MAX_VARIANTS: 3,
+  MAX_VARIANTS: 5,
   TIMEOUT_MS: 45_000,
   MAX_INPUT_CHARS: 3500,
   MAX_OUTPUT_CHARS: 12_000,
@@ -49,7 +49,7 @@ export function getContentAiConfig(env: NodeJS.ProcessEnv = process.env) {
     enabled: isContentAiEnabled(env),
     model: (env.CONTENT_AI_MODEL || CONTENT_AI_DEFAULTS.MODEL).trim(),
     maxVariants: Math.min(
-      3,
+      CONTENT_AI_DEFAULTS.MAX_VARIANTS,
       parseIntEnv(env.CONTENT_AI_MAX_VARIANTS, CONTENT_AI_DEFAULTS.MAX_VARIANTS),
     ),
     timeoutMs: parseIntEnv(

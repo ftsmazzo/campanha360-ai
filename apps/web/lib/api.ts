@@ -3009,8 +3009,10 @@ export function createContentComposition(
   token: string,
   campaignId: string,
   payload: {
-    name: string;
-    baseBody: string;
+    name?: string;
+    baseBody?: string;
+    preset?: 'invite';
+    intention?: string;
     blockSeparator?: string;
     fallbacks?: Record<string, string>;
   },
@@ -3107,6 +3109,7 @@ export function generateContentAiVariants(
     tone?: string;
     maxChars?: number;
     requireRecommendedBrief?: boolean;
+    intention?: string;
   },
 ) {
   return request<ContentCompositionItem>(

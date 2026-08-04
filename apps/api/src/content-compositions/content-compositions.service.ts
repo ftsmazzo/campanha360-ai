@@ -10,9 +10,12 @@ import {
   assessEditorialQuality,
   buildAiSetsValidationLogMeta,
   buildContentAiFormatCorrectionUserMessage,
+  buildInviteMarketingBriefFromCandidate,
   classifyContentSimilarity,
   contentAiModelSupportsJsonSchema,
   countTheoreticalCombinations,
+  DEFAULT_INVITE_BASE_BODY,
+  DEFAULT_INVITE_COMPOSITION_NAME,
   extractContentVariableKeys,
   formatAiSetsValidationUserMessages,
   formatSensitiveAttributeUserMessage,
@@ -122,9 +125,55 @@ export class ContentCompositionsService {
 
   async create(userId: string, campaignId: string, dto: CreateCompositionDto) {
     const campaign = await this.getCampaignContext(userId, campaignId, true);
-    const name = dto.name.trim();
-    const baseText = dto.baseBody.trim();
+    const isInvite = dto.preset === 'invite';
+
+    const name = (
+      dto.name?.trim() ||
+      (isInvite ? DEFAULT_INVITE_COMPOSITION_NAME : '')
+    ).trim();
+    const baseText = (
+      dto.baseBody?.trim() ||
+      (isInvite ? DEFAULT_INVITE_BASE_BODY : '')
+    ).trim();
+
+    if (!name || name.length < 2) {
+      throw new BadRequestException('Nome da composicao e obrigatorio');
+    }
+    if (!baseText) {
+      throw new BadRequestException('Mensagem-base e obrigatoria');
+    }
     validateVariantText(baseText, ContentVariantType.BODY);
+
+    let marketingBrief: Prisma.InputJsonValue | undefined;
+    let personalizationPlacement: string | undefined;
+    let combinationMode: string | undefined;
+
+    if (isInvite) {
+      const candidate = await this.prisma.candidate.findUnique({
+        where: { campaignId },
+      });
+      const brief = buildInviteMarketingBriefFromCandidate(
+        candidate
+          ? {
+              name: candidate.name,
+              party: candidate.party,
+              office: candidate.office,
+              bio: candidate.bio,
+              toneOfVoice: candidate.toneOfVoice,
+              mainProposals: Array.isArray(candidate.mainProposals)
+                ? (candidate.mainProposals as string[])
+                : null,
+              restrictedTopics: Array.isArray(candidate.restrictedTopics)
+                ? (candidate.restrictedTopics as string[])
+                : null,
+            }
+          : null,
+        dto.intention,
+      );
+      marketingBrief = brief as unknown as Prisma.InputJsonValue;
+      personalizationPlacement = 'GREETING';
+      combinationMode = 'LOCKED_SETS';
+    }
 
     try {
       const created = await this.prisma.$transaction(async (tx) => {
@@ -137,6 +186,9 @@ export class ContentCompositionsService {
             version: 1,
             blockSeparator: dto.blockSeparator?.trim() || CONTENT_LIMITS.BLOCK_SEPARATOR_DEFAULT,
             fallbacks: (dto.fallbacks ?? {}) as Prisma.InputJsonValue,
+            marketingBrief,
+            personalizationPlacement,
+            combinationMode,
             createdByUserId: userId,
           },
         });
@@ -174,6 +226,7 @@ export class ContentCompositionsService {
           name: created.name,
           version: created.version,
           baseHash: hashNormalizedContent(baseText),
+          preset: isInvite ? 'invite' : null,
         },
       });
 
@@ -524,10 +577,56 @@ export class ContentCompositionsService {
     if (dto.objective?.trim()) brief.objective = dto.objective.trim();
     if (dto.tone?.trim()) brief.tone = dto.tone.trim();
     if (dto.maxChars) brief.maxLength = dto.maxChars;
+    if (dto.intention?.trim()) {
+      brief.additionalInstructions = dto.intention.trim().slice(0, 2000);
+    }
     if (
       isContentPersonalizationPlacement(existing.personalizationPlacement)
     ) {
       brief.personalizationPlacement = existing.personalizationPlacement;
+    }
+
+    // Fluxo Convite: se briefing ainda estiver vazio, completa a partir do candidato.
+    const hintsBefore = marketingBriefQualityHints(brief);
+    if (!hintsBefore.readyForGeneration || dto.intention?.trim()) {
+      const candidate = await this.prisma.candidate.findUnique({
+        where: { campaignId },
+      });
+      if (candidate || dto.intention?.trim()) {
+        const inviteBrief = buildInviteMarketingBriefFromCandidate(
+          candidate
+            ? {
+                name: candidate.name,
+                party: candidate.party,
+                office: candidate.office,
+                bio: candidate.bio,
+                toneOfVoice: candidate.toneOfVoice,
+                mainProposals: Array.isArray(candidate.mainProposals)
+                  ? (candidate.mainProposals as string[])
+                  : null,
+                restrictedTopics: Array.isArray(candidate.restrictedTopics)
+                  ? (candidate.restrictedTopics as string[])
+                  : null,
+              }
+            : null,
+          dto.intention ?? brief.additionalInstructions,
+        );
+        for (const key of Object.keys(inviteBrief) as Array<
+          keyof ContentMarketingBrief
+        >) {
+          const current = brief[key];
+          const empty =
+            current == null ||
+            (typeof current === 'string' && !current.trim()) ||
+            (Array.isArray(current) && current.length === 0);
+          if (empty && inviteBrief[key] != null) {
+            (brief as Record<string, unknown>)[key] = inviteBrief[key];
+          }
+        }
+        if (dto.intention?.trim()) {
+          brief.additionalInstructions = dto.intention.trim().slice(0, 2000);
+        }
+      }
     }
 
     const hints = marketingBriefQualityHints(brief);
@@ -543,6 +642,18 @@ export class ContentCompositionsService {
         formatSensitiveAttributeUserMessage(briefSensitive),
       );
     }
+
+    await this.prisma.contentComposition.update({
+      where: { id: existing.id },
+      data: {
+        marketingBrief: brief as unknown as Prisma.InputJsonValue,
+        personalizationPlacement: brief.personalizationPlacement ?? 'GREETING',
+        combinationMode:
+          isContentCombinationMode(existing.combinationMode)
+            ? existing.combinationMode
+            : 'LOCKED_SETS',
+      },
+    });
 
     const placement = brief.personalizationPlacement ?? 'GREETING';
     const generationId = `ai_${Date.now().toString(36)}`;
@@ -587,6 +698,7 @@ export class ContentCompositionsService {
           baseText: base.text,
           brief,
           campaignName: campaign.name,
+          maxSets: ai.maxVariants,
           existingBlocks:
             mode === 'IMPROVE_CURRENT'
               ? {
@@ -1536,6 +1648,7 @@ export class ContentCompositionsService {
     baseText: string;
     brief: ContentMarketingBrief;
     campaignName: string;
+    maxSets?: number;
     existingBlocks?: {
       greetings: string[];
       bodies: string[];
@@ -1572,23 +1685,28 @@ export class ContentCompositionsService {
       Boolean(input.jsonSchemaEnabled) &&
       wantsSets &&
       contentAiModelSupportsJsonSchema(input.model);
+    const maxSets = Math.min(
+      CONTENT_LIMITS.MAX_AI_VARIANTS,
+      Math.max(3, input.maxSets ?? CONTENT_LIMITS.MAX_AI_VARIANTS),
+    );
 
     const system = [
-      'Voce e redatora de comunicacao eleitoral responsavel para WhatsApp.',
-      'Candidato neste produto significa candidato ELEITORAL (cargo disputado), nunca candidato a emprego ou recrutamento.',
-      'Crie texto claro, relevante ao eleitorado, com proposta concreta e CTA de escuta/participacao.',
+      'Voce escreve mensagens curtas de WhatsApp em portugues do Brasil.',
+      'Objetivo principal: CONVITE informativo para a pessoa acompanhar conteúdos e pautas — tom de opt-in, nao de propaganda eleitoral.',
+      'Nao peca voto. Nao soe como panfleto de candidatura. Nao use linguagem de campanha agressiva.',
+      'Prefira frases inteiras, claras e humanas. CTA leve (acompanhar, receber informacoes, conversar).',
       'Nao invente pesquisa, percentual, alianca, link, escassez ou promessas ilegais.',
       'Nao infira dados sensiveis (saude, religiao, raca, orientacao sexual, renda individual).',
       'Nao finja conhecimento individual do destinatario alem das variaveis permitidas.',
       `Variaveis permitidas: ${allowed}.`,
       `Posicionamento da personalizacao: ${placement}. ${placementRules}`,
-      'Caracteristicas no briefing sao CONTEXTO COLETIVO do publico/eleitorado, nao dados individuais.',
+      'Caracteristicas no briefing sao CONTEXTO do remetente/publico, nao dados individuais do contato.',
       'Retorne SOMENTE JSON valido. Sem markdown. Sem texto antes ou depois.',
       wantsSets
         ? [
-            'FULL_SETS exige 1 a 3 itens em sets.',
+            `FULL_SETS exige de 3 a ${maxSets} itens em sets (prefira ${maxSets}).`,
             'Cada set DEVE ter greeting, body e closing como objetos { "text": string nao vazia, "requiresVariables": string[] }.',
-            'Saudacao curta; corpo completo com mensagem eleitoral; fechamento com CTA coerente.',
+            'Saudacao curta com {{firstName}} quando permitido; corpo com convite claro; fechamento com CTA leve e coerente.',
             'Nao coloque o corpo dentro da saudacao. Nao deixe campos vazios.',
             'preservedFacts deve ser true.',
             `Exemplo apenas de estrutura: ${JSON.stringify(CONTENT_AI_ELECTORAL_SETS_EXAMPLE)}`,
@@ -1600,25 +1718,26 @@ export class ContentCompositionsService {
     const protectedFacts = (input.brief.protectedFacts ?? []).join(' | ');
     const userParts = [
       `Modo: ${input.mode}`,
-      `Campanha eleitoral: ${input.campaignName}`,
+      `Campanha: ${input.campaignName}`,
       `Objetivo: ${input.brief.objective ?? ''}`,
-      `Proposta/oferta politica: ${input.brief.offerName ?? ''} — ${input.brief.offerDescription ?? ''}`,
-      `Publico/eleitorado: ${input.brief.targetAudience ?? ''}`,
-      `Caracteristicas coletivas do eleitorado: ${input.brief.candidateCharacteristics ?? ''}`,
+      `Proposta/oferta: ${input.brief.offerName ?? ''} — ${input.brief.offerDescription ?? ''}`,
+      `Publico: ${input.brief.targetAudience ?? ''}`,
+      `Contexto do remetente/candidato: ${input.brief.candidateCharacteristics ?? ''}`,
       `Contexto coletivo: ${JSON.stringify(input.brief.collectiveContext ?? {})}`,
       `Dores/preocupacoes: ${input.brief.painPoints ?? ''}`,
-      `Beneficio/proposta principal: ${input.brief.primaryBenefit ?? ''}`,
+      `Beneficio principal: ${input.brief.primaryBenefit ?? ''}`,
       `Propostas secundarias: ${input.brief.secondaryBenefits ?? ''}`,
-      `Diferenciais: ${input.brief.differentiators ?? ''}`,
+      `Diferenciais/pautas: ${input.brief.differentiators ?? ''}`,
       `CTA: ${input.brief.callToAction ?? ''}`,
       `Tom: ${input.brief.tone ?? ''}; Formalidade: ${input.brief.formality ?? ''}`,
       `Idioma: ${input.brief.language ?? 'pt-BR'}`,
-      `MaxLength: ${input.brief.maxLength ?? 800}`,
+      `MaxLength: ${input.brief.maxLength ?? 600}`,
       `Fatos protegidos (preservar): ${protectedFacts}`,
       `Proibicoes: ${(input.brief.forbiddenClaims ?? []).join(' | ')}`,
-      `Instrucoes: ${input.brief.additionalInstructions ?? ''}`,
+      `Instrucoes do operador: ${input.brief.additionalInstructions ?? ''}`,
       `Mensagem-base BODY:\n${input.baseText.slice(0, input.maxInputChars)}`,
-    ];
+      wantsSets ? `Quantidade desejada de conjuntos: ${maxSets}` : '',
+    ].filter(Boolean);
     if (input.existingBlocks) {
       userParts.push(
         `Blocos atuais greeting: ${JSON.stringify(input.existingBlocks.greetings)}`,

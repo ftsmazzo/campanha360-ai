@@ -3,12 +3,13 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { CampaignNav } from '../../../../../../components/campaign-nav';
 import { DashboardShell } from '../../../../../../components/dashboard-shell';
 import {
   ApiError,
   AuthUser,
   CampaignItem,
-  ContentCompositionCatalog,
+  CandidateItem,
   ContentCompositionItem,
   ContentCompositionPreviewResult,
   ContentVariantItem,
@@ -19,8 +20,8 @@ import {
   createContentVariant,
   deleteContentVariant,
   fetchCampaign,
+  fetchCandidate,
   fetchContentComposition,
-  fetchContentCompositionCatalog,
   fetchMe,
   generateContentAiVariants,
   getStoredToken,
@@ -48,12 +49,8 @@ const TYPE_LABELS: Record<ContentVariantType, string> = {
   CLOSING: 'Fechamentos',
 };
 
-const VARIABLE_CHIPS = [
-  { label: 'Nome', token: '{{firstName}}' },
-  { label: 'Nome completo', token: '{{fullName}}' },
-  { label: 'Empresa', token: '{{companyName}}' },
-  { label: 'Cidade', token: '{{city}}' },
-];
+const DEFAULT_INTENTION =
+  'Criar mensagens de convite inicial para acompanhar conteúdos e informações sobre as pautas que defendo. Não pode parecer pedido de voto ou propaganda de candidatura.';
 
 const EMPTY_BRIEF: ContentMarketingBrief = {
   objective: '',
@@ -78,12 +75,13 @@ export default function ContentCompositionEditorPage() {
 
   const [user, setUser] = useState<AuthUser | null>(null);
   const [campaign, setCampaign] = useState<CampaignItem | null>(null);
+  const [candidate, setCandidate] = useState<CandidateItem | null>(null);
   const [composition, setComposition] = useState<ContentCompositionItem | null>(
     null,
   );
-  const [catalog, setCatalog] = useState<ContentCompositionCatalog | null>(null);
   const [name, setName] = useState('');
   const [baseText, setBaseText] = useState('');
+  const [intention, setIntention] = useState(DEFAULT_INTENTION);
   const [draftByType, setDraftByType] = useState<Record<ContentVariantType, string>>(
     { GREETING: '', BODY: '', CLOSING: '' },
   );
@@ -148,6 +146,9 @@ export default function ContentCompositionEditorPage() {
         item.marketingBrief?.personalizationPlacement ||
         'GREETING',
     });
+    setIntention(
+      item.marketingBrief?.additionalInstructions?.trim() || DEFAULT_INTENTION,
+    );
     setCombinationMode(
       item.combinationMode === 'MIX_AND_MATCH' ? 'MIX_AND_MATCH' : 'LOCKED_SETS',
     );
@@ -162,16 +163,16 @@ export default function ContentCompositionEditorPage() {
       }
 
       try {
-        const [me, campaignItem, item, catalogItem] = await Promise.all([
+        const [me, campaignItem, item, candidateRes] = await Promise.all([
           fetchMe(token),
           fetchCampaign(token, campaignId),
           fetchContentComposition(token, campaignId, compositionId),
-          fetchContentCompositionCatalog(token, campaignId),
+          fetchCandidate(token, campaignId),
         ]);
         setUser(me);
         setCampaign(campaignItem);
+        setCandidate(candidateRes.candidate);
         applyComposition(item);
-        setCatalog(catalogItem);
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
           clearStoredToken();
@@ -181,7 +182,7 @@ export default function ContentCompositionEditorPage() {
         setError(
           err instanceof ApiError
             ? err.message
-            : 'Nao foi possivel carregar a composicao',
+            : 'Nao foi possivel carregar a mensagem',
         );
       } finally {
         setLoading(false);
@@ -190,15 +191,6 @@ export default function ContentCompositionEditorPage() {
 
     load();
   }, [campaignId, compositionId, router]);
-
-  function insertVariable(token: string) {
-    if (!editable) return;
-    if (editingVariantId) {
-      setEditingText((current) => `${current}${token}`);
-      return;
-    }
-    setBaseText((current) => `${current}${token}`);
-  }
 
   async function withToken<T>(fn: (token: string) => Promise<T>) {
     const token = getStoredToken();
@@ -217,12 +209,77 @@ export default function ContentCompositionEditorPage() {
         router.replace('/login');
         return null;
       }
-      setError(
-        err instanceof ApiError ? err.message : 'Operacao falhou',
-      );
+      setError(err instanceof ApiError ? err.message : 'Operacao falhou');
       return null;
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onGenerateInvite() {
+    if (!editable || !composition?.aiEnabled) return;
+    const updated = await withToken((token) =>
+      generateContentAiVariants(token, campaignId, compositionId, {
+        mode: 'FULL_SETS',
+        requireRecommendedBrief: false,
+        intention: intention.trim() || DEFAULT_INTENTION,
+      }),
+    );
+    if (updated) {
+      applyComposition(updated);
+      setSuccess(
+        'Variacoes geradas. Revise os cards abaixo e aprove as que quiser usar. Nada foi enviado.',
+      );
+    }
+  }
+
+  async function onApproveSet(generationSetId: string) {
+    if (!editable) return;
+    const updated = await withToken((token) =>
+      approveContentGenerationSet(token, campaignId, compositionId, {
+        generationSetId,
+        enable: true,
+      }),
+    );
+    if (updated) {
+      applyComposition(updated);
+      setSuccess('Variacao ativada.');
+    }
+  }
+
+  async function onDiscardSet(generationSetId: string) {
+    if (!editable || !composition) return;
+    if (!window.confirm('Descartar esta variacao?')) return;
+    const members = composition.variants.filter(
+      (v) => v.generationSetId === generationSetId,
+    );
+    let updated: ContentCompositionItem | null = composition;
+    for (const member of members) {
+      updated = await withToken((token) =>
+        deleteContentVariant(token, campaignId, compositionId, member.id),
+      );
+    }
+    if (updated) {
+      applyComposition(updated);
+      setSuccess('Variacao descartada.');
+    }
+  }
+
+  async function onApprove() {
+    if (!canApprove || !composition) return;
+    if (
+      !window.confirm(
+        'Aprovar esta mensagem? O texto aprovado sera usado nos disparos.',
+      )
+    ) {
+      return;
+    }
+    const updated = await withToken((token) =>
+      approveContentComposition(token, campaignId, compositionId, {}),
+    );
+    if (updated) {
+      applyComposition(updated);
+      setSuccess('Mensagem aprovada. Pode seguir para Enviar.');
     }
   }
 
@@ -285,59 +342,7 @@ export default function ContentCompositionEditorPage() {
       applyComposition(updated);
       setEditingVariantId(null);
       setEditingText('');
-      setSuccess('Variante atualizada.');
-    }
-  }
-
-  async function toggleEnabled(variant: ContentVariantItem) {
-    if (!editable || variant.source === 'BASE') return;
-    const updated = await withToken((token) =>
-      updateContentVariant(token, campaignId, compositionId, variant.id, {
-        enabled: !variant.enabled,
-        ...(variant.source === 'AI_GENERATED' && !variant.enabled
-          ? { reviewPending: false }
-          : {}),
-      }),
-    );
-    if (updated) {
-      applyComposition(updated);
-      setSuccess(variant.enabled ? 'Variante desativada.' : 'Variante ativada.');
-    }
-  }
-
-  async function removeVariant(variant: ContentVariantItem) {
-    if (!editable || variant.source === 'BASE') return;
-    if (!window.confirm('Remover esta variante?')) return;
-    const updated = await withToken((token) =>
-      deleteContentVariant(token, campaignId, compositionId, variant.id),
-    );
-    if (updated) {
-      applyComposition(updated);
-      setSuccess('Variante removida.');
-    }
-  }
-
-  async function onGenerateAi(
-    mode:
-      | 'FULL_SETS'
-      | 'GREETING_ONLY'
-      | 'BODY_ONLY'
-      | 'CLOSING_ONLY' = 'FULL_SETS',
-  ) {
-    if (!editable || !composition?.aiEnabled) return;
-    const updated = await withToken((token) =>
-      generateContentAiVariants(token, campaignId, compositionId, {
-        mode,
-        requireRecommendedBrief: mode === 'FULL_SETS',
-      }),
-    );
-    if (updated) {
-      applyComposition(updated);
-      setSuccess(
-        mode === 'FULL_SETS'
-          ? '3 mensagens completas geradas (revisao pendente). Nada foi enviado.'
-          : 'Sugestoes de IA geradas (desativadas ate revisao).',
-      );
+      setSuccess('Bloco atualizado.');
     }
   }
 
@@ -347,6 +352,7 @@ export default function ContentCompositionEditorPage() {
       updateContentComposition(token, campaignId, compositionId, {
         marketingBrief: {
           ...brief,
+          additionalInstructions: intention.trim() || brief.additionalInstructions,
           protectedFacts: (brief.protectedFacts ?? [])
             .map((l) => String(l).trim())
             .filter(Boolean),
@@ -357,39 +363,7 @@ export default function ContentCompositionEditorPage() {
     );
     if (updated) {
       applyComposition(updated);
-      setSuccess('Contexto da IA salvo.');
-    }
-  }
-
-  async function onApproveSet(generationSetId: string) {
-    if (!editable) return;
-    const updated = await withToken((token) =>
-      approveContentGenerationSet(token, campaignId, compositionId, {
-        generationSetId,
-        enable: true,
-      }),
-    );
-    if (updated) {
-      applyComposition(updated);
-      setSuccess('Conjunto aprovado e ativado.');
-    }
-  }
-
-  async function onDiscardSet(generationSetId: string) {
-    if (!editable || !composition) return;
-    if (!window.confirm('Descartar este conjunto gerado?')) return;
-    const members = composition.variants.filter(
-      (v) => v.generationSetId === generationSetId,
-    );
-    let updated: ContentCompositionItem | null = composition;
-    for (const member of members) {
-      updated = await withToken((token) =>
-        deleteContentVariant(token, campaignId, compositionId, member.id),
-      );
-    }
-    if (updated) {
-      applyComposition(updated);
-      setSuccess('Conjunto descartado.');
+      setSuccess('Contexto avancado salvo.');
     }
   }
 
@@ -403,21 +377,20 @@ export default function ContentCompositionEditorPage() {
     }
   }
 
-  async function onApprove() {
-    if (!canApprove || !composition) return;
-    if (
-      !window.confirm(
-        'Aprovar esta composicao? O snapshot aprovado sera usado nos disparos vinculados.',
-      )
-    ) {
-      return;
-    }
+  async function onGenerateAiAdvanced(
+    mode: 'FULL_SETS' | 'GREETING_ONLY' | 'BODY_ONLY' | 'CLOSING_ONLY',
+  ) {
+    if (!editable || !composition?.aiEnabled) return;
     const updated = await withToken((token) =>
-      approveContentComposition(token, campaignId, compositionId, {}),
+      generateContentAiVariants(token, campaignId, compositionId, {
+        mode,
+        requireRecommendedBrief: false,
+        intention: intention.trim() || undefined,
+      }),
     );
     if (updated) {
       applyComposition(updated);
-      setSuccess('Composicao aprovada.');
+      setSuccess('Sugestoes geradas (revisao pendente).');
     }
   }
 
@@ -426,114 +399,66 @@ export default function ContentCompositionEditorPage() {
       (v) => !(type === 'BODY' && v.source === 'BASE'),
     );
     return (
-      <section className="rounded-md border border-[#deddd4] bg-white p-4">
-        <h3 className="font-semibold text-[#151515]">{TYPE_LABELS[type]}</h3>
-        <ul className="mt-3 space-y-3">
+      <section className="rounded-md border border-[#ebeae3] bg-white p-3">
+        <h4 className="text-sm font-semibold text-[#151515]">{TYPE_LABELS[type]}</h4>
+        <ul className="mt-2 space-y-2">
           {list.map((variant) => (
-            <li
-              key={variant.id}
-              className="rounded-md border border-[#ebeae3] p-3 text-sm"
-            >
+            <li key={variant.id} className="rounded border border-[#ebeae3] p-2 text-sm">
               {editingVariantId === variant.id ? (
                 <div className="space-y-2">
                   <textarea
-                    className="w-full rounded-md border border-[#c9c8c0] px-3 py-2"
+                    className="w-full rounded-md border border-[#c9c8c0] px-2 py-1.5"
                     rows={3}
                     value={editingText}
-                    onChange={(event) => setEditingText(event.target.value)}
+                    onChange={(e) => setEditingText(e.target.value)}
                     disabled={!editable || busy}
                   />
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="rounded-md bg-[#24382b] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60"
-                      disabled={!editable || busy}
-                      onClick={saveEditingVariant}
-                    >
-                      Salvar
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-md border border-[#c9c8c0] px-3 py-1.5 text-xs"
-                      onClick={() => {
-                        setEditingVariantId(null);
-                        setEditingText('');
-                      }}
-                    >
-                      Cancelar
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    className="rounded-md bg-[#24382b] px-2 py-1 text-xs font-semibold text-white"
+                    disabled={!editable || busy}
+                    onClick={() => void saveEditingVariant()}
+                  >
+                    Salvar
+                  </button>
                 </div>
               ) : (
                 <>
-                  <p className="whitespace-pre-wrap text-[#24382b]">
-                    {variant.text}
-                  </p>
-                  <p className="mt-2 text-xs text-[#65655f]">
-                    {variant.enabled ? 'Ativa' : 'Inativa'}
-                    {variant.source === 'AI_GENERATED' ? ' · Gerada por IA' : ''}
-                    {variant.reviewPending ? ' · Revisao pendente' : ''}
-                  </p>
+                  <p className="whitespace-pre-wrap">{variant.text}</p>
                   {editable ? (
-                    <div className="mt-2 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        className="rounded-md border border-[#c9c8c0] px-2 py-1 text-xs"
-                        disabled={busy}
-                        onClick={() => {
-                          setEditingVariantId(variant.id);
-                          setEditingText(variant.text);
-                        }}
-                      >
-                        Editar
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md border border-[#c9c8c0] px-2 py-1 text-xs"
-                        disabled={busy}
-                        onClick={() => toggleEnabled(variant)}
-                      >
-                        {variant.enabled ? 'Desativar' : 'Ativar'}
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md border border-red-200 px-2 py-1 text-xs text-red-700"
-                        disabled={busy}
-                        onClick={() => removeVariant(variant)}
-                      >
-                        Remover
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      className="mt-1 text-xs underline"
+                      disabled={busy}
+                      onClick={() => {
+                        setEditingVariantId(variant.id);
+                        setEditingText(variant.text);
+                      }}
+                    >
+                      Editar
+                    </button>
                   ) : null}
                 </>
               )}
             </li>
           ))}
-          {list.length === 0 ? (
-            <li className="text-sm text-[#65655f]">Nenhuma variante ainda.</li>
-          ) : null}
         </ul>
-
         {editable ? (
-          <div className="mt-3 space-y-2">
+          <div className="mt-2 space-y-2">
             <textarea
-              className="w-full rounded-md border border-[#c9c8c0] px-3 py-2 text-sm"
+              className="w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
               rows={2}
-              placeholder={`Nova ${TYPE_LABELS[type].toLowerCase().slice(0, -1)}...`}
               value={draftByType[type]}
-              onChange={(event) =>
-                setDraftByType((current) => ({
-                  ...current,
-                  [type]: event.target.value,
-                }))
+              onChange={(e) =>
+                setDraftByType((c) => ({ ...c, [type]: e.target.value }))
               }
               disabled={busy}
             />
             <button
               type="button"
-              className="rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm font-medium text-[#24382b] disabled:opacity-60"
+              className="rounded-md border border-[#c9c8c0] px-2 py-1 text-xs"
               disabled={busy}
-              onClick={() => addVariant(type)}
+              onClick={() => void addVariant(type)}
             >
               Adicionar
             </button>
@@ -545,424 +470,416 @@ export default function ContentCompositionEditorPage() {
 
   return (
     <DashboardShell userName={user?.name}>
-      <div className="rounded-md border border-[#deddd4] bg-[#f7f6f1] p-6">
-        <div className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-[#65655f]">
-              Editor de composicao
-            </p>
-            <h2 className="mt-2 text-2xl font-semibold text-[#151515]">
-              {composition?.name ?? 'Carregando...'}
-            </h2>
-            {campaign ? (
-              <p className="mt-1 text-sm text-[#65655f]">{campaign.name}</p>
-            ) : null}
-            {composition ? (
-              <p className="mt-2 text-sm text-[#65655f]">
-                {STATUS_LABELS[composition.status] ?? composition.status} · v
-                {composition.version}
-              </p>
-            ) : null}
-          </div>
-          <Link
-            className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
-            href={`/dashboard/campaigns/${campaignId}/content-compositions`}
-          >
-            Voltar a listagem
-          </Link>
-        </div>
-
-        {loading ? (
-          <p className="mt-6 text-sm text-[#65655f]">Carregando...</p>
-        ) : null}
-        {error ? (
-          <p className="mt-6 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-            {error}
-          </p>
-        ) : null}
-        {success ? (
-          <p className="mt-6 rounded-md border border-[#c9d9c4] bg-[#eef5ea] px-3 py-2 text-sm text-[#47624f]">
-            {success}
-          </p>
-        ) : null}
-
-        {!loading && composition ? (
-          <div className="mt-6 space-y-6">
-            <form
-              className="space-y-3 rounded-md border border-[#deddd4] bg-white p-4"
-              onSubmit={saveMeta}
-            >
-              <label className="block text-sm text-[#24382b]">
-                Nome
-                <input
-                  className="mt-1 w-full rounded-md border border-[#c9c8c0] px-3 py-2 disabled:bg-[#eee]"
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  disabled={!editable || busy}
-                  minLength={2}
-                  maxLength={120}
-                  required
-                />
-              </label>
-              {editable ? (
-                <button
-                  type="submit"
-                  className="rounded-md bg-[#24382b] px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
-                  disabled={busy}
-                >
-                  Salvar nome
-                </button>
-              ) : null}
-            </form>
-
-            <section className="rounded-md border border-[#deddd4] bg-white p-4">
-              <h3 className="font-semibold text-[#151515]">Mensagem-base</h3>
-              <p className="mt-1 text-xs text-[#65655f]">
-                Corpo principal da composicao. Variaveis opcionais:
-              </p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {VARIABLE_CHIPS.map((chip) => (
-                  <button
-                    key={chip.token}
-                    type="button"
-                    className="rounded-md border border-[#c9c8c0] bg-[#f7f6f1] px-2 py-1 text-xs text-[#24382b] disabled:opacity-50"
-                    disabled={!editable || busy}
-                    onClick={() => insertVariable(chip.token)}
-                    title={chip.token}
-                  >
-                    {chip.label}
-                  </button>
-                ))}
-              </div>
-              <textarea
-                className="mt-3 w-full rounded-md border border-[#c9c8c0] px-3 py-2 text-sm disabled:bg-[#eee]"
-                rows={6}
-                value={baseText}
-                onChange={(event) => setBaseText(event.target.value)}
-                disabled={!editable || busy}
-                maxLength={3500}
-              />
-              {editable ? (
-                <button
-                  type="button"
-                  className="mt-3 rounded-md bg-[#24382b] px-3 py-1.5 text-sm font-semibold text-white disabled:opacity-60"
-                  disabled={busy || !baseVariant}
-                  onClick={saveBase}
-                >
-                  Salvar mensagem-base
-                </button>
-              ) : null}
-            </section>
-
-            <div className="grid gap-4 lg:grid-cols-3">
-              {renderVariantList('GREETING')}
-              {renderVariantList('BODY')}
-              {renderVariantList('CLOSING')}
-            </div>
-
-            <section className="rounded-md border border-[#deddd4] bg-white p-4">
-              <h3 className="font-semibold text-[#151515]">Contexto para a IA</h3>
-              <p className="mt-1 text-sm text-[#65655f]">
-                Caracteristicas do eleitorado sao contexto coletivo —
-                nao dados individuais do contato.
-              </p>
-              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                {(
-                  [
-                    ['objective', 'Objetivo'],
-                    ['offerDescription', 'O que esta sendo oferecido'],
-                    ['targetAudience', 'Publico/eleitorado'],
-                    ['candidateCharacteristics', 'Caracteristicas relevantes'],
-                    ['painPoints', 'Dores e necessidades'],
-                    ['primaryBenefit', 'Beneficio principal'],
-                    ['differentiators', 'Diferenciais'],
-                    ['callToAction', 'Chamada para acao'],
-                    ['tone', 'Tom'],
-                    ['additionalInstructions', 'Instrucoes adicionais'],
-                  ] as const
-                ).map(([key, label]) => (
-                  <label key={key} className="block text-sm">
-                    <span className="text-[#65655f]">{label}</span>
-                    <textarea
-                      className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
-                      rows={key === 'offerDescription' || key === 'additionalInstructions' ? 3 : 2}
-                      value={String(brief[key] ?? '')}
-                      disabled={!editable || busy}
-                      onChange={(e) =>
-                        setBrief((b) => ({ ...b, [key]: e.target.value }))
-                      }
-                    />
-                  </label>
-                ))}
-                <label className="block text-sm md:col-span-2">
-                  <span className="text-[#65655f]">
-                    Fatos que nao podem ser alterados (um por linha)
-                  </span>
-                  <textarea
-                    className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
-                    rows={3}
-                    value={(brief.protectedFacts ?? []).join('\n')}
-                    disabled={!editable || busy}
-                    onChange={(e) =>
-                      setBrief((b) => ({
-                        ...b,
-                        protectedFacts: e.target.value.split('\n'),
-                      }))
-                    }
-                  />
-                </label>
-                <label className="block text-sm">
-                  <span className="text-[#65655f]">Local da personalizacao</span>
-                  <select
-                    className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
-                    value={brief.personalizationPlacement ?? 'GREETING'}
-                    disabled={!editable || busy}
-                    onChange={(e) =>
-                      setBrief((b) => ({
-                        ...b,
-                        personalizationPlacement: e.target
-                          .value as ContentMarketingBrief['personalizationPlacement'],
-                      }))
-                    }
-                  >
-                    <option value="GREETING">Saudacao (padrao)</option>
-                    <option value="BODY">Corpo</option>
-                    <option value="NONE">Sem nome</option>
-                  </select>
-                </label>
-                <label className="block text-sm">
-                  <span className="text-[#65655f]">Modo de combinacao</span>
-                  <select
-                    className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
-                    value={combinationMode}
-                    disabled={!editable || busy}
-                    onChange={(e) =>
-                      setCombinationMode(
-                        e.target.value as 'LOCKED_SETS' | 'MIX_AND_MATCH',
-                      )
-                    }
-                  >
-                    <option value="LOCKED_SETS">Conjuntos travados (IA)</option>
-                    <option value="MIX_AND_MATCH">Misturar variantes</option>
-                  </select>
-                  {combinationMode === 'MIX_AND_MATCH' ? (
-                    <span className="mt-1 block text-xs text-[#8a5a00]">
-                      Mistura exige validacao de coerencia. Prefira conjuntos
-                      travados para mensagens geradas por IA.
-                    </span>
-                  ) : null}
-                </label>
-              </div>
-              {editable ? (
-                <button
-                  type="button"
-                  className="mt-3 rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm font-medium text-[#24382b] disabled:opacity-60"
-                  disabled={busy}
-                  onClick={onSaveBrief}
-                >
-                  Salvar contexto
-                </button>
-              ) : null}
-            </section>
-
-            <section className="rounded-md border border-[#deddd4] bg-white p-4">
-              <h3 className="font-semibold text-[#151515]">Geracao com IA</h3>
-              <p className="mt-1 text-sm text-[#65655f]">
-                A IA sugere mensagens completas coerentes. Nada e enviado
-                automaticamente. Aprovacao humana e obrigatoria.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                  disabled={!editable || busy || !composition.aiEnabled}
-                  onClick={() => onGenerateAi('FULL_SETS')}
-                >
-                  Gerar 3 mensagens completas
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm disabled:opacity-60"
-                  disabled={!editable || busy || !composition.aiEnabled}
-                  onClick={() => onGenerateAi('GREETING_ONLY')}
-                >
-                  So saudações
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm disabled:opacity-60"
-                  disabled={!editable || busy || !composition.aiEnabled}
-                  onClick={() => onGenerateAi('BODY_ONLY')}
-                >
-                  So corpos
-                </button>
-                <button
-                  type="button"
-                  className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm disabled:opacity-60"
-                  disabled={!editable || busy || !composition.aiEnabled}
-                  onClick={() => onGenerateAi('CLOSING_ONLY')}
-                >
-                  So fechamentos
-                </button>
-              </div>
-              {!composition.aiEnabled ? (
-                <p className="mt-2 text-sm text-[#8a5a00]">
-                  Geracao por IA indisponivel (CONTENT_AI_ENABLED=false). O
-                  editor manual continua disponivel.
+      <div>
+        <CampaignNav campaignId={campaignId} campaignName={campaign?.name} />
+        <div className="rounded-md border border-[#deddd4] bg-white p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-2xl font-semibold text-[#151515]">
+                {composition?.name ?? 'Convite inicial'}
+              </h2>
+              {composition ? (
+                <p className="mt-1 text-sm text-[#65655f]">
+                  {STATUS_LABELS[composition.status] ?? composition.status}
                 </p>
               ) : null}
+            </div>
+            <Link
+              className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
+              href={`/dashboard/campaigns/${campaignId}/content-compositions`}
+            >
+              Voltar
+            </Link>
+          </div>
 
-              {(composition.generationSets ?? []).length > 0 ? (
-                <div className="mt-4 space-y-3">
-                  <h4 className="text-sm font-semibold text-[#24382b]">
-                    Conjuntos gerados
-                  </h4>
-                  {composition.generationSets!.map((set, index) => (
-                    <div
-                      key={set.generationSetId}
-                      className="rounded-md border border-[#ebeae3] bg-[#fafaf7] p-3 text-sm"
-                    >
-                      <p className="font-medium text-[#24382b]">
-                        Mensagem {index + 1}
-                        {set.marketingAngle
-                          ? ` — ${set.marketingAngle}`
-                          : ''}
-                        {set.enabled ? ' (ativa)' : ' (revisao pendente)'}
+          {loading ? (
+            <p className="mt-6 text-sm text-[#65655f]">Carregando...</p>
+          ) : null}
+          {error ? (
+            <p className="mt-6 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {error}
+            </p>
+          ) : null}
+          {success ? (
+            <p className="mt-6 rounded-md border border-[#c9d9c4] bg-[#eef5ea] px-3 py-2 text-sm text-[#47624f]">
+              {success}
+            </p>
+          ) : null}
+
+          {!loading && composition ? (
+            <div className="mt-6 space-y-6">
+              <section className="rounded-md border border-[#deddd4] bg-[#fafaf8] p-4">
+                <h3 className="font-semibold text-[#24382b]">1. Contexto do candidato</h3>
+                {candidate ? (
+                  <div className="mt-2 space-y-1 text-sm text-[#34342f]">
+                    <p>
+                      <span className="text-[#65655f]">Nome:</span> {candidate.name}
+                      {candidate.office ? ` · ${candidate.office}` : ''}
+                      {candidate.party ? ` · ${candidate.party}` : ''}
+                    </p>
+                    {candidate.toneOfVoice ? (
+                      <p>
+                        <span className="text-[#65655f]">Tom:</span>{' '}
+                        {candidate.toneOfVoice}
                       </p>
-                      {set.greeting ? (
-                        <p className="mt-2">
-                          <span className="text-[#65655f]">Saudacao:</span>{' '}
-                          {set.greeting.text}
-                        </p>
-                      ) : null}
-                      {set.body ? (
-                        <p className="mt-1">
-                          <span className="text-[#65655f]">Corpo:</span>{' '}
-                          {set.body.text}
-                        </p>
-                      ) : null}
-                      {set.closing ? (
-                        <p className="mt-1">
-                          <span className="text-[#65655f]">Fechamento:</span>{' '}
-                          {set.closing.text}
-                        </p>
-                      ) : null}
-                      {set.coherenceAlerts?.length ? (
-                        <ul className="mt-2 list-disc pl-5 text-xs text-[#8a5a00]">
-                          {set.coherenceAlerts.map((a) => (
-                            <li key={`${set.generationSetId}-${a.code}`}>
-                              {a.message}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                      {set.quality?.riskWarnings?.length ? (
-                        <p className="mt-1 text-xs text-[#65655f]">
-                          Alertas editoriais: {set.quality.riskWarnings.join('; ')}
-                        </p>
-                      ) : null}
-                      {editable ? (
-                        <div className="mt-3 flex gap-2">
-                          {!set.enabled ? (
-                            <button
-                              type="button"
-                              className="rounded-md bg-[#24382b] px-3 py-1 text-xs font-semibold text-white"
-                              disabled={busy}
-                              onClick={() => onApproveSet(set.generationSetId)}
-                            >
-                              Aprovar conjunto
-                            </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            className="rounded-md border border-[#c9c8c0] px-3 py-1 text-xs"
-                            disabled={busy}
-                            onClick={() => onDiscardSet(set.generationSetId)}
-                          >
-                            Descartar
-                          </button>
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-            </section>
-
-            <section className="rounded-md border border-[#deddd4] bg-white p-4">
-              <h3 className="font-semibold text-[#151515]">Preview</h3>
-              <p className="mt-1 text-sm text-[#65655f]">
-                O preview usa o mesmo algoritmo deterministico do envio.
-              </p>
-              <button
-                type="button"
-                className="mt-3 rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b] disabled:opacity-60"
-                disabled={busy}
-                onClick={onPreview}
-              >
-                Gerar preview
-              </button>
-              {preview ? (
-                <div className="mt-4 space-y-3">
-                  <p className="text-xs text-[#65655f]">{preview.notice}</p>
-                  <p className="text-xs text-[#65655f]">
-                    Combinacoes teoricas: {preview.counts.theoreticalCombinations}{' '}
-                    ({preview.counts.greetings} saudacoes × {preview.counts.bodies}{' '}
-                    corpos × {preview.counts.closings} fechamentos)
+                    ) : null}
+                    {candidate.bio ? (
+                      <p className="whitespace-pre-wrap">
+                        <span className="text-[#65655f]">Bio:</span> {candidate.bio}
+                      </p>
+                    ) : null}
+                    {(candidate.mainProposals ?? []).length > 0 ? (
+                      <p>
+                        <span className="text-[#65655f]">Pautas:</span>{' '}
+                        {(candidate.mainProposals ?? []).join('; ')}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm text-[#8a5a00]">
+                    Candidato ainda nao cadastrado.{' '}
+                    <Link
+                      className="underline"
+                      href={`/dashboard/campaigns/${campaignId}/candidate`}
+                    >
+                      Preencher candidato
+                    </Link>{' '}
+                    melhora a qualidade das mensagens.
                   </p>
-                  {preview.previews.map((row) => (
-                    <div
-                      key={row.contactId}
-                      className="rounded-md border border-[#ebeae3] bg-[#fafaf7] p-3 text-sm"
-                    >
-                      <p className="font-medium text-[#24382b]">
-                        {row.contactName?.trim() || 'Contato sem nome'}
-                      </p>
-                      <pre className="mt-2 whitespace-pre-wrap font-sans text-[#34342f]">
-                        {row.renderedText}
-                      </pre>
-                      {!row.valid ? (
-                        <p className="mt-2 text-xs text-red-700">
-                          {row.errors.join('; ')}
-                        </p>
-                      ) : null}
-                    </div>
-                  ))}
-                  {preview.previews.length === 0 ? (
-                    <p className="text-sm text-[#65655f]">
-                      Nenhum contato disponivel para preview.
+                )}
+              </section>
+
+              <section className="rounded-md border border-[#deddd4] p-4">
+                <h3 className="font-semibold text-[#24382b]">2. O que a mensagem deve fazer</h3>
+                <p className="mt-1 text-sm text-[#65655f]">
+                  Um pedido curto. A IA usa isso junto com os dados do candidato.
+                </p>
+                <textarea
+                  className="mt-3 w-full rounded-md border border-[#c9c8c0] px-3 py-2 text-sm disabled:bg-[#eee]"
+                  rows={4}
+                  value={intention}
+                  onChange={(e) => setIntention(e.target.value)}
+                  disabled={!editable || busy}
+                  maxLength={2000}
+                />
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    disabled={!editable || busy || !composition.aiEnabled}
+                    onClick={() => void onGenerateInvite()}
+                  >
+                    {busy ? 'Gerando...' : 'Gerar 5 variacoes'}
+                  </button>
+                  {!composition.aiEnabled ? (
+                    <p className="text-sm text-[#8a5a00]">
+                      IA indisponivel (CONTENT_AI_ENABLED=false).
                     </p>
                   ) : null}
                 </div>
-              ) : null}
-            </section>
+              </section>
 
-            {canApprove && composition.status !== 'APPROVED' ? (
-              <section className="rounded-md border border-[#deddd4] bg-white p-4">
-                <h3 className="font-semibold text-[#151515]">Aprovacao</h3>
+              <section className="rounded-md border border-[#deddd4] p-4">
+                <h3 className="font-semibold text-[#24382b]">3. Revisar variacoes</h3>
                 <p className="mt-1 text-sm text-[#65655f]">
-                  Somente OWNER/ADMIN. Aprovacao congela o snapshot usado no
+                  Cada card e uma mensagem completa. Ative as que quiser usar no
                   disparo.
                 </p>
-                <button
-                  type="button"
-                  className="mt-3 rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                  disabled={busy}
-                  onClick={onApprove}
-                >
-                  Aprovar composicao
-                </button>
-              </section>
-            ) : null}
 
-            {composition.status === 'APPROVED' ? (
-              <p className="rounded-md border border-[#c9d9c4] bg-[#eef5ea] px-3 py-2 text-sm text-[#47624f]">
-                Composicao aprovada. Qualquer edicao volta o status para rascunho
-                e exige nova aprovacao.
-              </p>
-            ) : null}
-          </div>
-        ) : null}
+                {(composition.generationSets ?? []).length === 0 ? (
+                  <p className="mt-4 text-sm text-[#65655f]">
+                    Ainda nao ha variacoes. Gere acima para comecar.
+                  </p>
+                ) : (
+                  <div className="mt-4 space-y-3">
+                    {composition.generationSets!.map((set, index) => {
+                      const fullMessage = [
+                        set.greeting?.text,
+                        set.body?.text,
+                        set.closing?.text,
+                      ]
+                        .filter(Boolean)
+                        .join('\n\n');
+                      return (
+                        <article
+                          key={set.generationSetId}
+                          className="rounded-md border border-[#ebeae3] bg-[#fafaf8] p-4"
+                        >
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <p className="text-sm font-semibold text-[#151515]">
+                              Variacao {index + 1}
+                              {set.enabled ? ' · ativa' : ' · pendente'}
+                            </p>
+                            {set.marketingAngle ? (
+                              <span className="text-xs text-[#65655f]">
+                                {set.marketingAngle}
+                              </span>
+                            ) : null}
+                          </div>
+                          <pre className="mt-3 whitespace-pre-wrap font-sans text-sm text-[#34342f]">
+                            {fullMessage}
+                          </pre>
+                          {set.coherenceAlerts?.length ? (
+                            <ul className="mt-2 list-disc pl-5 text-xs text-[#8a5a00]">
+                              {set.coherenceAlerts.map((a) => (
+                                <li key={`${set.generationSetId}-${a.code}`}>
+                                  {a.message}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : null}
+                          {editable ? (
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              {!set.enabled ? (
+                                <button
+                                  type="button"
+                                  className="rounded-md bg-[#24382b] px-3 py-1.5 text-xs font-semibold text-white"
+                                  disabled={busy}
+                                  onClick={() => void onApproveSet(set.generationSetId)}
+                                >
+                                  Usar esta
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                className="rounded-md border border-[#c9c8c0] px-3 py-1.5 text-xs"
+                                disabled={busy}
+                                onClick={() => void onDiscardSet(set.generationSetId)}
+                              >
+                                Descartar
+                              </button>
+                            </div>
+                          ) : null}
+                          <details className="mt-3">
+                            <summary className="cursor-pointer text-xs text-[#65655f]">
+                              Editar blocos (saudacao / corpo / fechamento)
+                            </summary>
+                            <div className="mt-2 grid gap-2 md:grid-cols-3">
+                              {(['GREETING', 'BODY', 'CLOSING'] as const).map((type) => {
+                                const variant = composition.variants.find(
+                                  (v) =>
+                                    v.generationSetId === set.generationSetId &&
+                                    v.type === type,
+                                );
+                                if (!variant) return null;
+                                return (
+                                  <div
+                                    key={variant.id}
+                                    className="rounded border border-[#ebeae3] bg-white p-2 text-xs"
+                                  >
+                                    <p className="font-medium text-[#65655f]">
+                                      {TYPE_LABELS[type]}
+                                    </p>
+                                    {editingVariantId === variant.id ? (
+                                      <div className="mt-1 space-y-1">
+                                        <textarea
+                                          className="w-full rounded border border-[#c9c8c0] px-2 py-1"
+                                          rows={3}
+                                          value={editingText}
+                                          onChange={(e) => setEditingText(e.target.value)}
+                                        />
+                                        <button
+                                          type="button"
+                                          className="rounded bg-[#24382b] px-2 py-1 text-white"
+                                          onClick={() => void saveEditingVariant()}
+                                        >
+                                          Salvar
+                                        </button>
+                                      </div>
+                                    ) : (
+                                      <>
+                                        <p className="mt-1 whitespace-pre-wrap">
+                                          {variant.text}
+                                        </p>
+                                        {editable ? (
+                                          <button
+                                            type="button"
+                                            className="mt-1 underline"
+                                            onClick={() => {
+                                              setEditingVariantId(variant.id);
+                                              setEditingText(variant.text);
+                                            }}
+                                          >
+                                            Editar
+                                          </button>
+                                        ) : null}
+                                      </>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </details>
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
+              </section>
+
+              {canApprove && composition.status !== 'APPROVED' ? (
+                <section className="rounded-md border border-[#deddd4] p-4">
+                  <h3 className="font-semibold text-[#24382b]">4. Aprovar</h3>
+                  <p className="mt-1 text-sm text-[#65655f]">
+                    Ative ao menos uma variacao e aprove para liberar o uso no
+                    disparo.
+                  </p>
+                  <button
+                    type="button"
+                    className="mt-3 rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                    disabled={busy}
+                    onClick={() => void onApprove()}
+                  >
+                    Aprovar mensagem
+                  </button>
+                </section>
+              ) : null}
+
+              {composition.status === 'APPROVED' ? (
+                <p className="rounded-md border border-[#c9d9c4] bg-[#eef5ea] px-3 py-2 text-sm text-[#47624f]">
+                  Mensagem aprovada. Proximo passo: Enviar no menu da campanha.
+                </p>
+              ) : null}
+
+              <details className="rounded-md border border-[#deddd4] p-4">
+                <summary className="cursor-pointer font-medium text-[#65655f]">
+                  Ferramentas avancadas
+                </summary>
+                <div className="mt-4 space-y-4">
+                  <form className="space-y-2" onSubmit={saveMeta}>
+                    <label className="block text-sm">
+                      Nome interno
+                      <input
+                        className="mt-1 w-full rounded-md border border-[#c9c8c0] px-3 py-2"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        disabled={!editable || busy}
+                      />
+                    </label>
+                    {editable ? (
+                      <button
+                        type="submit"
+                        className="rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm"
+                        disabled={busy}
+                      >
+                        Salvar nome
+                      </button>
+                    ) : null}
+                  </form>
+
+                  <div>
+                    <h4 className="text-sm font-semibold">Mensagem-base</h4>
+                    <textarea
+                      className="mt-2 w-full rounded-md border border-[#c9c8c0] px-3 py-2 text-sm"
+                      rows={4}
+                      value={baseText}
+                      onChange={(e) => setBaseText(e.target.value)}
+                      disabled={!editable || busy}
+                    />
+                    {editable ? (
+                      <button
+                        type="button"
+                        className="mt-2 rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm"
+                        disabled={busy || !baseVariant}
+                        onClick={() => void saveBase()}
+                      >
+                        Salvar base
+                      </button>
+                    ) : null}
+                  </div>
+
+                  <div className="grid gap-3 lg:grid-cols-3">
+                    {renderVariantList('GREETING')}
+                    {renderVariantList('BODY')}
+                    {renderVariantList('CLOSING')}
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {(
+                      [
+                        ['objective', 'Objetivo'],
+                        ['offerDescription', 'Oferta'],
+                        ['targetAudience', 'Publico'],
+                        ['callToAction', 'CTA'],
+                        ['tone', 'Tom'],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <label key={key} className="block text-sm">
+                        {label}
+                        <textarea
+                          className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
+                          rows={2}
+                          value={String(brief[key] ?? '')}
+                          disabled={!editable || busy}
+                          onChange={(e) =>
+                            setBrief((b) => ({ ...b, [key]: e.target.value }))
+                          }
+                        />
+                      </label>
+                    ))}
+                  </div>
+                  <label className="block text-sm">
+                    Modo de combinacao
+                    <select
+                      className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5"
+                      value={combinationMode}
+                      disabled={!editable || busy}
+                      onChange={(e) =>
+                        setCombinationMode(
+                          e.target.value as 'LOCKED_SETS' | 'MIX_AND_MATCH',
+                        )
+                      }
+                    >
+                      <option value="LOCKED_SETS">Conjuntos travados</option>
+                      <option value="MIX_AND_MATCH">Misturar</option>
+                    </select>
+                  </label>
+                  {editable ? (
+                    <button
+                      type="button"
+                      className="rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm"
+                      disabled={busy}
+                      onClick={() => void onSaveBrief()}
+                    >
+                      Salvar contexto avancado
+                    </button>
+                  ) : null}
+
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm"
+                      disabled={!editable || busy || !composition.aiEnabled}
+                      onClick={() => void onGenerateAiAdvanced('FULL_SETS')}
+                    >
+                      Gerar conjuntos (avancado)
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm"
+                      disabled={busy}
+                      onClick={() => void onPreview()}
+                    >
+                      Preview
+                    </button>
+                  </div>
+                  {preview ? (
+                    <div className="space-y-2 text-sm">
+                      {preview.previews.map((row) => (
+                        <pre
+                          key={row.contactId}
+                          className="whitespace-pre-wrap rounded border border-[#ebeae3] bg-[#fafaf8] p-3 font-sans"
+                        >
+                          {row.renderedText}
+                        </pre>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </details>
+            </div>
+          ) : null}
+        </div>
       </div>
     </DashboardShell>
   );

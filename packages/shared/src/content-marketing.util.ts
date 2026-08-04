@@ -29,7 +29,7 @@ export const CONTENT_AI_GENERATION_MODES = [
 export type ContentAiGenerationMode =
   (typeof CONTENT_AI_GENERATION_MODES)[number];
 
-export const CONTENT_PROMPT_VERSION = 'v3-electoral-sets-2026-08';
+export const CONTENT_PROMPT_VERSION = 'v4-invite-optin-2026-08';
 
 /** Contexto coletivo permitido no briefing (nao vira variavel individual). */
 export const COLLECTIVE_CONTEXT_ALLOWLIST = [
@@ -470,3 +470,78 @@ export function isContentPersonalizationPlacement(
 ): value is ContentPersonalizationPlacement {
   return value === 'GREETING' || value === 'BODY' || value === 'NONE';
 }
+
+export const DEFAULT_INVITE_COMPOSITION_NAME = 'Convite inicial';
+
+export const DEFAULT_INVITE_INTENTION =
+  'Criar mensagens de convite inicial para acompanhar conteúdos e informações sobre as pautas que defendo. Não pode parecer pedido de voto ou propaganda de candidatura.';
+
+export const DEFAULT_INVITE_BASE_BODY =
+  'Oi, {{firstName}}! Quero te convidar a acompanhar conteúdos e informações sobre pautas que defendo. Se fizer sentido pra você, fico feliz em seguir conversando por aqui.';
+
+export type InviteCandidateInput = {
+  name: string;
+  party?: string | null;
+  office?: string | null;
+  bio?: string | null;
+  toneOfVoice?: string | null;
+  mainProposals?: string[] | null;
+  restrictedTopics?: string[] | null;
+};
+
+/** Monta briefing completo a partir do candidato + intenção curta (fluxo Convite inicial). */
+export function buildInviteMarketingBriefFromCandidate(
+  candidate: InviteCandidateInput | null | undefined,
+  intention?: string | null,
+): ContentMarketingBrief {
+  const proposals = (candidate?.mainProposals ?? [])
+    .map((item) => String(item).trim())
+    .filter(Boolean)
+    .join('; ');
+  const characteristics = [
+    candidate?.name,
+    candidate?.office,
+    candidate?.party,
+    candidate?.bio,
+    candidate?.toneOfVoice,
+  ]
+    .map((item) => (item == null ? '' : String(item).trim()))
+    .filter(Boolean)
+    .join(' · ');
+
+  const brief = emptyMarketingBrief();
+  brief.objective =
+    'Convidar a pessoa a receber conteúdos e informações sobre pautas públicas, sem pedido de voto.';
+  brief.offerName = 'Convite para acompanhar conteúdos';
+  brief.offerDescription =
+    'Canal de informações e conteúdos sobre temas e propostas de interesse coletivo.';
+  brief.targetAudience =
+    'Pessoas da base de contatos interessadas em acompanhar pautas locais e temas públicos.';
+  brief.candidateCharacteristics =
+    characteristics || 'Responsável pela comunicação da campanha.';
+  brief.painPoints =
+    'Falta de informação clara e acessível sobre temas públicos relevantes.';
+  brief.primaryBenefit =
+    proposals || 'Acompanhar informações claras sobre temas e pautas defendidas.';
+  brief.differentiators = proposals || null;
+  brief.callToAction =
+    'Aceitar receber conteúdos e informações por este canal, se fizer sentido.';
+  brief.tone = candidate?.toneOfVoice?.trim() || 'profissional, acolhedor e natural';
+  brief.formality = 'semi-formal';
+  brief.maxLength = 600;
+  brief.personalizationPlacement = 'GREETING';
+  brief.protectedFacts = (candidate?.restrictedTopics ?? [])
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+  brief.forbiddenClaims = [
+    'pedido explícito de voto',
+    'propaganda agressiva de candidatura',
+    'promessas ilegais ou inventadas',
+    'afirmações falsas sobre pesquisa ou percentual',
+  ];
+  brief.additionalInstructions = (
+    intention?.trim() || DEFAULT_INVITE_INTENTION
+  ).slice(0, 2000);
+  return brief;
+}
+

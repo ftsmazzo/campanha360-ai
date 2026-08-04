@@ -171,7 +171,7 @@ ${JSON.stringify({ sets: [objectBlocksSet()] })}
     assert.ok(n.structureDiagnostics.some((d) => d.reason === 'SETS_EMPTY'));
   });
 
-  it('quatro sets informa TOO_MANY_SETS', () => {
+  it('seis sets informa TOO_MANY_SETS', () => {
     const n = normalizeAiSetsPayload(
       {
         sets: [
@@ -179,6 +179,8 @@ ${JSON.stringify({ sets: [objectBlocksSet()] })}
           objectBlocksSet({ body: { text: 'a2' } }),
           objectBlocksSet({ body: { text: 'a3' } }),
           objectBlocksSet({ body: { text: 'a4' } }),
+          objectBlocksSet({ body: { text: 'a5' } }),
+          objectBlocksSet({ body: { text: 'a6' } }),
         ],
       },
       'FULL_SETS',

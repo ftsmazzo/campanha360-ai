@@ -103,7 +103,7 @@ export const CONTENT_AI_SETS_JSON_SCHEMA = {
     sets: {
       type: 'array',
       minItems: 1,
-      maxItems: 3,
+      maxItems: 5,
       items: {
         type: 'object',
         additionalProperties: false,
@@ -788,7 +788,7 @@ export function formatAiSetStructureUserMessage(
     case 'SETS_EMPTY':
       return 'A IA retornou uma lista de mensagens vazia. Nenhuma versão foi salva. Tente gerar novamente.';
     case 'TOO_MANY_SETS':
-      return 'A IA retornou mais de 3 mensagens. Nenhuma versão foi salva. Tente gerar novamente.';
+      return 'A IA retornou mais mensagens do que o permitido. Nenhuma versão foi salva. Tente gerar novamente.';
     case 'SET_NOT_OBJECT':
       return `A IA retornou um conjunto invalido ${msgN}. Nenhuma versão foi salva. Tente gerar novamente.`.replace(
         /\s+/g,

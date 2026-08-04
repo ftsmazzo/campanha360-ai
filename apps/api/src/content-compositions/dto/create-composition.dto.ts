@@ -9,18 +9,31 @@ import {
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
 
 export class CreateCompositionDto {
+  /** Atalho operacional: preenche base + briefing a partir do candidato. */
+  @IsOptional()
+  @IsIn(['invite'])
+  preset?: 'invite';
+
+  @ValidateIf((dto: CreateCompositionDto) => dto.preset !== 'invite')
   @IsString()
   @MinLength(2)
   @MaxLength(120)
-  name!: string;
+  name?: string;
 
+  @ValidateIf((dto: CreateCompositionDto) => dto.preset !== 'invite')
   @IsString()
   @MinLength(1)
   @MaxLength(3500)
-  baseBody!: string;
+  baseBody?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  intention?: string;
 
   @IsOptional()
   @IsString()
@@ -133,6 +146,12 @@ export class GenerateAiVariantsDto {
   @IsOptional()
   @IsBoolean()
   requireRecommendedBrief?: boolean;
+
+  /** Intenção curta do fluxo Convite inicial (grava em additionalInstructions). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  intention?: string;
 }
 
 export class ApproveCompositionDto {
