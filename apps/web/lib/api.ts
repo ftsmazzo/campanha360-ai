@@ -148,6 +148,11 @@ export type HardResetResponse = {
     dispatchPlans: number;
     dispatches: number;
     dispatchItems: number;
+    dispatchItemAttempts?: number;
+    contentCompositions?: number;
+    contentVariants?: number;
+    channelAccountSendGuards?: number;
+    destinationWhatsAppValidationCaches?: number;
     segments: number;
     tags: number;
     auditLogs: number;

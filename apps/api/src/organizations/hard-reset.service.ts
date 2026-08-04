@@ -20,6 +20,11 @@ export type HardResetCounts = {
   dispatchPlans: number;
   dispatches: number;
   dispatchItems: number;
+  dispatchItemAttempts: number;
+  contentCompositions: number;
+  contentVariants: number;
+  channelAccountSendGuards: number;
+  destinationWhatsAppValidationCaches: number;
   segments: number;
   tags: number;
   auditLogs: number;
@@ -106,6 +111,7 @@ export class HardResetService {
     const whereOrg = { organizationId: { in: organizationIds } };
 
     const [
+      dispatchItemAttempts,
       dispatchItems,
       usageDaily,
       dispatchChannels,
@@ -113,6 +119,8 @@ export class HardResetService {
       planRecipients,
       planChannels,
       dispatchPlans,
+      contentVariants,
+      contentCompositions,
       messages,
       threads,
       contactNotes,
@@ -123,11 +131,14 @@ export class HardResetService {
       contacts,
       tags,
       segments,
+      channelAccountSendGuards,
       channelAccounts,
+      destinationWhatsAppValidationCaches,
       candidates,
       campaigns,
       auditLogs,
     ] = await Promise.all([
+      tx.dispatchItemAttempt.count({ where: whereOrg }),
       tx.dispatchItem.count({ where: whereOrg }),
       tx.dispatchChannelUsageDaily.count({ where: whereOrg }),
       tx.dispatchChannel.count({ where: whereOrg }),
@@ -135,6 +146,8 @@ export class HardResetService {
       tx.dispatchPlanRecipient.count({ where: whereOrg }),
       tx.dispatchPlanChannel.count({ where: whereOrg }),
       tx.dispatchPlan.count({ where: whereOrg }),
+      tx.contentVariant.count({ where: whereOrg }),
+      tx.contentComposition.count({ where: whereOrg }),
       tx.message.count({ where: whereOrg }),
       tx.conversationThread.count({ where: whereOrg }),
       tx.contactNote.count({ where: whereOrg }),
@@ -145,20 +158,26 @@ export class HardResetService {
       tx.contact.count({ where: whereOrg }),
       tx.tag.count({ where: whereOrg }),
       tx.segment.count({ where: whereOrg }),
+      tx.channelAccountSendGuard.count({ where: whereOrg }),
       tx.channelAccount.count({ where: whereOrg }),
+      tx.destinationWhatsAppValidationCache.count({ where: whereOrg }),
       tx.candidate.count({ where: whereOrg }),
       tx.campaign.count({ where: { organizationId: { in: organizationIds } } }),
       tx.auditLog.count({ where: whereOrg }),
     ]);
 
-    // Ordem respeita FKs (filhos antes dos pais).
+    // Ordem respeita FKs (filhos antes dos pais). Inclui modelos 09.6/09.7.
+    await tx.dispatchItemAttempt.deleteMany({ where: whereOrg });
     await tx.dispatchItem.deleteMany({ where: whereOrg });
     await tx.dispatchChannelUsageDaily.deleteMany({ where: whereOrg });
     await tx.dispatchChannel.deleteMany({ where: whereOrg });
     await tx.dispatch.deleteMany({ where: whereOrg });
     await tx.dispatchPlanRecipient.deleteMany({ where: whereOrg });
     await tx.dispatchPlanChannel.deleteMany({ where: whereOrg });
+    // Planos referenciam ContentComposition — apagar planos antes das composicoes.
     await tx.dispatchPlan.deleteMany({ where: whereOrg });
+    await tx.contentVariant.deleteMany({ where: whereOrg });
+    await tx.contentComposition.deleteMany({ where: whereOrg });
 
     await tx.message.deleteMany({ where: whereOrg });
     await tx.conversationThread.deleteMany({ where: whereOrg });
@@ -184,7 +203,9 @@ export class HardResetService {
     await tx.contact.deleteMany({ where: whereOrg });
     await tx.tag.deleteMany({ where: whereOrg });
     await tx.segment.deleteMany({ where: whereOrg });
+    await tx.channelAccountSendGuard.deleteMany({ where: whereOrg });
     await tx.channelAccount.deleteMany({ where: whereOrg });
+    await tx.destinationWhatsAppValidationCache.deleteMany({ where: whereOrg });
     await tx.candidate.deleteMany({ where: whereOrg });
     await tx.campaign.deleteMany({
       where: { organizationId: { in: organizationIds } },
@@ -208,6 +229,11 @@ export class HardResetService {
       dispatchPlans,
       dispatches,
       dispatchItems,
+      dispatchItemAttempts,
+      contentCompositions,
+      contentVariants,
+      channelAccountSendGuards,
+      destinationWhatsAppValidationCaches,
       segments,
       tags,
       auditLogs,
@@ -226,6 +252,11 @@ function emptyCounts(): HardResetCounts {
     dispatchPlans: 0,
     dispatches: 0,
     dispatchItems: 0,
+    dispatchItemAttempts: 0,
+    contentCompositions: 0,
+    contentVariants: 0,
+    channelAccountSendGuards: 0,
+    destinationWhatsAppValidationCaches: 0,
     segments: 0,
     tags: 0,
     auditLogs: 0,

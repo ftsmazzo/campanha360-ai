@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it, afterEach } from 'node:test';
-import { HARD_RESET_CONFIRMATION } from './dto/hard-reset.dto';
 import { HardResetService } from './hard-reset.service';
+
+/** Espelha dto/hard-reset.dto — evita importar class-validator no runner tsx. */
+const HARD_RESET_CONFIRMATION = 'HARD RESET';
 
 const ENV_KEYS = ['HARD_RESET_ENABLED', 'NODE_ENV'] as const;
 
@@ -18,6 +20,13 @@ function createFakePrisma(options: {
   const counts = options.counts ?? {};
 
   const tx = {
+    dispatchItemAttempt: {
+      count: async () => counts.dispatchItemAttempt ?? 0,
+      deleteMany: async () => {
+        deleted.push('dispatchItemAttempt');
+        return { count: counts.dispatchItemAttempt ?? 0 };
+      },
+    },
     dispatchItem: {
       count: async () => counts.dispatchItem ?? 0,
       deleteMany: async () => {
@@ -64,6 +73,20 @@ function createFakePrisma(options: {
       count: async () => counts.dispatchPlan ?? 0,
       deleteMany: async () => {
         deleted.push('dispatchPlan');
+        return { count: 0 };
+      },
+    },
+    contentVariant: {
+      count: async () => counts.contentVariant ?? 0,
+      deleteMany: async () => {
+        deleted.push('contentVariant');
+        return { count: 0 };
+      },
+    },
+    contentComposition: {
+      count: async () => counts.contentComposition ?? 0,
+      deleteMany: async () => {
+        deleted.push('contentComposition');
         return { count: 0 };
       },
     },
@@ -144,11 +167,25 @@ function createFakePrisma(options: {
         return { count: 0 };
       },
     },
+    channelAccountSendGuard: {
+      count: async () => 0,
+      deleteMany: async () => {
+        deleted.push('channelAccountSendGuard');
+        return { count: 0 };
+      },
+    },
     channelAccount: {
       count: async () => counts.channelAccount ?? 1,
       deleteMany: async () => {
         deleted.push('channelAccount');
         return { count: 1 };
+      },
+    },
+    destinationWhatsAppValidationCache: {
+      count: async () => 0,
+      deleteMany: async () => {
+        deleted.push('destinationWhatsAppValidationCache');
+        return { count: 0 };
       },
     },
     candidate: {
@@ -238,8 +275,17 @@ describe('HardResetService', () => {
     assert.equal(result.ok, true);
     assert.equal(result.organizationsReset, 1);
     assert.equal(result.counts.contacts, 2);
+    assert.ok(harness.deleted.indexOf('dispatchItemAttempt') < harness.deleted.indexOf('dispatchItem'));
     assert.ok(harness.deleted.indexOf('dispatchItem') < harness.deleted.indexOf('dispatch'));
     assert.ok(harness.deleted.indexOf('dispatch') < harness.deleted.indexOf('dispatchPlan'));
+    assert.ok(
+      harness.deleted.indexOf('dispatchPlan') <
+        harness.deleted.indexOf('contentComposition'),
+    );
+    assert.ok(
+      harness.deleted.indexOf('channelAccountSendGuard') <
+        harness.deleted.indexOf('channelAccount'),
+    );
     assert.ok(harness.deleted.indexOf('contact') < harness.deleted.indexOf('campaign'));
     assert.ok(harness.deleted.includes('organization'));
     assert.equal(
