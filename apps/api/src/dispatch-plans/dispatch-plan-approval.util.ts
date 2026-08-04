@@ -59,6 +59,8 @@ export type ApprovalSnapshot = {
     length: number;
     hash: string;
     body: string;
+    composition?: import('@campanha360/shared').ContentCompositionSnapshotV1 | null;
+    compositionSnapshotHash?: string | null;
   };
 };
 
@@ -215,6 +217,7 @@ export function buildApprovalSnapshot(input: {
     simulationSnapshot: unknown;
   };
   channelProvider: string;
+  composition?: import('@campanha360/shared').ContentCompositionSnapshotV1 | null;
 }): ApprovalSnapshot {
   const validation = (input.plan.validationSnapshot ?? {}) as {
     passed?: boolean;
@@ -289,6 +292,9 @@ export function buildApprovalSnapshot(input: {
       length: body.length,
       hash: hashDispatchPlanContent(body),
       body,
+      composition: input.composition ?? null,
+      compositionSnapshotHash:
+        input.composition?.compositionSnapshotHash ?? null,
     },
   };
 }

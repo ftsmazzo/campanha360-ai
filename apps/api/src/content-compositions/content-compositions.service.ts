@@ -1,0 +1,1177 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import {
+  ContentCompositionStatus,
+  ContentVariantSource,
+  ContentVariantType,
+  Prisma,
+} from '@prisma/client';
+import {
+  CONTENT_LIMITS,
+  CONTENT_VARIABLE_CATALOG,
+  assessContentRepetition,
+  classifyContentSimilarity,
+  countTheoreticalCombinations,
+  extractContentVariableKeys,
+  getContentAiConfig,
+  hashNormalizedContent,
+  isAllowedContentVariable,
+  isContentAiEnabled,
+  selectAndRenderComposition,
+  validateAiVariantsPayload,
+  variantRequiresVariables,
+  type ContentCompositionSnapshotV1,
+} from '@campanha360/shared';
+import { AuditService } from '../audit/audit.service';
+import { OrganizationAccessService } from '../common/organization-access.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { ApproveCompositionDto } from './dto/approve-composition.dto';
+import { CreateCompositionDto } from './dto/create-composition.dto';
+import { CreateVariantDto } from './dto/create-variant.dto';
+import { GenerateAiVariantsDto } from './dto/generate-ai-variants.dto';
+import { PreviewCompositionDto } from './dto/preview-composition.dto';
+import { UpdateCompositionDto } from './dto/update-composition.dto';
+import { UpdateVariantDto } from './dto/update-variant.dto';
+import {
+  assertActiveVariantLimits,
+  buildCompositionSnapshotFromRows,
+  parseFallbacks,
+  validateVariantText,
+} from './content-composition.util';
+
+const compositionInclude = {
+  variants: { orderBy: [{ type: 'asc' as const }, { order: 'asc' as const }, { id: 'asc' as const }] },
+} satisfies Prisma.ContentCompositionInclude;
+
+@Injectable()
+export class ContentCompositionsService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly organizationAccess: OrganizationAccessService,
+    private readonly audit: AuditService,
+  ) {}
+
+  async list(userId: string, campaignId: string) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    const rows = await this.prisma.contentComposition.findMany({
+      where: {
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: { not: ContentCompositionStatus.ARCHIVED },
+      },
+      include: compositionInclude,
+      orderBy: { updatedAt: 'desc' },
+    });
+    return rows.map((row) => this.toDto(row));
+  }
+
+  async get(userId: string, campaignId: string, compositionId: string) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    const row = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    return this.toDto(row);
+  }
+
+  async catalog(userId: string, campaignId: string) {
+    await this.getCampaignContext(userId, campaignId);
+    const ai = getContentAiConfig();
+    return {
+      variables: CONTENT_VARIABLE_CATALOG,
+      limits: CONTENT_LIMITS,
+      ai: {
+        enabled: ai.enabled,
+        model: ai.enabled ? ai.model : null,
+        maxVariants: ai.maxVariants,
+      },
+    };
+  }
+
+  async create(userId: string, campaignId: string, dto: CreateCompositionDto) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const name = dto.name.trim();
+    const baseText = dto.baseBody.trim();
+    validateVariantText(baseText, ContentVariantType.BODY);
+
+    try {
+      const created = await this.prisma.$transaction(async (tx) => {
+        const composition = await tx.contentComposition.create({
+          data: {
+            organizationId: campaign.organizationId,
+            campaignId,
+            name,
+            status: ContentCompositionStatus.DRAFT,
+            version: 1,
+            blockSeparator: dto.blockSeparator?.trim() || CONTENT_LIMITS.BLOCK_SEPARATOR_DEFAULT,
+            fallbacks: (dto.fallbacks ?? {}) as Prisma.InputJsonValue,
+            createdByUserId: userId,
+          },
+        });
+
+        await tx.contentVariant.create({
+          data: {
+            organizationId: campaign.organizationId,
+            campaignId,
+            compositionId: composition.id,
+            type: ContentVariantType.BODY,
+            source: ContentVariantSource.BASE,
+            text: baseText,
+            normalizedTextHash: hashNormalizedContent(baseText),
+            enabled: true,
+            order: 0,
+            requiresVariables: variantRequiresVariables(baseText),
+            reviewPending: false,
+          },
+        });
+
+        return tx.contentComposition.findUniqueOrThrow({
+          where: { id: composition.id },
+          include: compositionInclude,
+        });
+      });
+
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'CONTENT_COMPOSITION_CREATED',
+        entityType: 'ContentComposition',
+        entityId: created.id,
+        metadata: {
+          name: created.name,
+          version: created.version,
+          baseHash: hashNormalizedContent(baseText),
+        },
+      });
+
+      return this.toDto(created);
+    } catch (error) {
+      this.handleUniqueNameError(error);
+      throw error;
+    }
+  }
+
+  async update(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+    dto: UpdateCompositionDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    this.assertEditable(existing.status);
+
+    const updated = await this.prisma.contentComposition.update({
+      where: { id: existing.id },
+      data: {
+        name: dto.name === undefined ? undefined : dto.name.trim(),
+        blockSeparator:
+          dto.blockSeparator === undefined
+            ? undefined
+            : dto.blockSeparator.trim() || CONTENT_LIMITS.BLOCK_SEPARATOR_DEFAULT,
+        fallbacks:
+          dto.fallbacks === undefined
+            ? undefined
+            : (dto.fallbacks as Prisma.InputJsonValue),
+        version: { increment: 1 },
+        status: ContentCompositionStatus.DRAFT,
+        approvedAt: null,
+        approvedByUserId: null,
+      },
+      include: compositionInclude,
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'CONTENT_VARIANT_UPDATED',
+      entityType: 'ContentComposition',
+      entityId: updated.id,
+      metadata: { version: updated.version, fields: Object.keys(dto) },
+    });
+
+    return this.toDto(updated);
+  }
+
+  async addVariant(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+    dto: CreateVariantDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    this.assertEditable(existing.status);
+
+    const text = dto.text.trim();
+    validateVariantText(text, dto.type);
+    const requires = dto.requiresVariables?.length
+      ? dto.requiresVariables.filter(isAllowedContentVariable)
+      : variantRequiresVariables(text);
+
+    const type = dto.type as ContentVariantType;
+    const enabled = dto.enabled !== false;
+    const activeOfType = existing.variants.filter(
+      (v) => v.type === type && v.enabled,
+    ).length;
+    if (enabled) {
+      assertActiveVariantLimits(type, activeOfType + 1);
+    }
+
+    const hash = hashNormalizedContent(text);
+    if (
+      existing.variants.some(
+        (v) => v.type === type && v.normalizedTextHash === hash,
+      )
+    ) {
+      throw new BadRequestException('Duplicata exata de variante no mesmo grupo');
+    }
+
+    const maxOrder = existing.variants
+      .filter((v) => v.type === type)
+      .reduce((m, v) => Math.max(m, v.order), -1);
+
+    const variant = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.contentVariant.create({
+        data: {
+          organizationId: campaign.organizationId,
+          campaignId,
+          compositionId: existing.id,
+          type,
+          source: ContentVariantSource.MANUAL,
+          text,
+          normalizedTextHash: hash,
+          enabled,
+          order: maxOrder + 1,
+          requiresVariables: requires,
+          reviewPending: false,
+        },
+      });
+      await tx.contentComposition.update({
+        where: { id: existing.id },
+        data: {
+          version: { increment: 1 },
+          status: ContentCompositionStatus.DRAFT,
+          approvedAt: null,
+          approvedByUserId: null,
+        },
+      });
+      return created;
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'CONTENT_VARIANT_CREATED',
+      entityType: 'ContentVariant',
+      entityId: variant.id,
+      metadata: {
+        compositionId: existing.id,
+        type: variant.type,
+        source: variant.source,
+        hash: variant.normalizedTextHash,
+      },
+    });
+
+    return this.get(userId, campaignId, compositionId);
+  }
+
+  async updateVariant(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+    variantId: string,
+    dto: UpdateVariantDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    this.assertEditable(existing.status);
+    const variant = existing.variants.find((v) => v.id === variantId);
+    if (!variant) throw new NotFoundException('Variante nao encontrada');
+
+    const nextText = dto.text === undefined ? variant.text : dto.text.trim();
+    if (dto.text !== undefined) validateVariantText(nextText, variant.type);
+
+    const nextEnabled = dto.enabled === undefined ? variant.enabled : dto.enabled;
+    if (nextEnabled && !variant.enabled) {
+      const active = existing.variants.filter(
+        (v) => v.type === variant.type && v.enabled && v.id !== variant.id,
+      ).length;
+      assertActiveVariantLimits(variant.type, active + 1);
+    }
+
+    if (variant.source === ContentVariantSource.BASE && dto.enabled === false) {
+      throw new BadRequestException('Mensagem-base BODY nao pode ser desativada');
+    }
+
+    const requires =
+      dto.requiresVariables !== undefined
+        ? dto.requiresVariables.filter(isAllowedContentVariable)
+        : variantRequiresVariables(
+            nextText,
+            Array.isArray(variant.requiresVariables)
+              ? (variant.requiresVariables as string[])
+              : null,
+          );
+
+    const hash = hashNormalizedContent(nextText);
+    if (
+      existing.variants.some(
+        (v) =>
+          v.id !== variant.id &&
+          v.type === variant.type &&
+          v.normalizedTextHash === hash,
+      )
+    ) {
+      throw new BadRequestException('Duplicata exata de variante no mesmo grupo');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.contentVariant.update({
+        where: { id: variant.id },
+        data: {
+          text: nextText,
+          normalizedTextHash: hash,
+          enabled: nextEnabled,
+          requiresVariables: requires,
+          reviewPending:
+            dto.reviewPending === undefined
+              ? variant.source === ContentVariantSource.AI_GENERATED &&
+                dto.enabled === true
+                ? false
+                : undefined
+              : dto.reviewPending,
+        },
+      });
+      await tx.contentComposition.update({
+        where: { id: existing.id },
+        data: {
+          version: { increment: 1 },
+          status: ContentCompositionStatus.DRAFT,
+          approvedAt: null,
+          approvedByUserId: null,
+        },
+      });
+    });
+
+    const action =
+      dto.enabled === true
+        ? 'CONTENT_VARIANT_ENABLED'
+        : dto.enabled === false
+          ? 'CONTENT_VARIANT_DISABLED'
+          : 'CONTENT_VARIANT_UPDATED';
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action,
+      entityType: 'ContentVariant',
+      entityId: variant.id,
+      metadata: { compositionId, hash },
+    });
+
+    return this.get(userId, campaignId, compositionId);
+  }
+
+  async removeVariant(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+    variantId: string,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    this.assertEditable(existing.status);
+    const variant = existing.variants.find((v) => v.id === variantId);
+    if (!variant) throw new NotFoundException('Variante nao encontrada');
+    if (variant.source === ContentVariantSource.BASE) {
+      throw new BadRequestException('Mensagem-base nao pode ser excluida');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.contentVariant.delete({ where: { id: variant.id } });
+      await tx.contentComposition.update({
+        where: { id: existing.id },
+        data: {
+          version: { increment: 1 },
+          status: ContentCompositionStatus.DRAFT,
+          approvedAt: null,
+          approvedByUserId: null,
+        },
+      });
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'CONTENT_VARIANT_DISABLED',
+      entityType: 'ContentVariant',
+      entityId: variantId,
+      metadata: { compositionId, deleted: true },
+    });
+
+    return this.get(userId, campaignId, compositionId);
+  }
+
+  async generateAiVariants(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+    dto: GenerateAiVariantsDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    this.assertEditable(existing.status);
+
+    const ai = getContentAiConfig();
+    if (!ai.enabled) {
+      throw new ServiceUnavailableException(
+        'Geracao por IA indisponivel (CONTENT_AI_ENABLED=false). O editor manual continua disponivel.',
+      );
+    }
+    if (!ai.apiKey) {
+      throw new ServiceUnavailableException(
+        'Geracao por IA sem chave configurada (CONTENT_AI_API_KEY / OPENAI_API_KEY).',
+      );
+    }
+
+    const base = existing.variants.find(
+      (v) => v.type === ContentVariantType.BODY && v.source === ContentVariantSource.BASE,
+    );
+    if (!base) throw new BadRequestException('Mensagem-base BODY ausente');
+
+    const generationId = `ai_${Date.now().toString(36)}`;
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'CONTENT_AI_GENERATION_REQUESTED',
+      entityType: 'ContentComposition',
+      entityId: existing.id,
+      metadata: {
+        generationId,
+        model: ai.model,
+        objectiveLength: (dto.objective ?? '').length,
+        tone: dto.tone ?? null,
+      },
+    });
+
+    try {
+      const payload = await this.callContentAi({
+        baseText: base.text,
+        objective: dto.objective?.trim() || 'Variar tom preservando fatos',
+        tone: dto.tone?.trim() || 'profissional e natural',
+        maxChars: dto.maxChars ?? 800,
+        campaignName: campaign.name,
+        model: ai.model,
+        apiKey: ai.apiKey,
+        baseUrl: ai.baseUrl,
+        timeoutMs: ai.timeoutMs,
+        maxOutputChars: ai.maxOutputChars,
+        maxInputChars: ai.maxInputChars,
+      });
+
+      const validated = validateAiVariantsPayload(payload, base.text);
+      if (!validated.ok) {
+        throw new BadRequestException(
+          `Resposta da IA invalida: ${validated.errors.join(', ')}`,
+        );
+      }
+
+      const activeBodies = existing.variants.filter(
+        (v) => v.type === ContentVariantType.BODY && v.enabled,
+      ).length;
+      const room = CONTENT_LIMITS.MAX_BODY_ACTIVE - activeBodies;
+      if (room <= 0) {
+        throw new BadRequestException(
+          `Limite de ${CONTENT_LIMITS.MAX_BODY_ACTIVE} corpos ativos atingido`,
+        );
+      }
+
+      const toSave = validated.variants.slice(0, Math.min(3, room));
+      const maxOrder = existing.variants
+        .filter((v) => v.type === ContentVariantType.BODY)
+        .reduce((m, v) => Math.max(m, v.order), -1);
+
+      await this.prisma.$transaction(async (tx) => {
+        let order = maxOrder;
+        for (const draft of toSave) {
+          order += 1;
+          await tx.contentVariant.create({
+            data: {
+              organizationId: campaign.organizationId,
+              campaignId,
+              compositionId: existing.id,
+              type: ContentVariantType.BODY,
+              source: ContentVariantSource.AI_GENERATED,
+              text: draft.text,
+              normalizedTextHash: hashNormalizedContent(draft.text),
+              enabled: false,
+              order,
+              requiresVariables: variantRequiresVariables(draft.text),
+              reviewPending: true,
+              aiGenerationId: generationId,
+              aiSummaryOfChanges: draft.summaryOfChanges || null,
+            },
+          });
+        }
+        await tx.contentComposition.update({
+          where: { id: existing.id },
+          data: {
+            version: { increment: 1 },
+            status: ContentCompositionStatus.READY_FOR_REVIEW,
+            approvedAt: null,
+            approvedByUserId: null,
+          },
+        });
+      });
+
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'CONTENT_AI_GENERATION_COMPLETED',
+        entityType: 'ContentComposition',
+        entityId: existing.id,
+        metadata: {
+          generationId,
+          model: ai.model,
+          variantCount: toSave.length,
+        },
+      });
+
+      return this.get(userId, campaignId, compositionId);
+    } catch (error) {
+      await this.audit.log({
+        organizationId: campaign.organizationId,
+        campaignId,
+        actorUserId: userId,
+        action: 'CONTENT_AI_GENERATION_FAILED',
+        entityType: 'ContentComposition',
+        entityId: existing.id,
+        metadata: {
+          generationId,
+          reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+        },
+      });
+      throw error;
+    }
+  }
+
+  async markReadyForReview(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    this.assertEditable(existing.status);
+    const bodies = existing.variants.filter(
+      (v) => v.type === ContentVariantType.BODY && v.enabled,
+    );
+    if (bodies.length < 1) {
+      throw new BadRequestException('Ao menos 1 BODY ativo e obrigatorio');
+    }
+    const pendingAi = existing.variants.filter(
+      (v) => v.source === ContentVariantSource.AI_GENERATED && v.reviewPending && v.enabled,
+    );
+    if (pendingAi.length > 0) {
+      throw new BadRequestException(
+        'Variantes de IA ativadas ainda pendentes de revisao',
+      );
+    }
+
+    const updated = await this.prisma.contentComposition.update({
+      where: { id: existing.id },
+      data: { status: ContentCompositionStatus.READY_FOR_REVIEW },
+      include: compositionInclude,
+    });
+    return this.toDto(updated);
+  }
+
+  async approve(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+    _dto: ApproveCompositionDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    await this.organizationAccess.requireApproveAccess(
+      userId,
+      campaign.organizationId,
+    );
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    if (
+      existing.status !== ContentCompositionStatus.DRAFT &&
+      existing.status !== ContentCompositionStatus.READY_FOR_REVIEW
+    ) {
+      throw new ConflictException('Composicao nao esta apta para aprovacao');
+    }
+
+    const enabledBodies = existing.variants.filter(
+      (v) => v.type === ContentVariantType.BODY && v.enabled,
+    );
+    if (enabledBodies.length < 1) {
+      throw new BadRequestException('Ao menos 1 BODY ativo e obrigatorio');
+    }
+    assertActiveVariantLimits(
+      ContentVariantType.BODY,
+      enabledBodies.length,
+    );
+    assertActiveVariantLimits(
+      ContentVariantType.GREETING,
+      existing.variants.filter((v) => v.type === 'GREETING' && v.enabled).length,
+    );
+    assertActiveVariantLimits(
+      ContentVariantType.CLOSING,
+      existing.variants.filter((v) => v.type === 'CLOSING' && v.enabled).length,
+    );
+
+    const pendingAi = existing.variants.filter(
+      (v) =>
+        v.source === ContentVariantSource.AI_GENERATED &&
+        v.enabled &&
+        v.reviewPending,
+    );
+    if (pendingAi.length > 0) {
+      throw new BadRequestException(
+        'Nenhuma variante de IA habilitada pode entrar sem revisao/aprovacao explicita',
+      );
+    }
+
+    for (const v of existing.variants.filter((x) => x.enabled)) {
+      validateVariantText(v.text, v.type);
+    }
+
+    const approvedAt = new Date();
+    const updated = await this.prisma.contentComposition.update({
+      where: { id: existing.id },
+      data: {
+        status: ContentCompositionStatus.APPROVED,
+        approvedAt,
+        approvedByUserId: userId,
+      },
+      include: compositionInclude,
+    });
+
+    const snapshot = this.buildSnapshot(updated, approvedAt, userId);
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'CONTENT_COMPOSITION_APPROVED',
+      entityType: 'ContentComposition',
+      entityId: updated.id,
+      metadata: {
+        version: updated.version,
+        compositionSnapshotHash: snapshot.compositionSnapshotHash,
+        enabledCounts: this.countEnabled(updated.variants),
+      },
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'CONTENT_SNAPSHOT_CREATED',
+      entityType: 'ContentComposition',
+      entityId: updated.id,
+      metadata: {
+        compositionSnapshotHash: snapshot.compositionSnapshotHash,
+        version: snapshot.compositionVersion,
+      },
+    });
+
+    return { ...this.toDto(updated), snapshot };
+  }
+
+  async preview(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+    dto: PreviewCompositionDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+
+    const approvedAt = existing.approvedAt ?? new Date();
+    const snapshot = this.buildSnapshot(
+      existing,
+      approvedAt,
+      existing.approvedByUserId ?? userId,
+    );
+
+    const contacts = await this.prisma.contact.findMany({
+      where: {
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: { not: 'DELETED' },
+        ...(dto.contactId ? { id: dto.contactId } : {}),
+      },
+      take: dto.contactId ? 1 : 40,
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true, name: true, metadata: true },
+    });
+
+    const withName = contacts.filter((c) => c.name?.trim());
+    const withoutName = contacts.filter((c) => !c.name?.trim());
+    const sample = dto.contactId
+      ? contacts
+      : [
+          ...withName.slice(0, 3),
+          ...withoutName.slice(0, 2),
+          ...contacts.slice(0, 5),
+        ]
+          .filter(
+            (c, i, arr) => arr.findIndex((x) => x.id === c.id) === i,
+          )
+          .slice(0, 5);
+
+    const dispatchId = dto.dispatchId?.trim() || `preview:${existing.id}`;
+    const previews = sample.map((contact) => {
+      const companyName = extractCompanyFromMetadata(contact.metadata);
+      const rendered = selectAndRenderComposition({
+        snapshot,
+        dispatchId,
+        dispatchItemId: `preview:${contact.id}`,
+        contactId: contact.id,
+        contact: { name: contact.name, companyName },
+      });
+      return {
+        contactId: contact.id,
+        contactName: contact.name,
+        greetingVariantId: rendered.greetingVariantId,
+        bodyVariantId: rendered.bodyVariantId,
+        closingVariantId: rendered.closingVariantId,
+        renderedText: rendered.renderedText,
+        renderedTextHash: rendered.renderedTextHash,
+        personalizationStatus: rendered.personalizationStatus,
+        resolvedVariables: rendered.render.resolvedVariables,
+        missingVariables: rendered.missingVariables,
+        usedFallbacks: rendered.usedFallbacks,
+        length: rendered.renderedText.length,
+        valid: rendered.valid,
+        errors: rendered.errors,
+      };
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: 'CONTENT_PREVIEW_RENDERED',
+      entityType: 'ContentComposition',
+      entityId: existing.id,
+      metadata: {
+        sampleSize: previews.length,
+        compositionVersion: snapshot.compositionVersion,
+        compositionSnapshotHash: snapshot.compositionSnapshotHash,
+      },
+    });
+
+    const enabled = this.countEnabled(existing.variants);
+    return {
+      notice:
+        'O preview usa o mesmo algoritmo deterministico do envio.',
+      compositionId: existing.id,
+      compositionVersion: existing.version,
+      compositionSnapshotHash: snapshot.compositionSnapshotHash,
+      counts: {
+        greetings: enabled.GREETING,
+        bodies: enabled.BODY,
+        closings: enabled.CLOSING,
+        theoreticalCombinations: countTheoreticalCombinations({
+          greetingCount: enabled.GREETING,
+          bodyCount: enabled.BODY,
+          closingCount: enabled.CLOSING,
+        }),
+      },
+      previews,
+    };
+  }
+
+  async similarityReport(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId);
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    const bodies = existing.variants.filter(
+      (v) => v.type === ContentVariantType.BODY,
+    );
+    const base = bodies.find((v) => v.source === ContentVariantSource.BASE);
+    const alerts: Array<{
+      variantId: string;
+      against: string;
+      score: number;
+      alert: string | null;
+    }> = [];
+
+    for (const v of bodies) {
+      if (!base || v.id === base.id) continue;
+      const a = assessContentRepetition({
+        currentContent: v.text,
+        recentContents: [base.text],
+        thresholdPercentage: 70,
+      });
+      alerts.push({
+        variantId: v.id,
+        against: 'BASE',
+        score: a.repetitionScore,
+        alert: classifyContentSimilarity(a.repetitionScore),
+      });
+    }
+
+    for (let i = 0; i < bodies.length; i++) {
+      for (let j = i + 1; j < bodies.length; j++) {
+        const a = assessContentRepetition({
+          currentContent: bodies[i]!.text,
+          recentContents: [bodies[j]!.text],
+          thresholdPercentage: 70,
+        });
+        alerts.push({
+          variantId: bodies[i]!.id,
+          against: bodies[j]!.id,
+          score: a.repetitionScore,
+          alert: classifyContentSimilarity(a.repetitionScore),
+        });
+      }
+    }
+
+    const recentPlans = await this.prisma.dispatchPlan.findMany({
+      where: {
+        organizationId: campaign.organizationId,
+        campaignId,
+        status: { in: ['APPROVED', 'EXPIRED'] },
+      },
+      orderBy: { approvedAt: 'desc' },
+      take: 20,
+      select: { content: true },
+    });
+    const recentContents = recentPlans
+      .map((p) => (typeof p.content === 'string' ? p.content : ''))
+      .filter(Boolean);
+    if (base && recentContents.length) {
+      const a = assessContentRepetition({
+        currentContent: base.text,
+        recentContents,
+        thresholdPercentage: 70,
+      });
+      alerts.push({
+        variantId: base.id,
+        against: 'RECENT_CAMPAIGNS',
+        score: a.repetitionScore,
+        alert:
+          classifyContentSimilarity(a.repetitionScore) === 'DUPLICATA_EXATA'
+            ? 'CONTEUDO_RECENTE_REPETIDO'
+            : a.exceedsThreshold
+              ? 'CONTEUDO_RECENTE_REPETIDO'
+              : classifyContentSimilarity(a.repetitionScore),
+      });
+    }
+
+    return { alerts };
+  }
+
+  buildSnapshotFromApproved(
+    composition: Prisma.ContentCompositionGetPayload<{
+      include: typeof compositionInclude;
+    }>,
+  ): ContentCompositionSnapshotV1 {
+    if (composition.status !== ContentCompositionStatus.APPROVED) {
+      throw new BadRequestException('Composicao precisa estar APPROVED');
+    }
+    return this.buildSnapshot(
+      composition,
+      composition.approvedAt ?? new Date(),
+      composition.approvedByUserId ?? composition.createdByUserId,
+    );
+  }
+
+  private buildSnapshot(
+    composition: Prisma.ContentCompositionGetPayload<{
+      include: typeof compositionInclude;
+    }>,
+    approvedAt: Date,
+    approvedByUserId: string,
+  ): ContentCompositionSnapshotV1 {
+    const enabledOnly = composition.variants.filter((v) => {
+      if (!v.enabled) return false;
+      if (v.source === ContentVariantSource.AI_GENERATED && v.reviewPending) {
+        return false;
+      }
+      return true;
+    });
+    return buildCompositionSnapshotFromRows({
+      composition: {
+        id: composition.id,
+        name: composition.name,
+        version: composition.version,
+        blockSeparator: composition.blockSeparator,
+        fallbacks: parseFallbacks(composition.fallbacks),
+      },
+      variants: enabledOnly.map((v) => ({
+        id: v.id,
+        type: v.type,
+        source: v.source,
+        text: v.text,
+        normalizedTextHash: v.normalizedTextHash,
+        enabled: v.enabled,
+        order: v.order,
+        requiresVariables: Array.isArray(v.requiresVariables)
+          ? (v.requiresVariables as string[])
+          : variantRequiresVariables(v.text),
+      })),
+      approvedAt,
+      approvedByUserId,
+    });
+  }
+
+  private countEnabled(
+    variants: Array<{ type: ContentVariantType; enabled: boolean }>,
+  ) {
+    return {
+      BODY: variants.filter((v) => v.type === 'BODY' && v.enabled).length,
+      GREETING: variants.filter((v) => v.type === 'GREETING' && v.enabled).length,
+      CLOSING: variants.filter((v) => v.type === 'CLOSING' && v.enabled).length,
+    };
+  }
+
+  private toDto(
+    row: Prisma.ContentCompositionGetPayload<{ include: typeof compositionInclude }>,
+  ) {
+    const enabled = this.countEnabled(row.variants);
+    return {
+      id: row.id,
+      organizationId: row.organizationId,
+      campaignId: row.campaignId,
+      name: row.name,
+      status: row.status,
+      version: row.version,
+      blockSeparator: row.blockSeparator,
+      fallbacks: parseFallbacks(row.fallbacks),
+      approvedAt: row.approvedAt,
+      approvedByUserId: row.approvedByUserId,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      counts: {
+        ...enabled,
+        theoreticalCombinations: countTheoreticalCombinations({
+          greetingCount: enabled.GREETING,
+          bodyCount: enabled.BODY,
+          closingCount: enabled.CLOSING,
+        }),
+      },
+      aiEnabled: isContentAiEnabled(),
+      variants: row.variants.map((v) => ({
+        id: v.id,
+        type: v.type,
+        source: v.source,
+        text: v.text,
+        normalizedTextHash: v.normalizedTextHash,
+        enabled: v.enabled,
+        order: v.order,
+        requiresVariables: Array.isArray(v.requiresVariables)
+          ? v.requiresVariables
+          : variantRequiresVariables(v.text),
+        reviewPending: v.reviewPending,
+        aiGenerationId: v.aiGenerationId,
+        aiSummaryOfChanges: v.aiSummaryOfChanges,
+        variablesDetected: extractContentVariableKeys(v.text),
+        createdAt: v.createdAt,
+        updatedAt: v.updatedAt,
+      })),
+    };
+  }
+
+  private assertEditable(status: ContentCompositionStatus | string) {
+    if (
+      status === ContentCompositionStatus.ARCHIVED ||
+      status === 'ARCHIVED'
+    ) {
+      throw new ConflictException('Composicao arquivada nao pode ser editada');
+    }
+  }
+
+  private async callContentAi(input: {
+    baseText: string;
+    objective: string;
+    tone: string;
+    maxChars: number;
+    campaignName: string;
+    model: string;
+    apiKey: string;
+    baseUrl: string;
+    timeoutMs: number;
+    maxOutputChars: number;
+    maxInputChars: number;
+  }): Promise<unknown> {
+    const allowed = CONTENT_VARIABLE_CATALOG.map((v) => v.token).join(', ');
+    const baseClipped = input.baseText.slice(0, input.maxInputChars);
+    const system = [
+      'Voce gera ate 3 variacoes textuais de mensagem WhatsApp.',
+      'Responda SOMENTE JSON valido no formato {"variants":[{"text":"...","summaryOfChanges":"...","preservedFacts":true}]}',
+      'Nao invente preco, desconto, prazo, garantia, condicao comercial, link ou escassez.',
+      'Nao adicione dados pessoais. Preserve fatos, oferta, CTA e idioma.',
+      `Variaveis permitidas: ${allowed}. Nao invente outras.`,
+      'Nao descreva isto como anti-spam ou anti-ban.',
+    ].join(' ');
+    const user = [
+      `Objetivo: ${input.objective}`,
+      `Tom: ${input.tone}`,
+      `Limite aproximado de caracteres: ${input.maxChars}`,
+      `Contexto de campanha autorizado (nome): ${input.campaignName}`,
+      `Mensagem-base:\n${baseClipped}`,
+    ].join('\n');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), input.timeoutMs);
+    try {
+      const res = await fetch(`${input.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${input.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: input.model,
+          temperature: 0.7,
+          response_format: { type: 'json_object' },
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+        }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new ServiceUnavailableException(
+          `Falha no provedor de IA (HTTP ${res.status})`,
+        );
+      }
+      const json = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string } }>;
+      };
+      const content = json.choices?.[0]?.message?.content ?? '';
+      if (content.length > input.maxOutputChars) {
+        throw new BadRequestException('Resposta da IA excede limite de saida');
+      }
+      return JSON.parse(content) as unknown;
+    } catch (error) {
+      if (error instanceof BadRequestException || error instanceof ServiceUnavailableException) {
+        throw error;
+      }
+      throw new ServiceUnavailableException(
+        error instanceof Error
+          ? `Falha na geracao por IA: ${error.message.slice(0, 160)}`
+          : 'Falha na geracao por IA',
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async getCompositionOrThrow(
+    compositionId: string,
+    organizationId: string,
+    campaignId: string,
+  ) {
+    const row = await this.prisma.contentComposition.findFirst({
+      where: { id: compositionId, organizationId, campaignId },
+      include: compositionInclude,
+    });
+    if (!row) throw new NotFoundException('Composicao nao encontrada');
+    return row;
+  }
+
+  private async getCampaignContext(
+    userId: string,
+    campaignId: string,
+    requireWrite = false,
+  ) {
+    const campaign = await this.prisma.campaign.findUnique({
+      where: { id: campaignId },
+      select: { id: true, organizationId: true, name: true },
+    });
+    if (!campaign) throw new NotFoundException('Campanha nao encontrada');
+    if (requireWrite) {
+      await this.organizationAccess.requireWriteAccess(
+        userId,
+        campaign.organizationId,
+      );
+    } else {
+      await this.organizationAccess.requireMembership(
+        userId,
+        campaign.organizationId,
+      );
+    }
+    return campaign;
+  }
+
+  private handleUniqueNameError(error: unknown): void {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === 'P2002'
+    ) {
+      throw new ConflictException('Ja existe composicao com este nome');
+    }
+  }
+}
+
+function extractCompanyFromMetadata(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== 'object') return null;
+  const m = metadata as Record<string, unknown>;
+  for (const key of ['companyName', 'company', 'empresa']) {
+    if (typeof m[key] === 'string' && m[key].trim()) return String(m[key]).trim();
+  }
+  return null;
+}

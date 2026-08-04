@@ -986,6 +986,7 @@ export type DispatchPlanItem = {
   description: string | null;
   channelType: string;
   content: string;
+  contentCompositionId?: string | null;
   protectionPolicySnapshot?: ProtectionPolicySnapshot | null;
   legacySingleChannel?: boolean;
   multiInstanceEnabled?: boolean;
@@ -1437,6 +1438,7 @@ export type CreateDispatchPlanPayload = {
   validateWhatsAppNumber?: boolean;
   validateWhatsAppNumberDisableAcknowledged?: boolean;
   content: string;
+  contentCompositionId?: string | null;
 };
 
 export type UpdateDispatchPlanPayload = {
@@ -1449,6 +1451,7 @@ export type UpdateDispatchPlanPayload = {
   validateWhatsAppNumber?: boolean;
   validateWhatsAppNumberDisableAcknowledged?: boolean;
   content?: string;
+  contentCompositionId?: string | null;
 };
 
 export function fetchDispatches(
@@ -2799,6 +2802,274 @@ export function retryInboxMessage(
   return request<InboxReplyResponse>(
     `/campaigns/${campaignId}/inbox/threads/${threadId}/messages/${messageId}/retry`,
     { method: 'POST' },
+    token,
+  );
+}
+
+/** --- Content compositions (09.7.1) --- */
+
+export type ContentCompositionStatus =
+  | 'DRAFT'
+  | 'READY_FOR_REVIEW'
+  | 'APPROVED'
+  | 'ARCHIVED';
+
+export type ContentVariantType = 'BODY' | 'GREETING' | 'CLOSING';
+
+export type ContentVariantSource = 'BASE' | 'MANUAL' | 'AI_GENERATED';
+
+export type ContentVariantItem = {
+  id: string;
+  type: ContentVariantType;
+  source: ContentVariantSource;
+  text: string;
+  normalizedTextHash: string;
+  enabled: boolean;
+  order: number;
+  requiresVariables: string[];
+  reviewPending: boolean;
+  aiGenerationId: string | null;
+  aiSummaryOfChanges: string | null;
+  variablesDetected: string[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ContentCompositionItem = {
+  id: string;
+  organizationId: string;
+  campaignId: string;
+  name: string;
+  status: ContentCompositionStatus;
+  version: number;
+  blockSeparator: string;
+  fallbacks: Record<string, string>;
+  approvedAt: string | null;
+  approvedByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  counts: {
+    BODY: number;
+    GREETING: number;
+    CLOSING: number;
+    theoreticalCombinations: number;
+  };
+  aiEnabled: boolean;
+  variants: ContentVariantItem[];
+};
+
+export type ContentCompositionCatalog = {
+  variables: Array<{
+    key: string;
+    token: string;
+    label: string;
+    description: string;
+  }>;
+  limits: Record<string, unknown>;
+  ai: {
+    enabled: boolean;
+    model: string | null;
+    maxVariants: number;
+  };
+};
+
+export type ContentCompositionPreviewResult = {
+  notice: string;
+  compositionId: string;
+  compositionVersion: number;
+  compositionSnapshotHash: string;
+  counts: {
+    greetings: number;
+    bodies: number;
+    closings: number;
+    theoreticalCombinations: number;
+  };
+  previews: Array<{
+    contactId: string;
+    contactName: string | null;
+    greetingVariantId: string | null;
+    bodyVariantId: string;
+    closingVariantId: string | null;
+    renderedText: string;
+    renderedTextHash: string;
+    personalizationStatus: string;
+    resolvedVariables: Record<string, string>;
+    missingVariables: string[];
+    usedFallbacks: string[];
+    length: number;
+    valid: boolean;
+    errors: string[];
+  }>;
+};
+
+export type ContentSimilarityReport = {
+  alerts: Array<{
+    variantId: string;
+    against: string;
+    score: number;
+    alert: string | null;
+  }>;
+};
+
+export function fetchContentCompositions(token: string, campaignId: string) {
+  return request<ContentCompositionItem[]>(
+    `/campaigns/${campaignId}/content-compositions`,
+    {},
+    token,
+  );
+}
+
+export function fetchContentComposition(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+) {
+  return request<ContentCompositionItem>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}`,
+    {},
+    token,
+  );
+}
+
+export function fetchContentCompositionCatalog(token: string, campaignId: string) {
+  return request<ContentCompositionCatalog>(
+    `/campaigns/${campaignId}/content-compositions/catalog`,
+    {},
+    token,
+  );
+}
+
+export function createContentComposition(
+  token: string,
+  campaignId: string,
+  payload: {
+    name: string;
+    baseBody: string;
+    blockSeparator?: string;
+    fallbacks?: Record<string, string>;
+  },
+) {
+  return request<ContentCompositionItem>(
+    `/campaigns/${campaignId}/content-compositions`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateContentComposition(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+  payload: {
+    name?: string;
+    blockSeparator?: string;
+    fallbacks?: Record<string, string>;
+  },
+) {
+  return request<ContentCompositionItem>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function createContentVariant(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+  payload: {
+    type: ContentVariantType;
+    text: string;
+    enabled?: boolean;
+    requiresVariables?: string[];
+  },
+) {
+  return request<ContentCompositionItem>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}/variants`,
+    { method: 'POST', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function updateContentVariant(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+  variantId: string,
+  payload: {
+    text?: string;
+    enabled?: boolean;
+    reviewPending?: boolean;
+    requiresVariables?: string[];
+  },
+) {
+  return request<ContentCompositionItem>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}/variants/${variantId}`,
+    { method: 'PUT', body: JSON.stringify(payload) },
+    token,
+  );
+}
+
+export function deleteContentVariant(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+  variantId: string,
+) {
+  return request<ContentCompositionItem>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}/variants/${variantId}`,
+    { method: 'DELETE' },
+    token,
+  );
+}
+
+export function generateContentAiVariants(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+  payload?: { objective?: string; tone?: string; maxChars?: number },
+) {
+  return request<ContentCompositionItem>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}/generate-ai`,
+    { method: 'POST', body: JSON.stringify(payload ?? {}) },
+    token,
+  );
+}
+
+export function approveContentComposition(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+  payload?: { note?: string },
+) {
+  return request<ContentCompositionItem & { snapshot?: unknown }>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}/approve`,
+    { method: 'POST', body: JSON.stringify(payload ?? {}) },
+    token,
+  );
+}
+
+export function previewContentComposition(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+  payload?: { contactId?: string; dispatchId?: string },
+) {
+  return request<ContentCompositionPreviewResult>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}/preview`,
+    { method: 'POST', body: JSON.stringify(payload ?? {}) },
+    token,
+  );
+}
+
+export function fetchContentCompositionSimilarity(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+) {
+  return request<ContentSimilarityReport>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}/similarity`,
+    {},
     token,
   );
 }

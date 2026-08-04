@@ -30,6 +30,7 @@ import {
   cacheTtlMsForValidationStatus,
   WHATSAPP_VALIDATION_MAX_UNKNOWN_ATTEMPTS,
   WHATSAPP_VALIDATION_SOURCE,
+  assertFrozenItemContentReady,
   type EvolutionSendCategory,
   type EvolutionSendInput,
   type EvolutionSendResult,
@@ -135,6 +136,7 @@ export type DispatchSendProcessAction =
   | 'SKIPPED_CONTACT_BLOCKED'
   | 'SKIPPED_CONTACT_OPT_OUT'
   | 'SKIPPED_PILOT_DESTINATION_NOT_ALLOWED'
+  | 'SKIPPED_CONTENT_INVALID'
   | 'FAILED_INVALID_DESTINATION'
   | 'SENT'
   | 'RETRY_SCHEDULED'
@@ -1434,8 +1436,23 @@ async function runRealSend(input: {
       };
     }
 
-    const contentSnapshot = (item.contentSnapshot ?? {}) as { body?: unknown };
-    const text = typeof contentSnapshot.body === 'string' ? contentSnapshot.body : '';
+    const contentCheck = assertFrozenItemContentReady(item.contentSnapshot);
+    if (!contentCheck.ok) {
+      await finalizeSkip(
+        prisma,
+        item,
+        now(),
+        contentCheck.errorCode,
+        DispatchItemErrorCategory.CONTENT_REJECTED,
+      );
+      return {
+        action: 'SKIPPED_CONTENT_INVALID',
+        send: false,
+        dispatchItemId: item.id,
+        reason: contentCheck.errorCode,
+      };
+    }
+    const text = contentCheck.text;
 
     const requestStartedAt = now();
 

@@ -4,8 +4,10 @@ import {
   ChannelProvider,
   DispatchPlanStatus,
 } from '@prisma/client';
+import type { ContentCompositionSnapshotV1 } from '@campanha360/shared';
 import { isAllowedDispatchProvider, isArchivedChannelAccount } from '../dispatch-plans/dispatch-plan.util';
 import { hashDispatchPlanContent } from '../dispatch-plans/dispatch-plan-approval.util';
+import { extractCompositionFromApproval } from '../content-compositions/content-composition.util';
 
 export type DispatchContentSnapshot = {
   type: 'TEXT';
@@ -13,6 +15,22 @@ export type DispatchContentSnapshot = {
   hash: string;
   length: number;
   approvedVersion: number;
+  composition?: ContentCompositionSnapshotV1 | null;
+  compositionSnapshotHash?: string | null;
+};
+
+export type DispatchItemContentSnapshot = DispatchContentSnapshot & {
+  greetingVariantId?: string | null;
+  bodyVariantId?: string | null;
+  closingVariantId?: string | null;
+  contentCompositionVersion?: number | null;
+  renderedTextHash?: string | null;
+  personalizationStatus?: 'FULL' | 'PARTIAL' | 'NONE' | 'BLOCKED' | null;
+  missingVariables?: string[];
+  usedFallbacks?: string[];
+  selectionSeedVersion?: string | null;
+  contentValid?: boolean;
+  contentErrors?: string[];
 };
 
 export type DispatchConfigurationSnapshot = {
@@ -141,12 +159,15 @@ export function buildDispatchContentSnapshot(
   approvalSnapshot: unknown,
 ): DispatchContentSnapshot {
   const content = extractApprovedContent(approvalSnapshot);
+  const composition = extractCompositionFromApproval(approvalSnapshot);
   return {
     type: 'TEXT',
     body: content.body,
     hash: content.hash,
     length: content.length,
     approvedVersion: content.approvedVersion,
+    composition,
+    compositionSnapshotHash: composition?.compositionSnapshotHash ?? null,
   };
 }
 

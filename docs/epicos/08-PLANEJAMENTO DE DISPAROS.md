@@ -1300,6 +1300,7 @@ Subetapas previstas:
 - 09.5 — Pausa, retomada e cancelamento;
 - 09.6 — Retry, idempotência e recuperação;
 - 09.7 — Monitoramento e relatórios.
+- 09.7.1 — Conteudo personalizado, variaveis e variantes (ver `docs/epicos/09-MOTOR-DE-DISPARO.md`).
 
 Nenhuma dessas etapas deve começar antes da conclusão e validação do Épico 08.
 

@@ -13,6 +13,8 @@ import {
   isDispatchPilotMode,
   isDispatchQueueEnabled,
   isDispatchSendEnabled,
+  selectAndRenderComposition,
+  type ContentCompositionSnapshotV1,
 } from '@campanha360/shared';
 import {
   isAllowedDispatchProvider,
@@ -24,7 +26,10 @@ import {
   DISPATCH_PREPARE_MAX_ITEMS,
 } from './dispatch.constants';
 import { buildOperationalAllowedActions } from './dispatch-operational.util';
-import type { DispatchContentSnapshot } from './dispatch.util';
+import type {
+  DispatchContentSnapshot,
+  DispatchItemContentSnapshot,
+} from './dispatch.util';
 
 export type EligibleRecipientForPrepare = {
   id: string;
@@ -49,7 +54,7 @@ export type PreparedDispatchItemInput = {
   destination: string;
   normalizedDestination: string;
   contactSnapshot: Record<string, unknown>;
-  contentSnapshot: DispatchContentSnapshot;
+  contentSnapshot: DispatchItemContentSnapshot;
   status: typeof DispatchItemStatus.PENDING;
   attemptCount: number;
   maxAttempts: number;
@@ -142,6 +147,14 @@ export function assertDispatchContentSnapshotValid(
     hash: snapshot.hash,
     length: snapshot.length,
     approvedVersion: snapshot.approvedVersion,
+    composition:
+      snapshot.composition && typeof snapshot.composition === 'object'
+        ? (snapshot.composition as ContentCompositionSnapshotV1)
+        : null,
+    compositionSnapshotHash:
+      typeof snapshot.compositionSnapshotHash === 'string'
+        ? snapshot.compositionSnapshotHash
+        : null,
   };
 }
 
@@ -231,22 +244,108 @@ export function buildPreparedDispatchItems(input: {
   channelAccountId: string;
   contentSnapshot: DispatchContentSnapshot;
 }): PreparedDispatchItemInput[] {
-  return input.recipients.map((recipient) => ({
-    organizationId: input.organizationId,
-    campaignId: input.campaignId,
+  const composition = input.contentSnapshot.composition ?? null;
+
+  return input.recipients.map((recipient) => {
+    const contactSnapshot = buildDispatchItemContactSnapshot(
+      recipient.contactSnapshot,
+    );
+    const itemContent = buildItemContentSnapshot({
+      dispatchContent: input.contentSnapshot,
+      composition,
+      dispatchId: input.dispatchId,
+      // recipient.id e estavel no retry/reprocessamento (antes do id do item existir)
+      selectionKey: recipient.id,
+      contactId: recipient.contactId,
+      contactSnapshot,
+    });
+
+    return {
+      organizationId: input.organizationId,
+      campaignId: input.campaignId,
+      dispatchId: input.dispatchId,
+      dispatchPlanId: input.dispatchPlanId,
+      dispatchPlanRecipientId: recipient.id,
+      contactId: recipient.contactId,
+      channelAccountId: input.channelAccountId,
+      destination: recipient.destination,
+      normalizedDestination: recipient.normalizedDestination,
+      contactSnapshot,
+      contentSnapshot: itemContent,
+      status: DispatchItemStatus.PENDING,
+      attemptCount: 0,
+      maxAttempts: DISPATCH_ITEM_DEFAULT_MAX_ATTEMPTS,
+    };
+  });
+}
+
+function extractCompanyFromContactSnapshot(
+  contactSnapshot: Record<string, unknown>,
+): string | null {
+  for (const key of ['companyName', 'company', 'empresa']) {
+    if (typeof contactSnapshot[key] === 'string' && contactSnapshot[key].trim()) {
+      return String(contactSnapshot[key]).trim();
+    }
+  }
+  const metadata = contactSnapshot.metadata;
+  if (metadata && typeof metadata === 'object') {
+    const m = metadata as Record<string, unknown>;
+    for (const key of ['companyName', 'company', 'empresa']) {
+      if (typeof m[key] === 'string' && m[key].trim()) {
+        return String(m[key]).trim();
+      }
+    }
+  }
+  return null;
+}
+
+export function buildItemContentSnapshot(input: {
+  dispatchContent: DispatchContentSnapshot;
+  composition: ContentCompositionSnapshotV1 | null;
+  dispatchId: string;
+  selectionKey: string;
+  contactId: string;
+  contactSnapshot: Record<string, unknown>;
+}): DispatchItemContentSnapshot {
+  if (!input.composition) {
+    return { ...input.dispatchContent };
+  }
+
+  const name =
+    typeof input.contactSnapshot.name === 'string'
+      ? input.contactSnapshot.name
+      : null;
+  const rendered = selectAndRenderComposition({
+    snapshot: input.composition,
     dispatchId: input.dispatchId,
-    dispatchPlanId: input.dispatchPlanId,
-    dispatchPlanRecipientId: recipient.id,
-    contactId: recipient.contactId,
-    channelAccountId: input.channelAccountId,
-    destination: recipient.destination,
-    normalizedDestination: recipient.normalizedDestination,
-    contactSnapshot: buildDispatchItemContactSnapshot(recipient.contactSnapshot),
-    contentSnapshot: { ...input.contentSnapshot },
-    status: DispatchItemStatus.PENDING,
-    attemptCount: 0,
-    maxAttempts: DISPATCH_ITEM_DEFAULT_MAX_ATTEMPTS,
-  }));
+    dispatchItemId: input.selectionKey,
+    contactId: input.contactId,
+    contact: {
+      name,
+      companyName: extractCompanyFromContactSnapshot(input.contactSnapshot),
+    },
+  });
+
+  return {
+    type: 'TEXT',
+    body: rendered.renderedText,
+    hash: rendered.renderedTextHash,
+    length: rendered.renderedText.length,
+    approvedVersion: input.dispatchContent.approvedVersion,
+    composition: input.composition,
+    compositionSnapshotHash: input.composition.compositionSnapshotHash,
+    greetingVariantId: rendered.greetingVariantId,
+    bodyVariantId: rendered.bodyVariantId,
+    closingVariantId: rendered.closingVariantId,
+    contentCompositionVersion: input.composition.compositionVersion,
+    renderedTextHash: rendered.renderedTextHash,
+    personalizationStatus: rendered.personalizationStatus,
+    missingVariables: rendered.missingVariables,
+    usedFallbacks: rendered.usedFallbacks,
+    selectionSeedVersion: rendered.selectionSeedVersion,
+    contentValid: rendered.valid,
+    contentErrors: rendered.errors,
+  };
 }
 
 export function canPrepareDispatch(input: {

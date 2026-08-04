@@ -2794,11 +2794,11 @@ CorreÃ§Ã£o:
 NÃ£o iniciar a **09.7** atÃ© homologar 09.6.1 (migration + piloto 3 contatos com intervalos â‰¥ 30s comprovados).
 
 A prÃ³xima implementaÃ§Ã£o deve ser apenas conforme prioridade do Ã©pico apÃ³s homologaÃ§Ã£o da 09.6.1.
-### Correção obrigatória 09.6.2 — Fechamento e homologação das blindagens
+### Correï¿½ï¿½o obrigatï¿½ria 09.6.2 ï¿½ Fechamento e homologaï¿½ï¿½o das blindagens
 
-**Status: implementada (código + testes). Homologação operacional pendente.**
+**Status: implementada (cï¿½digo + testes). Homologaï¿½ï¿½o operacional pendente.**
 
-Princípio: nenhuma regra aparece como ativa sem status honesto:
+Princï¿½pio: nenhuma regra aparece como ativa sem status honesto:
 
 - ENFORCED_BLOCKING
 - ENFORCED_NON_BLOCKING
@@ -2831,7 +2831,7 @@ Cache: `DestinationWhatsAppValidationCache` por `organizationId + destinationHas
 
 `DISPATCH_SEND_ENABLED` permanece default `false`. Nao iniciar **09.7**.
 
-### Correcao obrigatoria 09.6.4 — Diagnostico verdadeiro de falhas Evolution
+### Correcao obrigatoria 09.6.4 ï¿½ Diagnostico verdadeiro de falhas Evolution
 
 **Status: implementada (codigo + testes). Homologacao operacional pendente.**
 
@@ -2843,10 +2843,32 @@ Regras:
 - Queda de instancia: atualiza ChannelAccount + checagem connectionState apos erro; failover so com aceite NOT_ACCEPTED e sem providerMessageId.
 - UNKNOWN / ambiguidade: sem retry automatico e sem failover.
 - Contadores DispatchChannel.sentItems/failedItems reconciliados a partir de DispatchItem (banco = verdade).
-- Velocidade: UI mostra solicitada / teto (60/minDelay) / media (60/avgDelay) / capacidade agregada — nao exibe efetiva 4 sob Conservador 30–60s.
+- Velocidade: UI mostra solicitada / teto (60/minDelay) / media (60/avgDelay) / capacidade agregada ï¿½ nao exibe efetiva 4 sob Conservador 30ï¿½60s.
 - Itens legados CONTENT_REJECTED+HTTP_400 sem evidencia ? UNCONFIRMED_LEGACY_CLASSIFICATION (nao inventa desconexao retroativa).
 
 Validacao WhatsApp (09.6.3) permanece intacta. DISPATCH_SEND_ENABLED default false. Nao iniciar 09.7.
+
+### 09.7.1 â€” Conteudo personalizado, variaveis e variantes aprovadas
+
+Subetapa de composicao de conteudo para disparo WhatsApp (texto). Complementa o motor 09 sem alterar a gestao Evolution (epico 04), as protecoes 09.6 nem o default de `DISPATCH_SEND_ENABLED=false`.
+
+**Principios**
+
+- A IA **gera sugestoes** de variantes (corpo); **nao envia** mensagens.
+- **Aprovacao humana** (OWNER/ADMIN) e obrigatoria antes de usar a composicao em disparo aprovado.
+- **Selecao deterministica** de saudacao / corpo / fechamento por destinatario (mesmo algoritmo no preview e no envio).
+- **Snapshot imutavel** no momento da aprovacao da composicao / plano; retry **preserva** o texto ja congelado no item.
+- Variaveis permitidas com fallbacks: `{{firstName}}` (Nome), `{{fullName}}` (Nome completo), `{{companyName}}` (Empresa).
+- **Sem garantia anti-ban** da plataforma.
+- Multimedia **fora de escopo**.
+- `CONTENT_AI_ENABLED=false` por default (editor manual sempre disponivel).
+- `DISPATCH_SEND_ENABLED=false` permanece o default conservador do motor.
+
+**API / UI**
+
+- API: `campaigns/:campaignId/content-compositions` (CRUD, variantes, generate-ai, approve, preview, similarity, catalog).
+- UI: editor em `/dashboard/campaigns/[id]/content-compositions`.
+- Plano de disparo pode vincular `contentCompositionId` (opcional); o texto do plano sincroniza a partir da mensagem-base.
 
 ### Nota ? readiness de canal (modulo 04)
 

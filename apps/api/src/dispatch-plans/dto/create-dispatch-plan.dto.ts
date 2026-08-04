@@ -86,4 +86,10 @@ export class CreateDispatchPlanDto {
   @MinLength(1)
   @MaxLength(4000)
   content!: string;
+
+  /** Composicao textual opcional (09.7.1). Deve estar APPROVED para aprovar o plano. */
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  contentCompositionId?: string;
 }

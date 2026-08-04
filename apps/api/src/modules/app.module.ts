@@ -17,6 +17,7 @@ import { DispatchPlansModule } from '../dispatch-plans/dispatch-plans.module';
 import { DispatchesModule } from '../dispatches/dispatches.module';
 import { EvolutionWebhookModule } from '../webhooks/evolution-webhook.module';
 import { InboxModule } from '../inbox/inbox.module';
+import { ContentCompositionsModule } from '../content-compositions/content-compositions.module';
 import { HealthController } from './health.controller';
 
 @Module({
@@ -31,6 +32,7 @@ import { HealthController } from './health.controller';
     ContactsModule,
     TagsModule,
     SegmentsModule,
+    ContentCompositionsModule,
     DispatchPlansModule,
     DispatchesModule,
     ContactNotesModule,

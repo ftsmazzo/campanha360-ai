@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, it } from 'node:test';
 import type {
   EvolutionSendFailure,
@@ -295,10 +296,12 @@ function realSendDispatch(overrides: Record<string, unknown> = {}) {
 }
 
 function realSendItem(overrides: Record<string, unknown> = {}) {
+  const body = 'Ola, teste';
+  const hash = createHash('sha256').update(body, 'utf8').digest('hex');
   return baseItem({
     contactId: 'contact-1',
     normalizedDestination: '5511999999999',
-    contentSnapshot: { body: 'Ola, teste' },
+    contentSnapshot: { body, hash, renderedTextHash: hash },
     attemptCount: 0,
     maxAttempts: 3,
     ...overrides,

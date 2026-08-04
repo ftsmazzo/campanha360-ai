@@ -61,4 +61,8 @@ export class UpdateDispatchPlanDto {
   @MinLength(1)
   @MaxLength(4000)
   content?: string;
+
+  @IsOptional()
+  @IsString()
+  contentCompositionId?: string | null;
 }

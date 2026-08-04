@@ -34,3 +34,8 @@ export * from './whatsapp-jid.util';
 export * from './log-sanitizer.util';
 export * from './evolution-instance-state.util';
 export * from './platform-restriction.util';
+export * from './content-variables.util';
+export * from './content-selection.util';
+export * from './content-ai.util';
+export * from './content-send-guard.util';
+export * from './content-simulation.util';

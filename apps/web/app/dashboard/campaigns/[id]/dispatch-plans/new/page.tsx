@@ -9,11 +9,13 @@ import {
   AuthUser,
   CampaignItem,
   ChannelAccountItem,
+  ContentCompositionItem,
   SegmentItem,
   clearStoredToken,
   createDispatchPlan,
   fetchCampaign,
   fetchChannelAccounts,
+  fetchContentCompositions,
   fetchMe,
   fetchSegments,
   getStoredToken,
@@ -39,6 +41,8 @@ export default function NewDispatchPlanPage() {
   const [validateWhatsAppNumber, setValidateWhatsAppNumber] = useState(true);
   const [disableWhatsAppAck, setDisableWhatsAppAck] = useState(false);
   const [content, setContent] = useState('');
+  const [contentCompositionId, setContentCompositionId] = useState('');
+  const [compositions, setCompositions] = useState<ContentCompositionItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,16 +69,23 @@ export default function NewDispatchPlanPage() {
       }
 
       try {
-        const [me, campaignItem, segmentItems, channelItems] = await Promise.all([
-          fetchMe(token),
-          fetchCampaign(token, campaignId),
-          fetchSegments(token, campaignId),
-          fetchChannelAccounts(token, campaignId),
-        ]);
+        const [me, campaignItem, segmentItems, channelItems, compositionItems] =
+          await Promise.all([
+            fetchMe(token),
+            fetchCampaign(token, campaignId),
+            fetchSegments(token, campaignId),
+            fetchChannelAccounts(token, campaignId),
+            fetchContentCompositions(token, campaignId),
+          ]);
         setUser(me);
         setCampaign(campaignItem);
         setSegments(segmentItems);
         setChannels(channelItems);
+        setCompositions(
+          compositionItems.filter(
+            (item) => item.status === 'DRAFT' || item.status === 'APPROVED' || item.status === 'READY_FOR_REVIEW',
+          ),
+        );
 
         const role = getOrganizationRole(me.memberships, campaignItem.organizationId);
         if (!canWriteRole(role)) {
@@ -127,6 +138,7 @@ export default function NewDispatchPlanPage() {
           ? {}
           : { validateWhatsAppNumberDisableAcknowledged: true }),
         content: content.trim(),
+        contentCompositionId: contentCompositionId || null,
       });
       router.replace(
         `/dashboard/campaigns/${campaignId}/dispatch-plans/${plan.id}`,
@@ -331,6 +343,44 @@ export default function NewDispatchPlanPage() {
                 </div>
               ) : null}
             </fieldset>
+
+            <label className="block text-sm text-[#24382b]">
+              Composicao de conteudo (opcional)
+              <select
+                className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2"
+                value={contentCompositionId}
+                onChange={(event) => {
+                  const nextId = event.target.value;
+                  setContentCompositionId(nextId);
+                  if (!nextId) return;
+                  const selected = compositions.find((item) => item.id === nextId);
+                  const base = selected?.variants.find(
+                    (variant) =>
+                      variant.type === 'BODY' && variant.source === 'BASE',
+                  );
+                  if (base?.text) setContent(base.text);
+                }}
+              >
+                <option value="">Nenhuma (usar apenas o texto abaixo)</option>
+                {compositions.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name} ·{' '}
+                    {item.status === 'APPROVED'
+                      ? 'Aprovado'
+                      : item.status === 'READY_FOR_REVIEW'
+                        ? 'Em revisao'
+                        : 'Rascunho'}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {contentCompositionId ? (
+              <p className="rounded-md border border-[#d7e3d2] bg-[#f3f7f1] px-3 py-2 text-sm text-[#47624f]">
+                Com composicao vinculada, o conteudo do plano sincroniza a partir
+                da mensagem-base da composicao.
+              </p>
+            ) : null}
 
             <label className="block text-sm text-[#24382b]">
               Conteudo textual inicial

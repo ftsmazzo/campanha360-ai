@@ -222,6 +222,25 @@ enum AiMode {
   DISABLED
 }
 
+enum ContentCompositionStatus {
+  DRAFT
+  READY_FOR_REVIEW
+  APPROVED
+  ARCHIVED
+}
+
+enum ContentVariantType {
+  BODY
+  GREETING
+  CLOSING
+}
+
+enum ContentVariantSource {
+  MANUAL
+  AI_GENERATED
+  BASE
+}
+
 model User {
   id           String           @id @default(cuid())
   name         String
@@ -243,6 +262,8 @@ model User {
   createdContactTasks ContactTask[] @relation("ContactTaskCreatedBy")
   assignedContactTasks ContactTask[] @relation("ContactTaskAssignedTo")
   assignedContacts Contact[] @relation("ContactOperationalAssignee")
+  createdContentCompositions ContentComposition[] @relation("ContentCompositionCreatedBy")
+  approvedContentCompositions ContentComposition[] @relation("ContentCompositionApprovedBy")
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
 }
@@ -264,6 +285,7 @@ model Organization {
   dispatchChannelUsageDaily DispatchChannelUsageDaily[]
   channelAccountSendGuards ChannelAccountSendGuard[]
   destinationWhatsAppValidationCaches DestinationWhatsAppValidationCache[]
+  contentCompositions ContentComposition[]
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 }
@@ -304,6 +326,7 @@ model Campaign {
   channelAccountSendGuards ChannelAccountSendGuard[]
   /** Keywords de opt-out da campanha (09.6.2). Precedencia sobre defaults. */
   optOutKeywords Json?
+  contentCompositions ContentComposition[]
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
 }
@@ -681,6 +704,9 @@ model DispatchPlan {
   protectionPolicySnapshot Json?
   legacySingleChannel Boolean           @default(true)
   multiInstanceEnabled Boolean          @default(false)
+  /** Composicao textual aprovavel (09.7.1). Opcional — planos legados usam so `content`. */
+  contentCompositionId String?
+  contentComposition   ContentComposition? @relation(fields: [contentCompositionId], references: [id])
   createdAt        DateTime           @default(now())
   updatedAt        DateTime           @updatedAt
 
@@ -691,6 +717,7 @@ model DispatchPlan {
   @@index([approvedByUserId])
   @@index([rejectedByUserId])
   @@index([canceledByUserId])
+  @@index([contentCompositionId])
 }
 
 model DispatchPlanChannel {
@@ -1049,6 +1076,64 @@ model DispatchItemAttempt {
   @@index([organizationId, campaignId])
   @@index([outcome])
   @@index([channelAccountId])
+}
+
+/**
+ * Composicao textual personalizavel (09.7.1).
+ * Variantes (saudacao/corpo/fechamento) + variaveis; snapshot imutavel no Dispatch.
+ */
+model ContentComposition {
+  id               String                    @id @default(cuid())
+  organizationId   String
+  campaignId       String
+  name             String
+  status           ContentCompositionStatus  @default(DRAFT)
+  version          Int                       @default(1)
+  blockSeparator   String                    @default("\n\n")
+  /** Fallbacks por variavel: { firstName?: string, ... } */
+  fallbacks        Json?
+  createdByUserId  String
+  approvedByUserId String?
+  approvedAt       DateTime?
+  organization     Organization              @relation(fields: [organizationId], references: [id])
+  campaign         Campaign                  @relation(fields: [campaignId], references: [id])
+  createdBy        User                      @relation("ContentCompositionCreatedBy", fields: [createdByUserId], references: [id])
+  approvedBy       User?                     @relation("ContentCompositionApprovedBy", fields: [approvedByUserId], references: [id])
+  variants         ContentVariant[]
+  dispatchPlans    DispatchPlan[]
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+
+  @@unique([campaignId, name])
+  @@index([organizationId, campaignId])
+  @@index([campaignId, status])
+  @@index([approvedByUserId])
+}
+
+model ContentVariant {
+  id                  String               @id @default(cuid())
+  organizationId      String
+  campaignId          String
+  compositionId       String
+  type                ContentVariantType
+  source              ContentVariantSource @default(MANUAL)
+  text                String
+  normalizedTextHash  String
+  enabled             Boolean              @default(true)
+  order               Int                  @default(0)
+  /** Variaveis exigidas para elegibilidade (ex.: ["firstName"]). */
+  requiresVariables   Json?
+  /** Revisao pendente para variantes geradas por IA. */
+  reviewPending       Boolean              @default(false)
+  aiGenerationId      String?
+  aiSummaryOfChanges  String?
+  composition         ContentComposition   @relation(fields: [compositionId], references: [id], onDelete: Cascade)
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  @@index([compositionId, type, enabled])
+  @@index([organizationId, campaignId])
+  @@index([normalizedTextHash])
 }
 
 /**

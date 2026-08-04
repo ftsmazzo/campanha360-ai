@@ -8,6 +8,8 @@ import {
   CampaignStatus,
   ChannelType,
   ContactStatus,
+  ContentCompositionStatus,
+  ContentVariantSource,
   DispatchPlanRecipientEligibilityStatus,
   DispatchPlanStatus,
   MembershipRole,
@@ -20,7 +22,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   acknowledgeRepetition,
   assessContentRepetition,
+  simulateContentDistribution,
+  type ContentCompositionSnapshotV1,
+  variantRequiresVariables,
 } from '@campanha360/shared';
+import {
+  buildCompositionSnapshotFromRows,
+  parseFallbacks,
+} from '../content-compositions/content-composition.util';
 import { normalizeSegmentFilters } from '../segments/segment-filters.util';
 import { buildSegmentStructuralWhere } from '../segments/segment-prevalidate.util';
 import {
@@ -118,6 +127,7 @@ const dispatchPlanSelect = {
   protectionPolicySnapshot: true,
   legacySingleChannel: true,
   multiInstanceEnabled: true,
+  contentCompositionId: true,
   createdAt: true,
   updatedAt: true,
   segment: {
@@ -705,6 +715,18 @@ export class DispatchPlansService {
     }
     const multiInstanceEnabled = resolvedChannels.length > 1;
 
+    let contentText = dto.content.trim();
+    let contentCompositionId: string | null = dto.contentCompositionId?.trim() || null;
+    if (contentCompositionId) {
+      const synced = await this.resolveCompositionForPlanLink(
+        contentCompositionId,
+        campaign.organizationId,
+        campaignId,
+        { requireApproved: false },
+      );
+      contentText = synced.baseBody;
+    }
+
     const plan = await this.prisma.$transaction(async (tx) => {
       const created = await tx.dispatchPlan.create({
         data: {
@@ -715,7 +737,8 @@ export class DispatchPlansService {
           name: dto.name.trim(),
           description: dto.description?.trim() || null,
           channelType: resolveDispatchChannelType(primary.provider),
-          content: dto.content.trim(),
+          content: contentText,
+          contentCompositionId,
           status: DispatchPlanStatus.DRAFT,
           version: 1,
           createdByUserId: userId,
@@ -806,8 +829,26 @@ export class DispatchPlansService {
     }
 
     const nextSegmentId = dto.segmentId ?? existing.segmentId;
-    const nextContent =
+    let nextContent =
       dto.content === undefined ? existing.content : dto.content.trim();
+    let nextCompositionId =
+      dto.contentCompositionId === undefined
+        ? existing.contentCompositionId
+        : dto.contentCompositionId === null || dto.contentCompositionId === ''
+          ? null
+          : dto.contentCompositionId.trim();
+
+    if (dto.contentCompositionId !== undefined && nextCompositionId) {
+      const synced = await this.resolveCompositionForPlanLink(
+        nextCompositionId,
+        campaign.organizationId,
+        campaignId,
+        { requireApproved: false },
+      );
+      if (dto.content === undefined) {
+        nextContent = synced.baseBody;
+      }
+    }
 
     if (!nextContent) {
       throw new BadRequestException('Conteudo textual e obrigatorio');
@@ -858,7 +899,9 @@ export class DispatchPlansService {
 
     const segmentChanged = nextSegmentId !== existing.segmentId;
     const channelChanged = nextChannelAccountId !== existing.channelAccountId;
-    const contentChanged = nextContent !== existing.content;
+    const compositionChanged = nextCompositionId !== existing.contentCompositionId;
+    const contentChanged =
+      nextContent !== existing.content || compositionChanged;
     const poolChanged = Boolean(resolvedChannels);
     const policyChanged = dto.protectionProfile !== undefined;
 
@@ -983,6 +1026,9 @@ export class DispatchPlansService {
           channelType:
             channelChanged || poolChanged ? nextChannelType : undefined,
           content: contentChanged ? nextContent : undefined,
+          contentCompositionId: compositionChanged
+            ? nextCompositionId
+            : undefined,
           version: bumpVersion ? existing.version + 1 : undefined,
           protectionPolicySnapshot:
             policySnapshotChanged || poolChanged
@@ -1460,6 +1506,46 @@ export class DispatchPlansService {
       }).multiInstance = multiInstanceSimulation;
     }
 
+    if (existing.contentCompositionId) {
+      try {
+        const linked = await this.resolveCompositionForPlanLink(
+          existing.contentCompositionId,
+          campaign.organizationId,
+          campaignId,
+          { requireApproved: false },
+        );
+        const recipients = await this.prisma.dispatchPlanRecipient.findMany({
+          where: {
+            dispatchPlanId: existing.id,
+            eligibilityStatus: DispatchPlanRecipientEligibilityStatus.ELIGIBLE,
+          },
+          take: 200,
+          select: { contactId: true, contactSnapshot: true },
+        });
+        const contentPersonalization = simulateContentDistribution({
+          snapshot: linked.snapshot,
+          dispatchId: `sim-plan:${existing.id}`,
+          contacts: recipients.map((r) => {
+            const snap = (r.contactSnapshot ?? {}) as {
+              name?: unknown;
+              companyName?: unknown;
+            };
+            return {
+              id: r.contactId,
+              name: typeof snap.name === 'string' ? snap.name : null,
+              companyName:
+                typeof snap.companyName === 'string' ? snap.companyName : null,
+            };
+          }),
+        });
+        (simulationSnapshot as typeof simulationSnapshot & {
+          contentPersonalization?: unknown;
+        }).contentPersonalization = contentPersonalization;
+      } catch {
+        // simulacao de ritmo nao depende de composicao; falha nao bloqueia
+      }
+    }
+
     const persisted = await this.prisma.$transaction(async (tx) => {
       if (multiCapacity) {
         for (const channel of multiCapacity.channels) {
@@ -1725,11 +1811,9 @@ export class DispatchPlansService {
     );
 
     const contentBody =
-      existing.content &&
-      typeof existing.content === 'object' &&
-      typeof (existing.content as { body?: unknown }).body === 'string'
-        ? String((existing.content as { body: string }).body)
-        : JSON.stringify(existing.content ?? '');
+      typeof existing.content === 'string'
+        ? existing.content
+        : String(existing.content ?? '');
 
     const recentPlans = await this.prisma.dispatchPlan.findMany({
       where: {
@@ -1743,10 +1827,7 @@ export class DispatchPlansService {
       select: { content: true },
     });
     const recentContents = recentPlans
-      .map((p) => {
-        const c = p.content as { body?: unknown } | null;
-        return typeof c?.body === 'string' ? c.body : '';
-      })
+      .map((p) => (typeof p.content === 'string' ? p.content : ''))
       .filter(Boolean);
 
     const repetitionBase = assessContentRepetition({
@@ -1762,11 +1843,23 @@ export class DispatchPlansService {
       approvedAt,
     );
 
+    let compositionSnapshot: ContentCompositionSnapshotV1 | null = null;
+    if (existing.contentCompositionId) {
+      const linked = await this.resolveCompositionForPlanLink(
+        existing.contentCompositionId,
+        campaign.organizationId,
+        campaignId,
+        { requireApproved: true },
+      );
+      compositionSnapshot = linked.snapshot;
+    }
+
     const approvalSnapshot = {
       ...buildApprovalSnapshot({
         approvedAt,
         approvedByUserId: userId,
         channelProvider: String(channelAccount!.provider),
+        composition: compositionSnapshot,
         plan: {
           id: existing.id,
           name: existing.name,
@@ -2086,6 +2179,81 @@ export class DispatchPlansService {
     }
 
     return channelAccount;
+  }
+
+  private async resolveCompositionForPlanLink(
+    compositionId: string,
+    organizationId: string,
+    campaignId: string,
+    options: { requireApproved: boolean },
+  ): Promise<{
+    baseBody: string;
+    snapshot: ContentCompositionSnapshotV1;
+  }> {
+    const composition = await this.prisma.contentComposition.findFirst({
+      where: { id: compositionId, organizationId, campaignId },
+      include: {
+        variants: {
+          orderBy: [{ type: 'asc' }, { order: 'asc' }, { id: 'asc' }],
+        },
+      },
+    });
+    if (!composition) {
+      throw new BadRequestException('Composicao de conteudo nao encontrada');
+    }
+    if (
+      options.requireApproved &&
+      composition.status !== ContentCompositionStatus.APPROVED
+    ) {
+      throw new BadRequestException(
+        'Composicao vinculada precisa estar APPROVED para aprovar o plano',
+      );
+    }
+
+    const base = composition.variants.find(
+      (v) =>
+        v.type === 'BODY' &&
+        v.source === ContentVariantSource.BASE &&
+        v.enabled,
+    );
+    if (!base?.text?.trim()) {
+      throw new BadRequestException('Composicao sem mensagem-base BODY ativa');
+    }
+
+    const enabledOnly = composition.variants.filter((v) => {
+      if (!v.enabled) return false;
+      if (v.source === ContentVariantSource.AI_GENERATED && v.reviewPending) {
+        return false;
+      }
+      return true;
+    });
+
+    const snapshot = buildCompositionSnapshotFromRows({
+      composition: {
+        id: composition.id,
+        name: composition.name,
+        version: composition.version,
+        blockSeparator: composition.blockSeparator,
+        fallbacks: parseFallbacks(composition.fallbacks),
+      },
+      variants: enabledOnly.map((v) => ({
+        id: v.id,
+        type: v.type,
+        source: v.source,
+        text: v.text,
+        normalizedTextHash: v.normalizedTextHash,
+        enabled: v.enabled,
+        order: v.order,
+        requiresVariables: Array.isArray(v.requiresVariables)
+          ? (v.requiresVariables as string[])
+          : variantRequiresVariables(v.text),
+      })),
+      approvedAt: composition.approvedAt ?? new Date(),
+      approvedByUserId:
+        composition.approvedByUserId ?? composition.createdByUserId,
+    });
+
+    return { baseBody: base.text, snapshot };
   }
 
   private async getCampaignContext(
