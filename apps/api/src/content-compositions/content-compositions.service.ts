@@ -29,6 +29,8 @@ import {
   isContentPersonalizationPlacement,
   marketingBriefQualityHints,
   parseMarketingBrief,
+  scanMarketingBriefForSensitive,
+  formatSensitiveAttributeUserMessage,
   selectAndRenderComposition,
   validateAiSetsPayload,
   validateCompositionCoherence,
@@ -522,6 +524,13 @@ export class ContentCompositionsService {
       );
     }
 
+    const briefSensitive = scanMarketingBriefForSensitive(brief);
+    if (briefSensitive) {
+      throw new BadRequestException(
+        formatSensitiveAttributeUserMessage(briefSensitive),
+      );
+    }
+
     const placement = brief.personalizationPlacement ?? 'GREETING';
     const generationId = `ai_${Date.now().toString(36)}`;
     await this.audit.log({
@@ -579,8 +588,17 @@ export class ContentCompositionsService {
         mode,
       });
       if (!validated.ok) {
+        const sensitiveMsgs = validated.diagnostics.map((d) =>
+          formatSensitiveAttributeUserMessage(d),
+        );
+        const otherErrors = validated.errors.filter(
+          (e) => !e.startsWith('SENSITIVE_ATTRIBUTE'),
+        );
+        const parts = [...sensitiveMsgs, ...otherErrors];
         throw new BadRequestException(
-          `Resposta da IA invalida: ${validated.errors.join(', ')}`,
+          parts.length > 0
+            ? parts.join(' ')
+            : `Resposta da IA invalida: ${validated.errors.join(', ')}`,
         );
       }
 

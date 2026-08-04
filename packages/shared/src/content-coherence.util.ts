@@ -8,11 +8,13 @@ import {
   isAllowedContentVariable,
 } from './content-variables.util';
 import { createHash } from 'node:crypto';
-import type {
-  ContentMarketingBrief,
-  ContentPersonalizationPlacement,
+import {
+  detectSensitiveContent,
+  formatSensitiveAttributeError,
+  type ContentMarketingBrief,
+  type ContentPersonalizationPlacement,
+  type SensitiveAttributeMatch,
 } from './content-marketing.util';
-import { containsDeniedSensitiveAttribute } from './content-marketing.util';
 
 function hashNormalizedContent(text: string): string {
   const normalized = text
@@ -80,10 +82,15 @@ export function validateAiSetsPayload(
   },
 ):
   | { ok: true; sets: AiGeneratedSet[] }
-  | { ok: false; errors: string[] } {
+  | {
+      ok: false;
+      errors: string[];
+      diagnostics: SensitiveAttributeMatch[];
+    } {
   const errors: string[] = [];
+  const diagnostics: SensitiveAttributeMatch[] = [];
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { ok: false, errors: ['SCHEMA_INVALID'] };
+    return { ok: false, errors: ['SCHEMA_INVALID'], diagnostics: [] };
   }
   const mode = input.mode ?? 'FULL_SETS';
   const setsRaw = (payload as { sets?: unknown; variants?: unknown }).sets;
@@ -94,7 +101,7 @@ export function validateAiSetsPayload(
   ) {
     const variants = (payload as { variants?: unknown }).variants;
     if (!Array.isArray(variants)) {
-      return { ok: false, errors: ['SETS_OR_VARIANTS_MISSING'] };
+      return { ok: false, errors: ['SETS_OR_VARIANTS_MISSING'], diagnostics: [] };
     }
     const mapped: AiGeneratedSet[] = [];
     for (const row of variants) {
@@ -134,11 +141,11 @@ export function validateAiSetsPayload(
         });
       }
     }
-    return validateMappedSets(mapped, input, errors, mode);
+    return validateMappedSets(mapped, input, errors, diagnostics, mode);
   }
 
   if (!Array.isArray(setsRaw)) {
-    return { ok: false, errors: ['SETS_MISSING'] };
+    return { ok: false, errors: ['SETS_MISSING'], diagnostics: [] };
   }
   if (setsRaw.length < 1 || setsRaw.length > CONTENT_LIMITS.MAX_AI_VARIANTS) {
     errors.push('SETS_COUNT');
@@ -174,7 +181,7 @@ export function validateAiSetsPayload(
     });
   }
 
-  return validateMappedSets(mapped, input, errors, mode);
+  return validateMappedSets(mapped, input, errors, diagnostics, mode);
 }
 
 function readBlock(value: unknown): AiGeneratedBlock | null {
@@ -199,27 +206,48 @@ function validateMappedSets(
     protectedFacts?: string[];
   },
   errors: string[],
+  diagnostics: SensitiveAttributeMatch[],
   mode: string,
 ):
   | { ok: true; sets: AiGeneratedSet[] }
-  | { ok: false; errors: string[] } {
+  | {
+      ok: false;
+      errors: string[];
+      diagnostics: SensitiveAttributeMatch[];
+    } {
   const baseHash = input.baseBody
     ? hashNormalizedContent(input.baseBody)
     : null;
   const seenBodies = new Set<string>();
   const out: AiGeneratedSet[] = [];
+  const seenSensitiveKeys = new Set<string>();
 
-  for (const set of mapped) {
+  mapped.forEach((set, setIndex) => {
     if (!set.preservedFacts) errors.push('FACTS_NOT_PRESERVED');
-    for (const block of [set.greeting, set.body, set.closing]) {
-      if (block.text.length > CONTENT_LIMITS.MAX_VARIANT_CHARS) {
+    const blocks: Array<{
+      block: 'greeting' | 'body' | 'closing';
+      text: string;
+    }> = [
+      { block: 'greeting', text: set.greeting.text },
+      { block: 'body', text: set.body.text },
+      { block: 'closing', text: set.closing.text },
+    ];
+    for (const { block, text } of blocks) {
+      if (text.length > CONTENT_LIMITS.MAX_VARIANT_CHARS) {
         errors.push('VARIANT_TOO_LONG');
       }
-      for (const key of extractContentVariableKeys(block.text)) {
+      for (const key of extractContentVariableKeys(text)) {
         if (!isAllowedContentVariable(key)) errors.push(`UNKNOWN_VAR:${key}`);
       }
-      const denied = containsDeniedSensitiveAttribute(block.text);
-      if (denied) errors.push(`SENSITIVE_ATTRIBUTE:${denied}`);
+      const match = detectSensitiveContent(text, { block, setIndex });
+      if (match) {
+        const dedupeKey = `${match.matchedTerm}:${match.block}:${match.setIndex}`;
+        if (!seenSensitiveKeys.has(dedupeKey)) {
+          seenSensitiveKeys.add(dedupeKey);
+          diagnostics.push(match);
+          errors.push(formatSensitiveAttributeError(match));
+        }
+      }
     }
 
     if (mode === 'FULL_SETS' || mode === 'IMPROVE_CURRENT' || mode === 'BODY_ONLY') {
@@ -240,6 +268,8 @@ function validateMappedSets(
       body: set.body.text,
       closing: set.closing.text,
       placement: input.placement,
+      // sensivel ja avaliado por bloco acima — evita SENSITIVE_ATTRIBUTE generico duplicado
+      skipSensitiveScan: true,
     });
     for (const alert of coherence) {
       if (alert.blocking) errors.push(alert.code);
@@ -250,9 +280,7 @@ function validateMappedSets(
         const f = fact.trim();
         if (!f) continue;
         const combined = `${set.greeting.text}\n${set.body.text}\n${set.closing.text}`;
-        // Se o fato e numerico/curto e aparece no briefing, exigir preservacao aproximada
         if (/\d/.test(f) && !combined.toLowerCase().includes(f.toLowerCase())) {
-          // so rejeita se o fato parece concreto (preco/data) e nao foi usado
           if (f.length <= 40) {
             errors.push(`PROTECTED_FACT_MISSING:${f.slice(0, 40)}`);
           }
@@ -261,10 +289,15 @@ function validateMappedSets(
     }
 
     out.push(set);
-  }
+  });
 
-  if (errors.length > 0) return { ok: false, errors: [...new Set(errors)] };
-  if (out.length < 1) return { ok: false, errors: ['SETS_EMPTY'] };
+  const uniqueErrors = [...new Set(errors)];
+  if (uniqueErrors.length > 0) {
+    return { ok: false, errors: uniqueErrors, diagnostics };
+  }
+  if (out.length < 1) {
+    return { ok: false, errors: ['SETS_EMPTY'], diagnostics };
+  }
   return { ok: true, sets: out };
 }
 
@@ -307,6 +340,8 @@ export function validateCompositionCoherence(input: {
   body: string;
   closing?: string | null;
   placement?: ContentPersonalizationPlacement;
+  /** Quando true, nao emite SENSITIVE_ATTRIBUTE generico (ja validado por bloco). */
+  skipSensitiveScan?: boolean;
 }): CoherenceAlert[] {
   const alerts: CoherenceAlert[] = [];
   const greeting = (input.greeting ?? '').trim();
@@ -353,13 +388,15 @@ export function validateCompositionCoherence(input: {
     });
   }
 
-  const denied = containsDeniedSensitiveAttribute(all);
-  if (denied) {
-    alerts.push({
-      code: 'SENSITIVE_ATTRIBUTE',
-      blocking: true,
-      message: `Atributo sensivel nao permitido: ${denied}`,
-    });
+  if (!input.skipSensitiveScan) {
+    const match = detectSensitiveContent(all);
+    if (match) {
+      alerts.push({
+        code: 'SENSITIVE_ATTRIBUTE',
+        blocking: true,
+        message: formatSensitiveAttributeError(match),
+      });
+    }
   }
 
   return alerts;

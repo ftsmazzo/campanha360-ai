@@ -44,26 +44,294 @@ export const COLLECTIVE_CONTEXT_ALLOWLIST = [
 ] as const;
 
 export const SENSITIVE_ATTRIBUTE_DENYLIST = [
-  'saude',
-  'health',
+  // legado documentado — deteccao real usa detectSensitiveContent (nao substring)
   'religiao',
-  'religion',
   'raca',
-  'race',
   'etnia',
   'orientacaoSexual',
-  'sexualOrientation',
-  'opiniaoPolitica',
-  'politicalOpinion',
-  'condicaoFinanceira',
-  'financialCondition',
-  'renda',
-  'income',
-  'condicaoFamiliar',
-  'familyStatus',
+  'condicaoSaude',
   'cpf',
   'rg',
 ] as const;
+
+export type SensitiveMatchCategory =
+  | 'SENSITIVE_ATTRIBUTE'
+  | 'PERSONAL_DOCUMENT';
+
+export type SensitiveAttributeMatch = {
+  code: 'SENSITIVE_ATTRIBUTE';
+  category: SensitiveMatchCategory;
+  matchedTerm: string;
+  field?: string;
+  block?: 'greeting' | 'body' | 'closing';
+  setIndex?: number;
+  safeExcerpt: string;
+  reason: string;
+};
+
+function normalizeForSensitiveScan(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase();
+}
+
+function safeExcerptAround(text: string, index: number, len: number): string {
+  const start = Math.max(0, index - 24);
+  const end = Math.min(text.length, index + len + 24);
+  let excerpt = text.slice(start, end).replace(/\s+/g, ' ').trim();
+  // mascara sequencias numericas longas (documentos)
+  excerpt = excerpt.replace(/\d[\d.\-\s]{4,}\d/g, '[redacted]');
+  if (start > 0) excerpt = `…${excerpt}`;
+  if (end < text.length) excerpt = `${excerpt}…`;
+  return excerpt.slice(0, 120);
+}
+
+const PERSONAL_DOCUMENT_PATTERNS: Array<{
+  term: string;
+  re: RegExp;
+  reason: string;
+}> = [
+  {
+    term: 'cpf',
+    re: /\bcpf\b(?:\s*(?:n[ºo°.]?|numero|:))?\s*[\d.\-]{5,}|\bcpf\b/iu,
+    reason: 'Possivel documento pessoal identificado (CPF)',
+  },
+  {
+    term: 'rg',
+    // exige contexto de documento — NAO basta a substring "rg"
+    re: /\brg\b\s*(?:n[ºo°.]?|numero|:)\s*[\d.\-\/]{3,}|\brg\s*:\s*[\d.\-\/]+|\bregistro\s+geral\b(?:\s+do\s+eleitor)?|\buse\s+o\s+rg\b|\brg\s+individual\b/iu,
+    reason: 'Possivel documento pessoal identificado (RG)',
+  },
+  {
+    term: 'titulo de eleitor',
+    re: /\btitulo\s+de\s+eleitor\b(?:\s*(?:n[ºo°.]?|:))?\s*[\d.\-\s]{5,}|\btitulo\s+de\s+eleitor\b/iu,
+    reason: 'Possivel documento pessoal identificado (titulo de eleitor)',
+  },
+  {
+    term: 'cnh',
+    re: /\bcnh\b(?:\s*(?:n[ºo°.]?|:))?\s*[\d.\-]{5,}|\bcnh\b/iu,
+    reason: 'Possivel documento pessoal identificado (CNH)',
+  },
+  {
+    term: 'passaporte',
+    re: /\bpassaporte\b(?:\s*(?:n[ºo°.]?|:))?\s*[a-z0-9]{5,}|\bpassaporte\b/iu,
+    reason: 'Possivel documento pessoal identificado (passaporte)',
+  },
+];
+
+const SENSITIVE_ATTRIBUTE_PATTERNS: Array<{
+  term: string;
+  re: RegExp;
+  reason: string;
+}> = [
+  {
+    term: 'religiao',
+    re: /\breligi[aã]o\b|\breligion\b|\bcredo\s+religioso\b/iu,
+    reason: 'Atributo sensivel identificado (religiao)',
+  },
+  {
+    term: 'raca',
+    re: /\bra[cç]a\b|\bethnicity\b|\betnia\b|\bcor\s+da\s+pele\b/iu,
+    reason: 'Atributo sensivel identificado (raca/etnia)',
+  },
+  {
+    term: 'orientacao sexual',
+    re: /\borienta[cç][aã]o\s+sexual\b|\bsexual\s+orientation\b/iu,
+    reason: 'Atributo sensivel identificado (orientacao sexual)',
+  },
+  {
+    term: 'condicao de saude',
+    re: /\bcondi[cç][aã]o\s+de\s+sa[uú]de\b|\bhist[oó]rico\s+m[eé]dico\b|\bdados\s+de\s+sa[uú]de\b|\bdoen[cç]a\s+do\s+contato\b/iu,
+    reason: 'Atributo sensivel identificado (condicao de saude)',
+  },
+  {
+    term: 'deficiencia',
+    re: /\bdefici[eê]ncia\b|\bdado\s+biom[eé]trico\b|\bbiometria\b/iu,
+    reason: 'Atributo sensivel identificado (deficiencia/biometria)',
+  },
+  {
+    term: 'opiniao politica individual',
+    // exige indicio de dado individual — contexto coletivo (publico-alvo) e permitido
+    re: /\bopini[aã]o\s+pol[ií]tica\s+(?:do\s+contato|individual|pessoal|do\s+destinat[aá]rio)\b|\b(?:sua|dele|dela)\s+opini[aã]o\s+pol[ií]tica\b/iu,
+    reason: 'Atributo sensivel identificado (opiniao politica individual)',
+  },
+  {
+    term: 'condicao financeira individual',
+    re: /\brenda\s+(?:individual|pessoal|do\s+contato)\b|\bcondi[cç][aã]o\s+financeira\s+(?:do\s+contato|individual|pessoal)\b|\bsal[aá]rio\s+do\s+contato\b/iu,
+    reason: 'Atributo sensivel identificado (condicao financeira individual)',
+  },
+];
+
+/**
+ * Detecta atributo sensivel / documento pessoal sem substring cega.
+ * Ex.: "cargo", "regiao", "organizacao", "urgente" NAO disparam RG.
+ */
+export function detectSensitiveContent(
+  text: string,
+  meta?: {
+    field?: string;
+    block?: SensitiveAttributeMatch['block'];
+    setIndex?: number;
+  },
+): SensitiveAttributeMatch | null {
+  if (!text?.trim()) return null;
+  const normalized = normalizeForSensitiveScan(text);
+
+  for (const pattern of PERSONAL_DOCUMENT_PATTERNS) {
+    const match = pattern.re.exec(normalized);
+    if (!match) continue;
+    // CPF/CNH/passaporte com so a palavra isolada: ok alertar
+    // RG so casa com regex contextual (ja acima)
+    return {
+      code: 'SENSITIVE_ATTRIBUTE',
+      category: 'PERSONAL_DOCUMENT',
+      matchedTerm: pattern.term,
+      field: meta?.field,
+      block: meta?.block,
+      setIndex: meta?.setIndex,
+      safeExcerpt: safeExcerptAround(text, match.index, match[0].length),
+      reason: pattern.reason,
+    };
+  }
+
+  for (const pattern of SENSITIVE_ATTRIBUTE_PATTERNS) {
+    const match = pattern.re.exec(normalized);
+    if (!match) continue;
+    // "opiniao politica do publico-alvo" nao deve casar o padrao individual
+    if (
+      pattern.term === 'opiniao politica individual' &&
+      /\bp[uú]blico[\-\s]?alvo\b|\beleitores?\b|\bcampanha\b/i.test(normalized)
+    ) {
+      // se o match estiver claramente no contexto coletivo, ignora
+      const window = normalized.slice(
+        Math.max(0, match.index - 40),
+        match.index + match[0].length + 40,
+      );
+      if (/\bp[uú]blico[\-\s]?alvo\b|\beleitores?\b/i.test(window)) {
+        continue;
+      }
+    }
+    return {
+      code: 'SENSITIVE_ATTRIBUTE',
+      category: 'SENSITIVE_ATTRIBUTE',
+      matchedTerm: pattern.term,
+      field: meta?.field,
+      block: meta?.block,
+      setIndex: meta?.setIndex,
+      safeExcerpt: safeExcerptAround(text, match.index, match[0].length),
+      reason: pattern.reason,
+    };
+  }
+
+  return null;
+}
+
+/** @deprecated Prefer detectSensitiveContent — mantido para compat. */
+export function containsDeniedSensitiveAttribute(text: string): string | null {
+  return detectSensitiveContent(text)?.matchedTerm ?? null;
+}
+
+const SENSITIVE_FIELD_LABELS: Record<string, string> = {
+  candidateCharacteristics: 'Características relevantes',
+  targetAudience: 'Público-alvo',
+  objective: 'Objetivo',
+  offerDescription: 'Descrição da oferta',
+  painPoints: 'Dores',
+  primaryBenefit: 'Benefício principal',
+  secondaryBenefits: 'Benefícios secundários',
+  differentiators: 'Diferenciais',
+  callToAction: 'Chamada para ação',
+  additionalInstructions: 'Instruções adicionais',
+  protectedFacts: 'Fatos protegidos',
+  forbiddenClaims: 'Proibições',
+  greeting: 'Saudação',
+  body: 'Corpo',
+  closing: 'Fechamento',
+};
+
+function displaySensitiveTerm(term: string): string {
+  const upperDocs = new Set(['rg', 'cpf', 'cnh']);
+  if (upperDocs.has(term.toLowerCase())) return term.toUpperCase();
+  return term;
+}
+
+export function resolveSensitiveFieldLabel(match: SensitiveAttributeMatch): string {
+  const key = match.field ?? match.block;
+  if (!key) return 'conteúdo';
+  return SENSITIVE_FIELD_LABELS[key] ?? key;
+}
+
+/**
+ * Erro de validacao — nunca retorna apenas "SENSITIVE_ATTRIBUTE".
+ */
+export function formatSensitiveAttributeError(
+  match: SensitiveAttributeMatch,
+): string {
+  const fieldLabel = match.field
+    ? ` no campo '${match.field}'`
+    : match.block
+      ? ` no bloco '${match.block}'`
+      : '';
+  const setLabel =
+    typeof match.setIndex === 'number'
+      ? ` (conjunto ${match.setIndex + 1})`
+      : '';
+  return `SENSITIVE_ATTRIBUTE:${match.matchedTerm}${fieldLabel}${setLabel} — ${match.reason}`;
+}
+
+/** Mensagem amigavel para UI / BadRequestException. */
+export function formatSensitiveAttributeUserMessage(
+  match: SensitiveAttributeMatch,
+): string {
+  const fieldLabel = resolveSensitiveFieldLabel(match);
+  const kind =
+    match.category === 'PERSONAL_DOCUMENT'
+      ? 'dado pessoal'
+      : 'atributo sensível';
+  return `Foi identificado um possível ${kind} no campo '${fieldLabel}': ${displaySensitiveTerm(match.matchedTerm)}. Revise esse campo.`;
+}
+
+const BRIEF_SENSITIVE_SCAN_FIELDS: Array<keyof ContentMarketingBrief> = [
+  'objective',
+  'offerName',
+  'offerDescription',
+  'targetAudience',
+  'candidateCharacteristics',
+  'painPoints',
+  'primaryBenefit',
+  'secondaryBenefits',
+  'differentiators',
+  'callToAction',
+  'additionalInstructions',
+];
+
+/** Varre campos do briefing; retorna o primeiro match (com field preenchido). */
+export function scanMarketingBriefForSensitive(
+  brief: ContentMarketingBrief,
+): SensitiveAttributeMatch | null {
+  for (const field of BRIEF_SENSITIVE_SCAN_FIELDS) {
+    const value = brief[field];
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const match = detectSensitiveContent(value, { field });
+    if (match) return match;
+  }
+  for (const fact of brief.protectedFacts ?? []) {
+    const match = detectSensitiveContent(fact, { field: 'protectedFacts' });
+    if (match) return match;
+  }
+  for (const claim of brief.forbiddenClaims ?? []) {
+    const match = detectSensitiveContent(claim, { field: 'forbiddenClaims' });
+    if (match) return match;
+  }
+  const collective = brief.collectiveContext ?? {};
+  for (const [key, value] of Object.entries(collective)) {
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const match = detectSensitiveContent(value, { field: key });
+    if (match) return match;
+  }
+  return null;
+}
 
 export type ContentMarketingBrief = {
   objective?: string | null;
@@ -191,21 +459,10 @@ export function marketingBriefQualityHints(brief: ContentMarketingBrief): {
   };
 }
 
-export function containsDeniedSensitiveAttribute(text: string): string | null {
-  const lower = text.toLowerCase();
-  for (const key of SENSITIVE_ATTRIBUTE_DENYLIST) {
-    if (lower.includes(key.toLowerCase())) return key;
-  }
-  return null;
-}
-
 export function isContentCombinationMode(
   value: string | null | undefined,
 ): value is ContentCombinationMode {
-  return (
-    value === 'LOCKED_SETS' ||
-    value === 'MIX_AND_MATCH'
-  );
+  return value === 'LOCKED_SETS' || value === 'MIX_AND_MATCH';
 }
 
 export function isContentPersonalizationPlacement(
