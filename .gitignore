@@ -5,3 +5,6 @@ dist/
 .env
 .env.local
 .DS_Store
+
+# Contatos reais de campanha (PII) — nao versionar
+contato/

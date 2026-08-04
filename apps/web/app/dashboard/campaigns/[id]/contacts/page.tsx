@@ -30,6 +30,7 @@ import {
   getConsentStatusLabel,
   getContactStatusLabel,
   hasOptOut,
+  splitCsvForImport,
 } from '../../../../../lib/contacts';
 import { CONTACT_OPERATIONAL_STATUSES, getOperationalStatusLabel } from '../../../../../lib/operational';
 import { canWriteRole, getOrganizationRole } from '../../../../../lib/roles';
@@ -189,10 +190,40 @@ export default function CampaignContactsPage() {
 
     try {
       const csv = await file.text();
-      const result = await importContactsCsv(token, campaignId, csv);
-      setImportResult(result);
+      const chunks = splitCsvForImport(csv, 400);
+      const totals = {
+        created: 0,
+        updated: 0,
+        ignored: 0,
+        errorCount: 0,
+        errors: [] as ContactImportResult['errors'],
+      };
+
+      for (let i = 0; i < chunks.length; i += 1) {
+        setSuccess(
+          chunks.length > 1
+            ? `Importando lote ${i + 1} de ${chunks.length}...`
+            : 'Importando CSV...',
+        );
+        const result = await importContactsCsv(token, campaignId, chunks[i]);
+        totals.created += result.created;
+        totals.updated += result.updated;
+        totals.ignored += result.ignored;
+        totals.errorCount += result.errorCount;
+        if (result.errors?.length) {
+          totals.errors.push(...result.errors.slice(0, Math.max(0, 20 - totals.errors.length)));
+        }
+      }
+
+      setImportResult({
+        created: totals.created,
+        updated: totals.updated,
+        ignored: totals.ignored,
+        errors: totals.errors,
+        errorCount: totals.errorCount,
+      });
       setSuccess(
-        `Importacao concluida: ${result.created} criado(s), ${result.updated} atualizado(s), ${result.ignored} ignorado(s), ${result.errorCount} erro(s).`,
+        `Importacao concluida${chunks.length > 1 ? ` (${chunks.length} lotes)` : ''}: ${totals.created} criado(s), ${totals.updated} atualizado(s), ${totals.ignored} ignorado(s), ${totals.errorCount} erro(s).`,
       );
       const [contactItems, tagItems] = await Promise.all([
         fetchContacts(token, campaignId, {
