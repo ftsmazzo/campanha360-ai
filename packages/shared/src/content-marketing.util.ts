@@ -29,7 +29,7 @@ export const CONTENT_AI_GENERATION_MODES = [
 export type ContentAiGenerationMode =
   (typeof CONTENT_AI_GENERATION_MODES)[number];
 
-export const CONTENT_PROMPT_VERSION = 'v5-invite-agenda-hooks-2026-08';
+export const CONTENT_PROMPT_VERSION = 'v6-context-creative-2026-08';
 
 /** Contexto coletivo permitido no briefing (nao vira variavel individual). */
 export const COLLECTIVE_CONTEXT_ALLOWLIST = [
@@ -474,10 +474,10 @@ export function isContentPersonalizationPlacement(
 export const DEFAULT_INVITE_COMPOSITION_NAME = 'Convite inicial';
 
 export const DEFAULT_INVITE_INTENTION =
-  'Criar convites iniciais no WhatsApp. Cada variação deve usar UMA pauta concreta diferente como isca (ex.: proteção às mulheres, crianças, CRAS/CREAS, dependência química, idosos). O objetivo é descobrir o que interessa a pessoa, sem pedido de voto e sem soar como panfleto de candidatura.';
+  'Escreva convites iniciais de WhatsApp impactantes, criativos e persuasivos para a pessoa acompanhar conteúdos e informações. Use com inteligência o tom, a bio e as pautas do contexto — sem soar robótico, sem pedido de voto e sem panfleto de candidatura. Varie ângulos entre as mensagens.';
 
 export const DEFAULT_INVITE_BASE_BODY =
-  'Oi, {{firstName}}! Tenho compartilhado conteúdos sobre proteção às mulheres e enfrentamento à violência doméstica. Se esse tema te interessa, me responde e eu te mando mais informações por aqui.';
+  'Oi, {{firstName}}! Quero te convidar a acompanhar conteúdos e informações que tenho compartilhado. Se fizer sentido pra você, fico feliz em seguir conversando por aqui.';
 
 export type InviteCandidateInput = {
   name: string;
@@ -495,15 +495,13 @@ function listProposals(candidate: InviteCandidateInput | null | undefined): stri
     .filter(Boolean);
 }
 
-/** Monta briefing completo a partir do candidato + intenção curta (fluxo Convite inicial). */
+/** Monta briefing rico a partir do candidato + intenção do operador (sem regras engessadas). */
 export function buildInviteMarketingBriefFromCandidate(
   candidate: InviteCandidateInput | null | undefined,
   intention?: string | null,
 ): ContentMarketingBrief {
   const proposals = listProposals(candidate);
-  const proposalsNumbered = proposals
-    .map((item, index) => `${index + 1}. ${item}`)
-    .join('\n');
+  const proposalsList = proposals.map((item, index) => `${index + 1}. ${item}`).join('\n');
   const characteristics = [
     candidate?.name,
     candidate?.office,
@@ -517,23 +515,24 @@ export function buildInviteMarketingBriefFromCandidate(
 
   const brief = emptyMarketingBrief();
   brief.objective =
-    'Convite inicial por WhatsApp: cada mensagem ancora UMA pauta concreta e convida a pessoa a responder se aquele tema interessa, para mapear o publico sem pedir voto.';
-  brief.offerName = 'Conteudos por pauta de interesse';
+    'Gerar convites de WhatsApp que a pessoa sinta vontade de continuar recebendo — com autenticidade e persuasao leve, sem pedir voto.';
+  brief.offerName = 'Convite para acompanhar conteudos';
   brief.offerDescription =
-    'Convidar a acompanhar informacoes uteis sobre um tema especifico (protecao social, familia, juventude, transparencia etc.), em tom de conversa.';
+    'Abrir dialogo e oferecer informacoes uteis alinhadas ao que a pessoa pode se importar, a partir do contexto disponivel.';
   brief.targetAudience =
-    'Base de contatos de Ribeirao Preto e interior: pessoas que podem se interessar por assistencia social, familia, mulheres, criancas, idosos, juventude ou transparencia.';
+    'Base de contatos que pode se interessar por protecao social, familia, mulheres, criancas, juventude, idosos, transparencia e temas do cotidiano.';
   brief.candidateCharacteristics =
     characteristics || 'Responsavel pela comunicacao da campanha.';
   brief.painPoints =
-    'Falta de informacao clara sobre temas do cotidiano (violencia domestica, protecao de criancas, CRAS/CREAS, dependencias, idosos, juventude, gastos publicos).';
-  brief.primaryBenefit = proposals[0] ||
-    'Receber informacoes claras sobre um tema concreto de interesse.';
+    'Falta de informacao clara e humana sobre temas que afetam a vida real das pessoas.';
+  brief.primaryBenefit =
+    proposals[0] || 'Receber informacoes claras e proximas sobre temas relevantes.';
   brief.secondaryBenefits = proposals.slice(1).join(' | ') || null;
-  brief.differentiators = proposalsNumbered || null;
+  brief.differentiators = proposalsList || null;
   brief.callToAction =
-    'Perguntar se AQUELE tema especifica interessa e convidar a responder/continuar recebendo conteudo sobre ele. Evitar CTA generico do tipo "o que te interessa?".';
-  brief.tone = candidate?.toneOfVoice?.trim() ||
+    'Convidar a responder, acompanhar ou seguir a conversa de forma natural e especifica ao angulo da mensagem.';
+  brief.tone =
+    candidate?.toneOfVoice?.trim() ||
     'acolhedor, firme, proximo e esperancoso; primeira pessoa; frases curtas';
   brief.formality = 'semi-formal';
   brief.maxLength = 700;
@@ -546,18 +545,15 @@ export function buildInviteMarketingBriefFromCandidate(
     'propaganda agressiva de candidatura',
     'promessas ilegais ou inventadas',
     'afirmacoes falsas sobre pesquisa ou percentual',
-    'mensagem generica sem citar pauta concreta',
-    'repetir a mesma pauta em mais de um conjunto',
   ];
-  const agendaRule = proposals.length
-    ? `PAUTAS OBRIGATORIAS (use uma por variacao, sem inventar outras):\n${proposalsNumbered}\nCada conjunto deve ter marketingAngle com o nome curto da pauta usada.`
-    : 'Se nao houver lista de pautas, escolha temas concretos de protecao social e interesse coletivo (nao genericos).';
+  const contextBlock = proposalsList
+    ? `Material de contexto disponivel (use com criterio e criatividade, conforme o pedido do operador — nao precisa seguir ordem mecanica):\n${proposalsList}`
+    : 'Use o contexto do remetente com criterio; evite textos vazios.';
   brief.additionalInstructions = [
     intention?.trim() || DEFAULT_INVITE_INTENTION,
-    agendaRule,
-    'No corpo, cite a pauta em linguagem humana (nao copie a lista inteira).',
-    'No fechamento, faca uma pergunta ou convite ligado a ESSA pauta (ex.: "Se protecao as mulheres te interessa, me responde").',
-    'Varie saudacao e angulo; nao repita a mesma estrutura em todos os conjuntos.',
+    contextBlock,
+    'Priorize o pedido do operador. O contexto (bio, tom, pautas) e materia-prima, nao um checklist engessado.',
+    'As variacoes devem ser distintas entre si (angulo, abertura, emocao ou CTA) — nao parafrases da mesma frase.',
   ]
     .join('\n')
     .slice(0, 2000);

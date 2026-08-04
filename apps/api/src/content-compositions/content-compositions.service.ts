@@ -1691,16 +1691,13 @@ export class ContentCompositionsService {
     );
 
     const system = [
-      'Voce escreve mensagens curtas de WhatsApp em portugues do Brasil, em primeira pessoa.',
-      'Objetivo: CONVITE informativo com ISCA DE PAUTA — cada mensagem ancora um tema concreto para descobrir o interesse do publico.',
-      'PROIBIDO: pedido de voto, panfleto de candidatura, frases genericas do tipo "pautas que defendo" sem nomear o tema.',
-      'OBRIGATORIO em FULL_SETS: cada conjunto usa uma pauta DIFERENTE da lista do briefing; marketingAngle nomeia essa pauta.',
-      'Corpo: situar o tema em 1-3 frases humanas (experiencia/escuta/protecao), sem jargao excessivo.',
-      'Fechamento: pergunta ou convite ligado a ESSA pauta (ex.: "Se protecao as mulheres te interessa, me responde"). Evite "o que te interessa?" generico.',
-      'Respeite o tom do briefing (acolhedor, firme, proximo). Frases curtas. Sem ironia nem ataque.',
-      'Nao invente pesquisa, percentual, alianca, link, escassez ou promessas ilegais.',
-      'Nao infira dados sensiveis (saude, religiao, raca, orientacao sexual, renda individual).',
+      'Voce e redatora experiente de WhatsApp em portugues do Brasil.',
+      'Sua tarefa e ENTENDER o pedido do operador e usar TODO o contexto disponivel (tom, bio, pautas, restricoes) para escrever mensagens impactantes, criativas e persuasivas — humanas, nao roboticas.',
+      'O pedido do operador tem prioridade. O contexto e materia-prima para interpretar e criar, nao um checklist mecanico.',
+      'Varie angulos, emocao e CTAs entre conjuntos; evite parafrases da mesma ideia.',
+      'Guardrails: nao peca voto; nao invente fatos, pesquisa, percentual, link ou alianca; nao ataque pessoas; nao infira dados sensiveis.',
       'Nao finja conhecimento individual do destinatario alem das variaveis permitidas.',
+      'Respeite o tom pedido no briefing quando houver.',
       `Variaveis permitidas: ${allowed}.`,
       `Posicionamento da personalizacao: ${placement}. ${placementRules}`,
       'Retorne SOMENTE JSON valido. Sem markdown. Sem texto antes ou depois.',
@@ -1708,8 +1705,8 @@ export class ContentCompositionsService {
         ? [
             `FULL_SETS exige de 3 a ${maxSets} itens em sets (prefira ${maxSets}).`,
             'Cada set DEVE ter greeting, body e closing como objetos { "text": string nao vazia, "requiresVariables": string[] }.',
-            'Saudacao curta com {{firstName}} quando permitido; corpo com isca de pauta; fechamento com CTA da mesma pauta.',
-            'Nao coloque o corpo dentro da saudacao. Nao deixe campos vazios. Varie estrutura entre conjuntos.',
+            'Saudacao curta com {{firstName}} quando permitido; corpo e fechamento coerentes com o angulo do conjunto.',
+            'Nao coloque o corpo dentro da saudacao. Nao deixe campos vazios.',
             'preservedFacts deve ser true.',
             `Exemplo apenas de estrutura: ${JSON.stringify(CONTENT_AI_ELECTORAL_SETS_EXAMPLE)}`,
           ].join(' ')
@@ -1721,26 +1718,24 @@ export class ContentCompositionsService {
     const userParts = [
       `Modo: ${input.mode}`,
       `Campanha: ${input.campaignName}`,
+      `PEDIDO DO OPERADOR (prioridade):\n${input.brief.additionalInstructions ?? ''}`,
       `Objetivo: ${input.brief.objective ?? ''}`,
       `Proposta/oferta: ${input.brief.offerName ?? ''} — ${input.brief.offerDescription ?? ''}`,
       `Publico: ${input.brief.targetAudience ?? ''}`,
-      `Contexto do remetente/candidato: ${input.brief.candidateCharacteristics ?? ''}`,
+      `Contexto do remetente (bio/tom/trajetoria):\n${input.brief.candidateCharacteristics ?? ''}`,
       `Contexto coletivo: ${JSON.stringify(input.brief.collectiveContext ?? {})}`,
       `Dores/preocupacoes: ${input.brief.painPoints ?? ''}`,
-      `Beneficio/pauta principal (use em pelo menos 1 conjunto): ${input.brief.primaryBenefit ?? ''}`,
-      `Outras pautas para distribuir entre os conjuntos: ${input.brief.secondaryBenefits ?? ''}`,
-      `Lista numerada de pautas (uma por conjunto):\n${input.brief.differentiators ?? ''}`,
-      `CTA: ${input.brief.callToAction ?? ''}`,
+      `Beneficios/temas em destaque: ${input.brief.primaryBenefit ?? ''}`,
+      `Outros temas disponiveis: ${input.brief.secondaryBenefits ?? ''}`,
+      `Pautas e material de apoio:\n${input.brief.differentiators ?? ''}`,
+      `Direcao de CTA (oriente, nao engessse): ${input.brief.callToAction ?? ''}`,
       `Tom: ${input.brief.tone ?? ''}; Formalidade: ${input.brief.formality ?? ''}`,
       `Idioma: ${input.brief.language ?? 'pt-BR'}`,
       `MaxLength: ${input.brief.maxLength ?? 700}`,
       `Fatos protegidos (preservar): ${protectedFacts}`,
       `Proibicoes: ${(input.brief.forbiddenClaims ?? []).join(' | ')}`,
-      `Instrucoes do operador:\n${input.brief.additionalInstructions ?? ''}`,
-      `Mensagem-base BODY (referencia de tom, NAO copie literalmente em todos os sets):\n${input.baseText.slice(0, input.maxInputChars)}`,
-      wantsSets
-        ? `Quantidade desejada de conjuntos: ${maxSets}. Distribua pautas distintas; se houver mais pautas que conjuntos, escolha as ${maxSets} mais concretas/cotidianas.`
-        : '',
+      `Mensagem-base BODY (referencia opcional de tom — nao copie em todos os sets):\n${input.baseText.slice(0, input.maxInputChars)}`,
+      wantsSets ? `Quantidade desejada de conjuntos: ${maxSets}.` : '',
     ].filter(Boolean);
     if (input.existingBlocks) {
       userParts.push(

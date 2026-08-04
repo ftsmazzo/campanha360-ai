@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
+  DEFAULT_INVITE_INTENTION,
   buildInviteMarketingBriefFromCandidate,
   marketingBriefQualityHints,
 } from './content-marketing.util';
 
 describe('buildInviteMarketingBriefFromCandidate', () => {
-  it('preenche campos recomendados e numera as pautas', () => {
+  it('entrega contexto rico sem checklist mecanico de pautas', () => {
     const brief = buildInviteMarketingBriefFromCandidate(
       {
         name: 'Maria Silva',
@@ -23,24 +24,25 @@ describe('buildInviteMarketingBriefFromCandidate', () => {
     const hints = marketingBriefQualityHints(brief);
     assert.equal(hints.readyForGeneration, true);
     assert.match(brief.candidateCharacteristics ?? '', /Maria Silva/);
-    assert.match(brief.primaryBenefit ?? '', /Saude na ponta/);
     assert.match(brief.differentiators ?? '', /1\. Saude na ponta/);
-    assert.match(brief.differentiators ?? '', /2\. Escola em tempo integral/);
-    assert.match(brief.additionalInstructions ?? '', /PAUTAS OBRIGATORIAS/);
-    assert.match(brief.additionalInstructions ?? '', /isca|pauta concreta/i);
+    assert.match(brief.additionalInstructions ?? '', /materia-prima|criterio|criatividade/i);
+    assert.doesNotMatch(brief.additionalInstructions ?? '', /PAUTAS OBRIGATORIAS/);
     assert.equal(brief.personalizationPlacement, 'GREETING');
+    assert.match(brief.additionalInstructions ?? '', new RegExp(DEFAULT_INVITE_INTENTION.slice(0, 40)));
     assert.ok((brief.forbiddenClaims ?? []).some((c) => /voto/i.test(c)));
-    assert.ok((brief.forbiddenClaims ?? []).some((c) => /generica/i.test(c)));
+    assert.equal(
+      (brief.forbiddenClaims ?? []).some((c) => /uma por variacao|generica sem citar/i.test(c)),
+      false,
+    );
   });
 
-  it('aceita intencao customizada e preserva regra de pautas', () => {
+  it('prioriza a intencao customizada do operador', () => {
     const brief = buildInviteMarketingBriefFromCandidate(
       { name: 'Ana', mainProposals: ['Protecao as mulheres'] },
-      'Convite suave para pautas locais',
+      'Quero um tom mais emocional e proximo',
     );
-    assert.match(brief.additionalInstructions ?? '', /Convite suave/);
+    assert.match(brief.additionalInstructions ?? '', /tom mais emocional/);
     assert.match(brief.additionalInstructions ?? '', /Protecao as mulheres/);
     assert.ok(brief.objective);
-    assert.ok(brief.callToAction);
   });
 });

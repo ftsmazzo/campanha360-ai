@@ -50,7 +50,7 @@ const TYPE_LABELS: Record<ContentVariantType, string> = {
 };
 
 const DEFAULT_INTENTION =
-  'Criar convites iniciais no WhatsApp. Cada variação deve usar UMA pauta concreta diferente como isca (ex.: proteção às mulheres, crianças, CRAS/CREAS, dependência química, idosos). O objetivo é descobrir o que interessa a pessoa, sem pedido de voto e sem soar como panfleto de candidatura.';
+  'Escreva convites iniciais de WhatsApp impactantes, criativos e persuasivos para a pessoa acompanhar conteúdos e informações. Use com inteligência o tom, a bio e as pautas do contexto — sem soar robótico, sem pedido de voto e sem panfleto de candidatura. Varie ângulos entre as mensagens.';
 
 const EMPTY_BRIEF: ContentMarketingBrief = {
   objective: '',
