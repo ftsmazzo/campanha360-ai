@@ -647,10 +647,11 @@ export class DispatchPlansService {
 
   async create(userId: string, campaignId: string, dto: CreateDispatchPlanDto) {
     const campaign = await this.getCampaignContext(userId, campaignId, true);
-    const segment = await this.resolveSegment(
+    const segment = await this.resolveSegmentOrFullBase(
       dto.segmentId,
       campaign.organizationId,
       campaignId,
+      userId,
     );
 
     const channelInputs =
@@ -2147,6 +2148,80 @@ export class DispatchPlansService {
     }
 
     return segment;
+  }
+
+  /** Tronco: sem segmentId usa/cria "Base completa" (toda a base elegivel). */
+  private async resolveSegmentOrFullBase(
+    segmentId: string | undefined,
+    organizationId: string,
+    campaignId: string,
+    userId: string,
+  ) {
+    const trimmed = segmentId?.trim();
+    if (trimmed) {
+      return this.resolveSegment(trimmed, organizationId, campaignId);
+    }
+    return this.ensureFullBaseSegment(organizationId, campaignId, userId);
+  }
+
+  private async ensureFullBaseSegment(
+    organizationId: string,
+    campaignId: string,
+    userId: string,
+  ) {
+    const fullBaseName = 'Base completa';
+    const byName = await this.prisma.segment.findFirst({
+      where: { organizationId, campaignId, name: fullBaseName },
+      select: { id: true },
+    });
+    if (byName) return byName;
+
+    const candidates = await this.prisma.segment.findMany({
+      where: { organizationId, campaignId },
+      select: { id: true, filters: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    for (const candidate of candidates) {
+      const filters = normalizeSegmentFilters(
+        candidate.filters as Record<string, unknown>,
+      );
+      if (
+        filters.tagIds.length === 0 &&
+        !filters.status &&
+        !filters.channel &&
+        !filters.includeOptOut
+      ) {
+        return { id: candidate.id };
+      }
+    }
+
+    const emptyFilters = normalizeSegmentFilters({});
+    try {
+      return await this.prisma.segment.create({
+        data: {
+          organizationId,
+          campaignId,
+          name: fullBaseName,
+          description:
+            'Publico padrao do tronco: toda a base elegivel (sem opt-out).',
+          filters: emptyFilters as unknown as Prisma.InputJsonValue,
+          createdByUserId: userId,
+        },
+        select: { id: true },
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        const raced = await this.prisma.segment.findFirst({
+          where: { organizationId, campaignId, name: fullBaseName },
+          select: { id: true },
+        });
+        if (raced) return raced;
+      }
+      throw error;
+    }
   }
 
   private async resolveChannelAccount(

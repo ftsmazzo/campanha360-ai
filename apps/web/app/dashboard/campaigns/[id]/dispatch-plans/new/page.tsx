@@ -20,6 +20,11 @@ import {
   fetchSegments,
   getStoredToken,
 } from '../../../../../../lib/api';
+import {
+  countActiveGenerationSets,
+  ensureFullBaseSegment,
+  FULL_BASE_SEGMENT_NAME,
+} from '../../../../../../lib/full-base-segment';
 import { canWriteRole, getOrganizationRole } from '../../../../../../lib/roles';
 
 export default function NewDispatchPlanPage() {
@@ -60,6 +65,20 @@ export default function NewDispatchPlanPage() {
     [channels],
   );
 
+  const selectedComposition = useMemo(
+    () => compositions.find((item) => item.id === contentCompositionId) ?? null,
+    [compositions, contentCompositionId],
+  );
+
+  const activeSetCount = selectedComposition
+    ? countActiveGenerationSets(selectedComposition.variants)
+    : 0;
+
+  const selectedSegment = useMemo(
+    () => segments.find((item) => item.id === segmentId) ?? null,
+    [segments, segmentId],
+  );
+
   useEffect(() => {
     async function load() {
       const token = getStoredToken();
@@ -79,17 +98,48 @@ export default function NewDispatchPlanPage() {
           ]);
         setUser(me);
         setCampaign(campaignItem);
-        setSegments(segmentItems);
-        setChannels(channelItems);
-        setCompositions(
-          compositionItems.filter(
-            (item) => item.status === 'DRAFT' || item.status === 'APPROVED' || item.status === 'READY_FOR_REVIEW',
-          ),
-        );
 
         const role = getOrganizationRole(me.memberships, campaignItem.organizationId);
         if (!canWriteRole(role)) {
           setError('Voce nao tem permissao para criar planos de disparo');
+          setSegments(segmentItems);
+        } else {
+          const ensured = await ensureFullBaseSegment(
+            token,
+            campaignId,
+            segmentItems,
+          );
+          setSegments(ensured.segments);
+          setSegmentId(ensured.segment.id);
+        }
+
+        setChannels(channelItems);
+        const connected = channelItems.filter(
+          (channel) =>
+            channel.provider === 'WHATSAPP_EVOLUTION' &&
+            channel.status === 'CONNECTED',
+        );
+        if (connected.length === 1) {
+          setSelectedChannelIds([connected[0]!.id]);
+        }
+
+        const usable = compositionItems.filter(
+          (item) =>
+            item.status === 'DRAFT' ||
+            item.status === 'APPROVED' ||
+            item.status === 'READY_FOR_REVIEW',
+        );
+        setCompositions(usable);
+
+        const approved =
+          usable.find((item) => item.status === 'APPROVED') ?? null;
+        if (approved) {
+          setContentCompositionId(approved.id);
+          const base = approved.variants.find(
+            (variant) =>
+              variant.type === 'BODY' && variant.source === 'BASE',
+          );
+          if (base?.text) setContent(base.text);
         }
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
@@ -127,7 +177,7 @@ export default function NewDispatchPlanPage() {
       const plan = await createDispatchPlan(token, campaignId, {
         name: name.trim(),
         description: description.trim() || undefined,
-        segmentId,
+        segmentId: segmentId || undefined,
         channelAccountId: selectedChannelIds[0]!,
         channels: selectedChannelIds.map((channelAccountId) => ({
           channelAccountId,
@@ -208,34 +258,30 @@ export default function NewDispatchPlanPage() {
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
                 maxLength={1000}
-                rows={3}
+                rows={2}
               />
             </label>
 
-            <label className="block text-sm text-[#24382b]">
-              Segmento
-              <select
-                className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2"
-                value={segmentId}
-                onChange={(event) => setSegmentId(event.target.value)}
-                required
-              >
-                <option value="">Selecione um segmento</option>
-                {segments.map((segment) => (
-                  <option key={segment.id} value={segment.id}>
-                    {segment.name}
-                    {typeof segment.contactCount === 'number'
-                      ? ` (${segment.contactCount})`
-                      : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <div className="rounded-md border border-[#d7e3d2] bg-[#f3f7f1] px-3 py-3 text-sm text-[#47624f]">
+              <p className="font-medium text-[#24382b]">Para quem</p>
+              <p className="mt-1">
+                {selectedSegment
+                  ? `Base completa — ${
+                      typeof selectedSegment.contactCount === 'number'
+                        ? `${selectedSegment.contactCount} contato${
+                            selectedSegment.contactCount === 1 ? '' : 's'
+                          } elegiveis`
+                        : 'toda a base elegivel'
+                    }.`
+                  : 'Toda a base elegivel (sem opt-out).'}
+              </p>
+              <p className="mt-1 text-xs text-[#65655f]">
+                Para filtrar por tags ou listas menores, use Opcoes avancadas.
+              </p>
+            </div>
 
             <fieldset className="block text-sm text-[#24382b]">
-              <legend className="mb-2 font-medium">
-                Instancias WhatsApp (multi-selecao)
-              </legend>
+              <legend className="mb-2 font-medium">Instancia WhatsApp</legend>
               <div className="space-y-2 rounded-md border border-[#c9c8c0] bg-white p-3">
                 {evolutionChannels.map((channel) => (
                   <label
@@ -261,91 +307,21 @@ export default function NewDispatchPlanPage() {
               </div>
               {selectedChannelIds.length > 1 ? (
                 <p className="mt-2 text-xs text-[#65655f]">
-                  Plano multi-instancia: {selectedChannelIds.length} instancias
-                  selecionadas.
+                  Multi-instancia: {selectedChannelIds.length} numeros
+                  selecionados.
                 </p>
               ) : null}
             </fieldset>
 
             {evolutionChannels.length === 0 ? (
               <p className="text-sm text-[#8a5a00]">
-                Nenhum canal WhatsApp Evolution disponivel. Cadastre um canal antes de criar o
-                plano.
+                Nenhum canal WhatsApp Evolution disponivel. Cadastre um canal
+                antes de criar o plano.
               </p>
             ) : null}
 
             <label className="block text-sm text-[#24382b]">
-              Perfil de blindagem
-              <select
-                className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2"
-                value={protectionProfile}
-                onChange={(event) =>
-                  setProtectionProfile(
-                    event.target.value as
-                      | 'CONSERVATIVE'
-                      | 'MODERATE'
-                      | 'AGGRESSIVE'
-                      | 'CUSTOM',
-                  )
-                }
-              >
-                <option value="CONSERVATIVE">Conservador</option>
-                <option value="MODERATE">Moderado (padrao)</option>
-                <option value="AGGRESSIVE">Agressivo</option>
-                <option value="CUSTOM">Custom</option>
-              </select>
-            </label>
-
-            <fieldset className="rounded-md border border-[#c9c8c0] bg-white p-4 text-sm text-[#24382b]">
-              <legend className="px-1 font-medium">Blindagens de envio</legend>
-              <label className="flex items-start gap-2">
-                <input
-                  type="checkbox"
-                  className="mt-1"
-                  checked={validateWhatsAppNumber}
-                  onChange={(event) => {
-                    const next = event.target.checked;
-                    setValidateWhatsAppNumber(next);
-                    if (next) setDisableWhatsAppAck(false);
-                  }}
-                />
-                <span>
-                  <span className="font-medium">
-                    Validar se o destinatario possui WhatsApp antes do envio
-                  </span>
-                  <span className="mt-1 block text-xs text-[#65655f]">
-                    Quando ativada, cada numero sera verificado pela Evolution
-                    antes da reserva do slot e antes do envio. Numeros invalidos
-                    nao receberao mensagem.
-                  </span>
-                </span>
-              </label>
-              {!validateWhatsAppNumber ? (
-                <div className="mt-3 rounded-md border border-[#e6d9a8] bg-[#fff8e1] p-3">
-                  <p className="text-sm text-[#6b5a1e]">
-                    A validacao de existencia do WhatsApp sera desativada.
-                    Numeros invalidos poderao chegar ao fluxo de envio.
-                  </p>
-                  <label className="mt-2 flex items-start gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      className="mt-1"
-                      checked={disableWhatsAppAck}
-                      onChange={(event) =>
-                        setDisableWhatsAppAck(event.target.checked)
-                      }
-                      required
-                    />
-                    <span>
-                      Confirmo explicitamente a desativacao desta blindagem.
-                    </span>
-                  </label>
-                </div>
-              ) : null}
-            </fieldset>
-
-            <label className="block text-sm text-[#24382b]">
-              Composicao de conteudo (opcional)
+              Mensagem (composicao)
               <select
                 className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2"
                 value={contentCompositionId}
@@ -360,8 +336,9 @@ export default function NewDispatchPlanPage() {
                   );
                   if (base?.text) setContent(base.text);
                 }}
+                required
               >
-                <option value="">Nenhuma (usar apenas o texto abaixo)</option>
+                <option value="">Selecione a mensagem aprovada</option>
                 {compositions.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.name} ·{' '}
@@ -370,33 +347,161 @@ export default function NewDispatchPlanPage() {
                       : item.status === 'READY_FOR_REVIEW'
                         ? 'Em revisao'
                         : 'Rascunho'}
+                    {item.status === 'APPROVED'
+                      ? ` · ${countActiveGenerationSets(item.variants)} variacao(oes)`
+                      : ''}
                   </option>
                 ))}
               </select>
             </label>
 
             {contentCompositionId ? (
-              <p className="rounded-md border border-[#d7e3d2] bg-[#f3f7f1] px-3 py-2 text-sm text-[#47624f]">
-                Com composicao vinculada, o conteudo do plano sincroniza a partir
-                da mensagem-base da composicao.
-              </p>
+              <div className="rounded-md border border-[#d7e3d2] bg-[#f3f7f1] px-3 py-3 text-sm text-[#47624f]">
+                {activeSetCount > 0 ? (
+                  <>
+                    <p className="font-medium text-[#24382b]">
+                      {activeSetCount} variacao
+                      {activeSetCount === 1 ? '' : 'oes'} ativa
+                      {activeSetCount === 1 ? '' : 's'} sera
+                      {activeSetCount === 1 ? '' : 'o'} rotacionada
+                      {activeSetCount === 1 ? '' : 's'} no envio
+                    </p>
+                    <p className="mt-1">
+                      Cada destinatario recebe uma das variacoes aprovadas
+                      (saudacao + corpo + fechamento). O texto abaixo e so a
+                      mensagem-base de referencia — nao e a unica mensagem
+                      disparada.
+                    </p>
+                  </>
+                ) : (
+                  <p>
+                    Composicao vinculada, mas ainda nao ha variacoes ativas.
+                    Ative as variacoes em Mensagem (&quot;Usar esta&quot;) antes
+                    de disparar, ou o envio usara apenas a mensagem-base.
+                  </p>
+                )}
+              </div>
             ) : null}
 
             <label className="block text-sm text-[#24382b]">
-              Conteudo textual inicial
+              {contentCompositionId
+                ? 'Previa da mensagem-base (somente leitura)'
+                : 'Conteudo textual'}
               <textarea
-                className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2"
+                className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2 disabled:bg-[#f0efe8]"
                 value={content}
                 onChange={(event) => setContent(event.target.value)}
                 minLength={1}
                 maxLength={4000}
-                rows={6}
+                rows={5}
                 required
+                readOnly={Boolean(contentCompositionId)}
+                disabled={Boolean(contentCompositionId)}
               />
             </label>
 
+            <details className="rounded-md border border-[#c9c8c0] bg-white p-4 text-sm text-[#24382b]">
+              <summary className="cursor-pointer font-medium">
+                Opcoes avancadas
+              </summary>
+              <div className="mt-4 space-y-4">
+                <label className="block">
+                  Segmento (filtro de publico)
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2"
+                    value={segmentId}
+                    onChange={(event) => setSegmentId(event.target.value)}
+                  >
+                    {segments.map((segment) => (
+                      <option key={segment.id} value={segment.id}>
+                        {segment.name}
+                        {typeof segment.contactCount === 'number'
+                          ? ` (${segment.contactCount})`
+                          : ''}
+                        {segment.name === FULL_BASE_SEGMENT_NAME
+                          ? ' — padrao do tronco'
+                          : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="mt-1 block text-xs text-[#65655f]">
+                    No fluxo passo a passo o padrao e a base inteira. Segmentos
+                    customizados ficam em Ferramentas avancadas.
+                  </span>
+                </label>
+
+                <label className="block">
+                  Perfil de blindagem
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#c9c8c0] bg-white px-3 py-2"
+                    value={protectionProfile}
+                    onChange={(event) =>
+                      setProtectionProfile(
+                        event.target.value as
+                          | 'CONSERVATIVE'
+                          | 'MODERATE'
+                          | 'AGGRESSIVE'
+                          | 'CUSTOM',
+                      )
+                    }
+                  >
+                    <option value="CONSERVATIVE">Conservador</option>
+                    <option value="MODERATE">Moderado (padrao)</option>
+                    <option value="AGGRESSIVE">Agressivo</option>
+                    <option value="CUSTOM">Custom</option>
+                  </select>
+                </label>
+
+                <fieldset className="rounded-md border border-[#c9c8c0] p-3">
+                  <legend className="px-1 font-medium">Blindagens de envio</legend>
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={validateWhatsAppNumber}
+                      onChange={(event) => {
+                        const next = event.target.checked;
+                        setValidateWhatsAppNumber(next);
+                        if (next) setDisableWhatsAppAck(false);
+                      }}
+                    />
+                    <span>
+                      <span className="font-medium">
+                        Validar se o destinatario possui WhatsApp antes do envio
+                      </span>
+                      <span className="mt-1 block text-xs text-[#65655f]">
+                        Numeros invalidos nao receberao mensagem.
+                      </span>
+                    </span>
+                  </label>
+                  {!validateWhatsAppNumber ? (
+                    <div className="mt-3 rounded-md border border-[#e6d9a8] bg-[#fff8e1] p-3">
+                      <p className="text-sm text-[#6b5a1e]">
+                        A validacao de existencia do WhatsApp sera desativada.
+                      </p>
+                      <label className="mt-2 flex items-start gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          checked={disableWhatsAppAck}
+                          onChange={(event) =>
+                            setDisableWhatsAppAck(event.target.checked)
+                          }
+                          required
+                        />
+                        <span>
+                          Confirmo explicitamente a desativacao desta blindagem.
+                        </span>
+                      </label>
+                    </div>
+                  ) : null}
+                </fieldset>
+              </div>
+            </details>
+
             <p className="rounded-md border border-[#e6d9a8] bg-[#fff8e1] px-3 py-2 text-sm text-[#6b5a1e]">
-              Aviso: salvar este plano nao envia mensagens, nao cria fila e nao congela publico.
+              Aviso: salvar este plano nao envia mensagens, nao cria fila e nao
+              congela publico.
             </p>
 
             <button
@@ -405,8 +510,8 @@ export default function NewDispatchPlanPage() {
               disabled={
                 saving ||
                 evolutionChannels.length === 0 ||
-                segments.length === 0 ||
                 selectedChannelIds.length === 0 ||
+                !contentCompositionId ||
                 (!validateWhatsAppNumber && !disableWhatsAppAck)
               }
             >

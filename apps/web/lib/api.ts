@@ -1435,7 +1435,8 @@ export type ListDispatchesResponse = {
 export type CreateDispatchPlanPayload = {
   name: string;
   description?: string;
-  segmentId: string;
+  /** Opcional no tronco: omitido usa/cria segmento "Base completa". */
+  segmentId?: string;
   /** Compatibilidade: canal primario (primeiro do pool). */
   channelAccountId: string;
   channels?: DispatchPlanChannelInput[];

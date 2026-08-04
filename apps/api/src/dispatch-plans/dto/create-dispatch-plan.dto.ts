@@ -50,9 +50,10 @@ export class CreateDispatchPlanDto {
   @MaxLength(1000)
   description?: string;
 
+  @IsOptional()
   @IsString()
   @MinLength(1)
-  segmentId!: string;
+  segmentId?: string;
 
   /** Compatibilidade: canal primario unico. */
   @IsOptional()
