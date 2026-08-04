@@ -50,7 +50,7 @@ const TYPE_LABELS: Record<ContentVariantType, string> = {
 };
 
 const DEFAULT_INTENTION =
-  'Criar mensagens de convite inicial para acompanhar conteúdos e informações sobre as pautas que defendo. Não pode parecer pedido de voto ou propaganda de candidatura.';
+  'Criar convites iniciais no WhatsApp. Cada variação deve usar UMA pauta concreta diferente como isca (ex.: proteção às mulheres, crianças, CRAS/CREAS, dependência química, idosos). O objetivo é descobrir o que interessa a pessoa, sem pedido de voto e sem soar como panfleto de candidatura.';
 
 const EMPTY_BRIEF: ContentMarketingBrief = {
   objective: '',

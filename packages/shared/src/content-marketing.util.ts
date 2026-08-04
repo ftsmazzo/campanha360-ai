@@ -29,7 +29,7 @@ export const CONTENT_AI_GENERATION_MODES = [
 export type ContentAiGenerationMode =
   (typeof CONTENT_AI_GENERATION_MODES)[number];
 
-export const CONTENT_PROMPT_VERSION = 'v4-invite-optin-2026-08';
+export const CONTENT_PROMPT_VERSION = 'v5-invite-agenda-hooks-2026-08';
 
 /** Contexto coletivo permitido no briefing (nao vira variavel individual). */
 export const COLLECTIVE_CONTEXT_ALLOWLIST = [
@@ -474,10 +474,10 @@ export function isContentPersonalizationPlacement(
 export const DEFAULT_INVITE_COMPOSITION_NAME = 'Convite inicial';
 
 export const DEFAULT_INVITE_INTENTION =
-  'Criar mensagens de convite inicial para acompanhar conteúdos e informações sobre as pautas que defendo. Não pode parecer pedido de voto ou propaganda de candidatura.';
+  'Criar convites iniciais no WhatsApp. Cada variação deve usar UMA pauta concreta diferente como isca (ex.: proteção às mulheres, crianças, CRAS/CREAS, dependência química, idosos). O objetivo é descobrir o que interessa a pessoa, sem pedido de voto e sem soar como panfleto de candidatura.';
 
 export const DEFAULT_INVITE_BASE_BODY =
-  'Oi, {{firstName}}! Quero te convidar a acompanhar conteúdos e informações sobre pautas que defendo. Se fizer sentido pra você, fico feliz em seguir conversando por aqui.';
+  'Oi, {{firstName}}! Tenho compartilhado conteúdos sobre proteção às mulheres e enfrentamento à violência doméstica. Se esse tema te interessa, me responde e eu te mando mais informações por aqui.';
 
 export type InviteCandidateInput = {
   name: string;
@@ -489,15 +489,21 @@ export type InviteCandidateInput = {
   restrictedTopics?: string[] | null;
 };
 
+function listProposals(candidate: InviteCandidateInput | null | undefined): string[] {
+  return (candidate?.mainProposals ?? [])
+    .map((item) => String(item).trim())
+    .filter(Boolean);
+}
+
 /** Monta briefing completo a partir do candidato + intenção curta (fluxo Convite inicial). */
 export function buildInviteMarketingBriefFromCandidate(
   candidate: InviteCandidateInput | null | undefined,
   intention?: string | null,
 ): ContentMarketingBrief {
-  const proposals = (candidate?.mainProposals ?? [])
-    .map((item) => String(item).trim())
-    .filter(Boolean)
-    .join('; ');
+  const proposals = listProposals(candidate);
+  const proposalsNumbered = proposals
+    .map((item, index) => `${index + 1}. ${item}`)
+    .join('\n');
   const characteristics = [
     candidate?.name,
     candidate?.office,
@@ -511,37 +517,50 @@ export function buildInviteMarketingBriefFromCandidate(
 
   const brief = emptyMarketingBrief();
   brief.objective =
-    'Convidar a pessoa a receber conteúdos e informações sobre pautas públicas, sem pedido de voto.';
-  brief.offerName = 'Convite para acompanhar conteúdos';
+    'Convite inicial por WhatsApp: cada mensagem ancora UMA pauta concreta e convida a pessoa a responder se aquele tema interessa, para mapear o publico sem pedir voto.';
+  brief.offerName = 'Conteudos por pauta de interesse';
   brief.offerDescription =
-    'Canal de informações e conteúdos sobre temas e propostas de interesse coletivo.';
+    'Convidar a acompanhar informacoes uteis sobre um tema especifico (protecao social, familia, juventude, transparencia etc.), em tom de conversa.';
   brief.targetAudience =
-    'Pessoas da base de contatos interessadas em acompanhar pautas locais e temas públicos.';
+    'Base de contatos de Ribeirao Preto e interior: pessoas que podem se interessar por assistencia social, familia, mulheres, criancas, idosos, juventude ou transparencia.';
   brief.candidateCharacteristics =
-    characteristics || 'Responsável pela comunicação da campanha.';
+    characteristics || 'Responsavel pela comunicacao da campanha.';
   brief.painPoints =
-    'Falta de informação clara e acessível sobre temas públicos relevantes.';
-  brief.primaryBenefit =
-    proposals || 'Acompanhar informações claras sobre temas e pautas defendidas.';
-  brief.differentiators = proposals || null;
+    'Falta de informacao clara sobre temas do cotidiano (violencia domestica, protecao de criancas, CRAS/CREAS, dependencias, idosos, juventude, gastos publicos).';
+  brief.primaryBenefit = proposals[0] ||
+    'Receber informacoes claras sobre um tema concreto de interesse.';
+  brief.secondaryBenefits = proposals.slice(1).join(' | ') || null;
+  brief.differentiators = proposalsNumbered || null;
   brief.callToAction =
-    'Aceitar receber conteúdos e informações por este canal, se fizer sentido.';
-  brief.tone = candidate?.toneOfVoice?.trim() || 'profissional, acolhedor e natural';
+    'Perguntar se AQUELE tema especifica interessa e convidar a responder/continuar recebendo conteudo sobre ele. Evitar CTA generico do tipo "o que te interessa?".';
+  brief.tone = candidate?.toneOfVoice?.trim() ||
+    'acolhedor, firme, proximo e esperancoso; primeira pessoa; frases curtas';
   brief.formality = 'semi-formal';
-  brief.maxLength = 600;
+  brief.maxLength = 700;
   brief.personalizationPlacement = 'GREETING';
   brief.protectedFacts = (candidate?.restrictedTopics ?? [])
     .map((item) => String(item).trim())
     .filter(Boolean);
   brief.forbiddenClaims = [
-    'pedido explícito de voto',
+    'pedido explicito de voto',
     'propaganda agressiva de candidatura',
     'promessas ilegais ou inventadas',
-    'afirmações falsas sobre pesquisa ou percentual',
+    'afirmacoes falsas sobre pesquisa ou percentual',
+    'mensagem generica sem citar pauta concreta',
+    'repetir a mesma pauta em mais de um conjunto',
   ];
-  brief.additionalInstructions = (
-    intention?.trim() || DEFAULT_INVITE_INTENTION
-  ).slice(0, 2000);
+  const agendaRule = proposals.length
+    ? `PAUTAS OBRIGATORIAS (use uma por variacao, sem inventar outras):\n${proposalsNumbered}\nCada conjunto deve ter marketingAngle com o nome curto da pauta usada.`
+    : 'Se nao houver lista de pautas, escolha temas concretos de protecao social e interesse coletivo (nao genericos).';
+  brief.additionalInstructions = [
+    intention?.trim() || DEFAULT_INVITE_INTENTION,
+    agendaRule,
+    'No corpo, cite a pauta em linguagem humana (nao copie a lista inteira).',
+    'No fechamento, faca uma pergunta ou convite ligado a ESSA pauta (ex.: "Se protecao as mulheres te interessa, me responde").',
+    'Varie saudacao e angulo; nao repita a mesma estrutura em todos os conjuntos.',
+  ]
+    .join('\n')
+    .slice(0, 2000);
   return brief;
 }
 
