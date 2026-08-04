@@ -9,6 +9,9 @@ export const CONTENT_AI_DEFAULTS = {
   MAX_INPUT_CHARS: 3500,
   MAX_OUTPUT_CHARS: 12_000,
   MODEL: 'gpt-4o-mini',
+  FORMAT_RETRY_ENABLED: true,
+  FORMAT_MAX_RETRIES: 1,
+  JSON_SCHEMA_ENABLED: true,
 } as const;
 
 function parseBool(raw: string | undefined, fallback: boolean): boolean {
@@ -32,6 +35,16 @@ export function isContentAiEnabled(
 }
 
 export function getContentAiConfig(env: NodeJS.ProcessEnv = process.env) {
+  const formatMaxRetries = Math.min(
+    2,
+    Math.max(
+      0,
+      parseIntEnv(
+        env.CONTENT_AI_FORMAT_MAX_RETRIES,
+        CONTENT_AI_DEFAULTS.FORMAT_MAX_RETRIES,
+      ),
+    ),
+  );
   return {
     enabled: isContentAiEnabled(env),
     model: (env.CONTENT_AI_MODEL || CONTENT_AI_DEFAULTS.MODEL).trim(),
@@ -56,7 +69,26 @@ export function getContentAiConfig(env: NodeJS.ProcessEnv = process.env) {
       /\/$/,
       '',
     ),
+    formatRetryEnabled: parseBool(
+      env.CONTENT_AI_FORMAT_RETRY_ENABLED,
+      CONTENT_AI_DEFAULTS.FORMAT_RETRY_ENABLED,
+    ),
+    formatMaxRetries,
+    jsonSchemaEnabled: parseBool(
+      env.CONTENT_AI_JSON_SCHEMA_ENABLED,
+      CONTENT_AI_DEFAULTS.JSON_SCHEMA_ENABLED,
+    ),
   };
+}
+
+/** gpt-4o / gpt-4o-mini e o1 suportam json_schema strict. */
+export function contentAiModelSupportsJsonSchema(model: string): boolean {
+  const m = model.trim().toLowerCase();
+  if (!m) return false;
+  if (m.includes('gpt-4o')) return true;
+  if (m.includes('gpt-4.1')) return true;
+  if (m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) return true;
+  return false;
 }
 
 export type ContentSimilarityAlert =

@@ -29,7 +29,7 @@ export const CONTENT_AI_GENERATION_MODES = [
 export type ContentAiGenerationMode =
   (typeof CONTENT_AI_GENERATION_MODES)[number];
 
-export const CONTENT_PROMPT_VERSION = 'v2-marketing-sets-2026-08';
+export const CONTENT_PROMPT_VERSION = 'v3-electoral-sets-2026-08';
 
 /** Contexto coletivo permitido no briefing (nao vira variavel individual). */
 export const COLLECTIVE_CONTEXT_ALLOWLIST = [

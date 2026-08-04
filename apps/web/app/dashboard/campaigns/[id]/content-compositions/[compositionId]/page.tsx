@@ -663,7 +663,7 @@ export default function ContentCompositionEditorPage() {
             <section className="rounded-md border border-[#deddd4] bg-white p-4">
               <h3 className="font-semibold text-[#151515]">Contexto para a IA</h3>
               <p className="mt-1 text-sm text-[#65655f]">
-                Caracteristicas do candidato sao contexto coletivo do publico —
+                Caracteristicas do eleitorado sao contexto coletivo —
                 nao dados individuais do contato.
               </p>
               <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -671,7 +671,7 @@ export default function ContentCompositionEditorPage() {
                   [
                     ['objective', 'Objetivo'],
                     ['offerDescription', 'O que esta sendo oferecido'],
-                    ['targetAudience', 'Publico/candidato'],
+                    ['targetAudience', 'Publico/eleitorado'],
                     ['candidateCharacteristics', 'Caracteristicas relevantes'],
                     ['painPoints', 'Dores e necessidades'],
                     ['primaryBenefit', 'Beneficio principal'],

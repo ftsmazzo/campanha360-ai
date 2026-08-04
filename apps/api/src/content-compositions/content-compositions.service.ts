@@ -1,7 +1,46 @@
+import { createHash } from 'node:crypto';
+import {
+  CONTENT_LIMITS,
+  CONTENT_PROMPT_VERSION,
+  CONTENT_VARIABLE_CATALOG,
+  CONTENT_AI_ELECTORAL_SETS_EXAMPLE,
+  CONTENT_AI_SETS_JSON_SCHEMA,
+  CONTENT_AI_SETS_JSON_SCHEMA_NAME,
+  assessContentRepetition,
+  assessEditorialQuality,
+  buildAiSetsValidationLogMeta,
+  buildContentAiFormatCorrectionUserMessage,
+  classifyContentSimilarity,
+  contentAiModelSupportsJsonSchema,
+  countTheoreticalCombinations,
+  extractContentVariableKeys,
+  formatAiSetsValidationUserMessages,
+  formatSensitiveAttributeUserMessage,
+  getContentAiConfig,
+  groupVariantsByGenerationSet,
+  hashNormalizedContent,
+  isAllowedContentVariable,
+  isContentAiEnabled,
+  isContentCombinationMode,
+  isContentPersonalizationPlacement,
+  isStructuralAiSetsFailure,
+  marketingBriefQualityHints,
+  parseAiSetsRawContent,
+  parseMarketingBrief,
+  scanMarketingBriefForSensitive,
+  selectAndRenderComposition,
+  validateAiSetsPayload,
+  validateCompositionCoherence,
+  variantRequiresVariables,
+  type ContentAiGenerationMode,
+  type ContentCompositionSnapshotV1,
+  type ContentMarketingBrief,
+  type ValidateAiSetsResult,
+} from '@campanha360/shared';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   BadRequestException,
   ConflictException,
-  Injectable,
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -11,34 +50,6 @@ import {
   ContentVariantType,
   Prisma,
 } from '@prisma/client';
-import {
-  CONTENT_LIMITS,
-  CONTENT_PROMPT_VERSION,
-  CONTENT_VARIABLE_CATALOG,
-  assessContentRepetition,
-  assessEditorialQuality,
-  classifyContentSimilarity,
-  countTheoreticalCombinations,
-  extractContentVariableKeys,
-  getContentAiConfig,
-  groupVariantsByGenerationSet,
-  hashNormalizedContent,
-  isAllowedContentVariable,
-  isContentAiEnabled,
-  isContentCombinationMode,
-  isContentPersonalizationPlacement,
-  marketingBriefQualityHints,
-  parseMarketingBrief,
-  scanMarketingBriefForSensitive,
-  formatSensitiveAttributeUserMessage,
-  selectAndRenderComposition,
-  validateAiSetsPayload,
-  validateCompositionCoherence,
-  variantRequiresVariables,
-  type ContentAiGenerationMode,
-  type ContentCompositionSnapshotV1,
-  type ContentMarketingBrief,
-} from '@campanha360/shared';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -63,6 +74,8 @@ const compositionInclude = {
 
 @Injectable()
 export class ContentCompositionsService {
+  private readonly logger = new Logger(ContentCompositionsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly organizationAccess: OrganizationAccessService,
@@ -551,55 +564,201 @@ export class ContentCompositionsService {
     });
 
     try {
-      const payload = await this.callContentAiMarketing({
-        mode,
-        baseText: base.text,
-        brief,
-        campaignName: campaign.name,
-        existingBlocks:
-          mode === 'IMPROVE_CURRENT'
-            ? {
-                greetings: existing.variants
-                  .filter((v) => v.type === 'GREETING' && v.enabled)
-                  .map((v) => v.text)
-                  .slice(0, 3),
-                bodies: existing.variants
-                  .filter((v) => v.type === 'BODY' && v.enabled)
-                  .map((v) => v.text)
-                  .slice(0, 3),
-                closings: existing.variants
-                  .filter((v) => v.type === 'CLOSING' && v.enabled)
-                  .map((v) => v.text)
-                  .slice(0, 3),
-              }
-            : undefined,
-        model: ai.model,
-        apiKey: ai.apiKey,
-        baseUrl: ai.baseUrl,
-        timeoutMs: ai.timeoutMs,
-        maxOutputChars: ai.maxOutputChars,
-        maxInputChars: ai.maxInputChars,
-      });
+      const maxAttempts =
+        ai.formatRetryEnabled &&
+        (mode === 'FULL_SETS' || mode === 'IMPROVE_CURRENT')
+          ? 1 + ai.formatMaxRetries
+          : 1;
 
-      const validated = validateAiSetsPayload(payload, {
-        baseBody: base.text,
-        placement,
-        protectedFacts: brief.protectedFacts ?? [],
-        mode,
-      });
-      if (!validated.ok) {
-        const sensitiveMsgs = validated.diagnostics.map((d) =>
+      let validated: ValidateAiSetsResult | null = null;
+      let lastStructuralFailure: Extract<ValidateAiSetsResult, { ok: false }> | null =
+        null;
+      let lastCallMeta: {
+        httpStatus: number;
+        finishReason: string | null;
+        rawExcerpt: string;
+        attempt: number;
+        usedJsonSchema: boolean;
+      } | null = null;
+
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const call = await this.callContentAiMarketing({
+          mode,
+          baseText: base.text,
+          brief,
+          campaignName: campaign.name,
+          existingBlocks:
+            mode === 'IMPROVE_CURRENT'
+              ? {
+                  greetings: existing.variants
+                    .filter((v) => v.type === 'GREETING' && v.enabled)
+                    .map((v) => v.text)
+                    .slice(0, 3),
+                  bodies: existing.variants
+                    .filter((v) => v.type === 'BODY' && v.enabled)
+                    .map((v) => v.text)
+                    .slice(0, 3),
+                  closings: existing.variants
+                    .filter((v) => v.type === 'CLOSING' && v.enabled)
+                    .map((v) => v.text)
+                    .slice(0, 3),
+                }
+              : undefined,
+          model: ai.model,
+          apiKey: ai.apiKey,
+          baseUrl: ai.baseUrl,
+          timeoutMs: ai.timeoutMs,
+          maxOutputChars: ai.maxOutputChars,
+          maxInputChars: ai.maxInputChars,
+          jsonSchemaEnabled: ai.jsonSchemaEnabled,
+          formatCorrection:
+            attempt > 1 && lastStructuralFailure
+              ? buildContentAiFormatCorrectionUserMessage(
+                  lastStructuralFailure.structureDiagnostics,
+                )
+              : undefined,
+        });
+
+        lastCallMeta = {
+          httpStatus: call.httpStatus,
+          finishReason: call.finishReason,
+          rawExcerpt: call.rawExcerpt,
+          attempt,
+          usedJsonSchema: call.usedJsonSchema,
+        };
+
+        await this.audit.log({
+          organizationId: campaign.organizationId,
+          campaignId,
+          actorUserId: userId,
+          action:
+            attempt === 1
+              ? 'CONTENT_AI_GENERATION_ATTEMPT'
+              : 'CONTENT_AI_FORMAT_RETRY',
+          entityType: 'ContentComposition',
+          entityId: existing.id,
+          metadata: {
+            generationId,
+            model: ai.model,
+            mode,
+            promptVersion: CONTENT_PROMPT_VERSION,
+            attempt,
+            httpStatus: call.httpStatus,
+            finishReason: call.finishReason,
+            usedJsonSchema: call.usedJsonSchema,
+            payloadHash: call.payloadHash,
+          },
+        });
+
+        validated = (() => {
+          const raw = call.payload;
+          if (
+            raw &&
+            typeof raw === 'object' &&
+            !Array.isArray(raw) &&
+            '__parseError' in (raw as Record<string, unknown>)
+          ) {
+            const reason =
+              (raw as { __parseError?: string }).__parseError === 'INVALID_JSON'
+                ? ('INVALID_JSON' as const)
+                : ('RESPONSE_NOT_JSON' as const);
+            return {
+              ok: false as const,
+              errors: [reason],
+              diagnostics: [],
+              structureDiagnostics: [
+                {
+                  code: 'AI_SETS_PAYLOAD_INVALID' as const,
+                  reason,
+                },
+              ],
+              detectedFormat: 'E_NOT_JSON' as const,
+              payloadHash: call.payloadHash,
+            };
+          }
+          return validateAiSetsPayload(call.payload, {
+            baseBody: base.text,
+            placement,
+            protectedFacts: brief.protectedFacts ?? [],
+            mode,
+          });
+        })();
+
+        if (validated.ok) break;
+
+        lastStructuralFailure = validated;
+        const canRetry =
+          attempt < maxAttempts &&
+          isStructuralAiSetsFailure(validated.structureDiagnostics) &&
+          validated.diagnostics.length === 0;
+
+        const includeDevExcerpt =
+          process.env.NODE_ENV !== 'production' ||
+          process.env.CONTENT_AI_LOG_EXCERPT === 'true';
+
+        this.logger.warn(
+          JSON.stringify(
+            buildAiSetsValidationLogMeta({
+              generationId,
+              model: ai.model,
+              mode,
+              promptVersion: CONTENT_PROMPT_VERSION,
+              httpStatus: call.httpStatus,
+              finishReason: call.finishReason,
+              detectedFormat: validated.detectedFormat,
+              payloadHash: validated.payloadHash,
+              structureDiagnostics: validated.structureDiagnostics,
+              sets: [],
+              rawExcerptDevOnly: call.rawExcerpt,
+              includeDevExcerpt,
+            }),
+          ),
+        );
+
+        if (!canRetry) break;
+      }
+
+      if (!validated || !validated.ok) {
+        const structureMsgs = formatAiSetsValidationUserMessages(
+          validated?.structureDiagnostics ?? [],
+        );
+        const sensitiveMsgs = (validated?.diagnostics ?? []).map((d) =>
           formatSensitiveAttributeUserMessage(d),
         );
-        const otherErrors = validated.errors.filter(
-          (e) => !e.startsWith('SENSITIVE_ATTRIBUTE'),
+        const otherErrors = (validated?.errors ?? []).filter(
+          (e) =>
+            !e.startsWith('SENSITIVE_ATTRIBUTE') &&
+            e !== 'SET_BLOCKS_INVALID' &&
+            !structureMsgs.some((m) => m.includes(e)),
         );
-        const parts = [...sensitiveMsgs, ...otherErrors];
-        throw new BadRequestException(
+        const parts = [...structureMsgs, ...sensitiveMsgs, ...otherErrors];
+        const message =
           parts.length > 0
             ? parts.join(' ')
-            : `Resposta da IA invalida: ${validated.errors.join(', ')}`,
-        );
+            : 'A resposta da IA e invalida. Nenhuma versão foi salva. Tente gerar novamente.';
+
+        await this.audit.log({
+          organizationId: campaign.organizationId,
+          campaignId,
+          actorUserId: userId,
+          action: 'CONTENT_AI_GENERATION_VALIDATION_FAILED',
+          entityType: 'ContentComposition',
+          entityId: existing.id,
+          metadata: buildAiSetsValidationLogMeta({
+            generationId,
+            model: ai.model,
+            mode,
+            promptVersion: CONTENT_PROMPT_VERSION,
+            httpStatus: lastCallMeta?.httpStatus,
+            finishReason: lastCallMeta?.finishReason,
+            detectedFormat: validated?.detectedFormat,
+            payloadHash: validated?.payloadHash,
+            structureDiagnostics: validated?.structureDiagnostics ?? [],
+            includeDevExcerpt: false,
+          }) as Prisma.InputJsonValue,
+        });
+
+        throw new BadRequestException(message);
       }
 
       const toSave = validated.sets.slice(0, CONTENT_LIMITS.MAX_AI_VARIANTS);
@@ -1388,7 +1547,16 @@ export class ContentCompositionsService {
     timeoutMs: number;
     maxOutputChars: number;
     maxInputChars: number;
-  }): Promise<unknown> {
+    jsonSchemaEnabled?: boolean;
+    formatCorrection?: string;
+  }): Promise<{
+    payload: unknown;
+    httpStatus: number;
+    finishReason: string | null;
+    rawExcerpt: string;
+    payloadHash: string;
+    usedJsonSchema: boolean;
+  }> {
     const allowed = CONTENT_VARIABLE_CATALOG.map((v) => v.token).join(', ');
     const placement = input.brief.personalizationPlacement ?? 'GREETING';
     const placementRules =
@@ -1400,17 +1568,31 @@ export class ContentCompositionsService {
 
     const wantsSets =
       input.mode === 'FULL_SETS' || input.mode === 'IMPROVE_CURRENT';
+    const useJsonSchema =
+      Boolean(input.jsonSchemaEnabled) &&
+      wantsSets &&
+      contentAiModelSupportsJsonSchema(input.model);
+
     const system = [
-      'Voce e redatora de comunicacao comercial responsavel para WhatsApp.',
-      'Crie texto claro, relevante ao publico, com beneficio concreto e CTA simples.',
-      'Nao invente preco, desconto, prazo, garantia, link, escassez ou promessas.',
-      'Nao infira dados sensiveis (saude, religiao, raca, orientacao, politica, renda).',
+      'Voce e redatora de comunicacao eleitoral responsavel para WhatsApp.',
+      'Candidato neste produto significa candidato ELEITORAL (cargo disputado), nunca candidato a emprego ou recrutamento.',
+      'Crie texto claro, relevante ao eleitorado, com proposta concreta e CTA de escuta/participacao.',
+      'Nao invente pesquisa, percentual, alianca, link, escassez ou promessas ilegais.',
+      'Nao infira dados sensiveis (saude, religiao, raca, orientacao sexual, renda individual).',
       'Nao finja conhecimento individual do destinatario alem das variaveis permitidas.',
       `Variaveis permitidas: ${allowed}.`,
       `Posicionamento da personalizacao: ${placement}. ${placementRules}`,
-      'Caracteristicas de candidato no briefing sao CONTEXTO COLETIVO do publico, nao dados individuais.',
+      'Caracteristicas no briefing sao CONTEXTO COLETIVO do publico/eleitorado, nao dados individuais.',
+      'Retorne SOMENTE JSON valido. Sem markdown. Sem texto antes ou depois.',
       wantsSets
-        ? 'Responda SOMENTE JSON: {"sets":[{"greeting":{"text":"...","requiresVariables":[]},"body":{"text":"..."},"closing":{"text":"..."},"marketingAngle":"...","summaryOfChanges":"...","preservedFacts":true,"protectedFactsUsed":[],"warnings":[]}]}'
+        ? [
+            'FULL_SETS exige 1 a 3 itens em sets.',
+            'Cada set DEVE ter greeting, body e closing como objetos { "text": string nao vazia, "requiresVariables": string[] }.',
+            'Saudacao curta; corpo completo com mensagem eleitoral; fechamento com CTA coerente.',
+            'Nao coloque o corpo dentro da saudacao. Nao deixe campos vazios.',
+            'preservedFacts deve ser true.',
+            `Exemplo apenas de estrutura: ${JSON.stringify(CONTENT_AI_ELECTORAL_SETS_EXAMPLE)}`,
+          ].join(' ')
         : 'Responda SOMENTE JSON: {"variants":[{"text":"...","summaryOfChanges":"...","preservedFacts":true}]} (bloco unico conforme o modo).',
       `promptVersion=${CONTENT_PROMPT_VERSION}`,
     ].join(' ');
@@ -1418,15 +1600,15 @@ export class ContentCompositionsService {
     const protectedFacts = (input.brief.protectedFacts ?? []).join(' | ');
     const userParts = [
       `Modo: ${input.mode}`,
-      `Campanha: ${input.campaignName}`,
+      `Campanha eleitoral: ${input.campaignName}`,
       `Objetivo: ${input.brief.objective ?? ''}`,
-      `Oferta: ${input.brief.offerName ?? ''} — ${input.brief.offerDescription ?? ''}`,
-      `Publico: ${input.brief.targetAudience ?? ''}`,
-      `Caracteristicas do candidato (coletivo): ${input.brief.candidateCharacteristics ?? ''}`,
+      `Proposta/oferta politica: ${input.brief.offerName ?? ''} — ${input.brief.offerDescription ?? ''}`,
+      `Publico/eleitorado: ${input.brief.targetAudience ?? ''}`,
+      `Caracteristicas coletivas do eleitorado: ${input.brief.candidateCharacteristics ?? ''}`,
       `Contexto coletivo: ${JSON.stringify(input.brief.collectiveContext ?? {})}`,
-      `Dores: ${input.brief.painPoints ?? ''}`,
-      `Beneficio principal: ${input.brief.primaryBenefit ?? ''}`,
-      `Beneficios secundarios: ${input.brief.secondaryBenefits ?? ''}`,
+      `Dores/preocupacoes: ${input.brief.painPoints ?? ''}`,
+      `Beneficio/proposta principal: ${input.brief.primaryBenefit ?? ''}`,
+      `Propostas secundarias: ${input.brief.secondaryBenefits ?? ''}`,
       `Diferenciais: ${input.brief.differentiators ?? ''}`,
       `CTA: ${input.brief.callToAction ?? ''}`,
       `Tom: ${input.brief.tone ?? ''}; Formalidade: ${input.brief.formality ?? ''}`,
@@ -1444,11 +1626,25 @@ export class ContentCompositionsService {
         `Blocos atuais closing: ${JSON.stringify(input.existingBlocks.closings)}`,
       );
     }
+    if (input.formatCorrection?.trim()) {
+      userParts.push(input.formatCorrection.trim());
+    }
+
+    const responseFormat = useJsonSchema
+      ? {
+          type: 'json_schema' as const,
+          json_schema: {
+            name: CONTENT_AI_SETS_JSON_SCHEMA_NAME,
+            strict: true,
+            schema: CONTENT_AI_SETS_JSON_SCHEMA,
+          },
+        }
+      : { type: 'json_object' as const };
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), input.timeoutMs);
     try {
-      const res = await fetch(`${input.baseUrl}/chat/completions`, {
+      let res = await fetch(`${input.baseUrl}/chat/completions`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${input.apiKey}`,
@@ -1457,7 +1653,7 @@ export class ContentCompositionsService {
         body: JSON.stringify({
           model: input.model,
           temperature: 0.7,
-          response_format: { type: 'json_object' },
+          response_format: responseFormat,
           messages: [
             { role: 'system', content: system },
             { role: 'user', content: userParts.join('\n') },
@@ -1465,19 +1661,81 @@ export class ContentCompositionsService {
         }),
         signal: controller.signal,
       });
+
+      let usedJsonSchema = useJsonSchema;
+      // Fallback se o provedor rejeitar json_schema
+      if (!res.ok && useJsonSchema && (res.status === 400 || res.status === 422)) {
+        usedJsonSchema = false;
+        res = await fetch(`${input.baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${input.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: input.model,
+            temperature: 0.7,
+            response_format: { type: 'json_object' },
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: userParts.join('\n') },
+            ],
+          }),
+          signal: controller.signal,
+        });
+      }
+
       if (!res.ok) {
         throw new ServiceUnavailableException(
           `Falha no provedor de IA (HTTP ${res.status})`,
         );
       }
       const json = (await res.json()) as {
-        choices?: Array<{ message?: { content?: string } }>;
+        choices?: Array<{
+          finish_reason?: string;
+          message?: { content?: string };
+        }>;
       };
       const content = json.choices?.[0]?.message?.content ?? '';
+      const finishReason = json.choices?.[0]?.finish_reason ?? null;
       if (content.length > input.maxOutputChars) {
         throw new BadRequestException('Resposta da IA excede limite de saida');
       }
-      return JSON.parse(content) as unknown;
+
+      const parsed = parseAiSetsRawContent(content);
+      if (!parsed.ok) {
+        return {
+          payload: { __parseError: parsed.reason },
+          httpStatus: res.status,
+          finishReason,
+          rawExcerpt: parsed.sanitizedExcerpt,
+          payloadHash: 'parse-failed',
+          usedJsonSchema,
+        };
+      }
+
+      // Marca formato markdown no payload via wrapper interno nao persistido
+      const payload =
+        parsed.fromMarkdown &&
+        parsed.value &&
+        typeof parsed.value === 'object' &&
+        !Array.isArray(parsed.value)
+          ? parsed.value
+          : parsed.value;
+
+      const payloadHash = createHash('sha256')
+        .update(content, 'utf8')
+        .digest('hex')
+        .slice(0, 16);
+
+      return {
+        payload,
+        httpStatus: res.status,
+        finishReason,
+        rawExcerpt: content.slice(0, 200),
+        payloadHash,
+        usedJsonSchema,
+      };
     } catch (error) {
       if (
         error instanceof BadRequestException ||

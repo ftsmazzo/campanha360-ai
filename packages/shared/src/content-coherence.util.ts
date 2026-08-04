@@ -11,10 +11,24 @@ import { createHash } from 'node:crypto';
 import {
   detectSensitiveContent,
   formatSensitiveAttributeError,
+  type ContentAiGenerationMode,
   type ContentMarketingBrief,
   type ContentPersonalizationPlacement,
   type SensitiveAttributeMatch,
 } from './content-marketing.util';
+import {
+  normalizeAiSetsPayload,
+  type AiGeneratedSet,
+  type AiSetStructureDiagnostic,
+  type AiSetsDetectedFormat,
+} from './content-ai-sets.util';
+
+export type {
+  AiGeneratedBlock,
+  AiGeneratedSet,
+  AiSetStructureDiagnostic,
+  AiSetsDetectedFormat,
+} from './content-ai-sets.util';
 
 function hashNormalizedContent(text: string): string {
   const normalized = text
@@ -26,22 +40,6 @@ function hashNormalizedContent(text: string): string {
     .toLowerCase();
   return createHash('sha256').update(normalized, 'utf8').digest('hex');
 }
-
-export type AiGeneratedBlock = {
-  text: string;
-  requiresVariables?: string[];
-};
-
-export type AiGeneratedSet = {
-  greeting: AiGeneratedBlock;
-  body: AiGeneratedBlock;
-  closing: AiGeneratedBlock;
-  marketingAngle: string;
-  summaryOfChanges: string;
-  preservedFacts: boolean;
-  protectedFactsUsed?: string[];
-  warnings?: string[];
-};
 
 export type CoherenceAlertCode =
   | 'DUPLICATE_NAME_PERSONALIZATION'
@@ -72,130 +70,52 @@ const GREETING_MARKERS =
 const CTA_MARKERS =
   /\b(responde|responda|me chama|chama|agende|agenda|clique|acesse|confira|saiba mais|vamos conversar|posso te)\b/i;
 
+export type ValidateAiSetsResult =
+  | { ok: true; sets: AiGeneratedSet[] }
+  | {
+      ok: false;
+      errors: string[];
+      diagnostics: SensitiveAttributeMatch[];
+      structureDiagnostics: AiSetStructureDiagnostic[];
+      detectedFormat: AiSetsDetectedFormat;
+      payloadHash: string;
+    };
+
 export function validateAiSetsPayload(
   payload: unknown,
   input: {
     baseBody?: string;
     placement: ContentPersonalizationPlacement;
     protectedFacts?: string[];
-    mode?: 'FULL_SETS' | 'GREETING_ONLY' | 'BODY_ONLY' | 'CLOSING_ONLY' | 'IMPROVE_CURRENT';
+    mode?: ContentAiGenerationMode;
   },
-):
-  | { ok: true; sets: AiGeneratedSet[] }
-  | {
-      ok: false;
-      errors: string[];
-      diagnostics: SensitiveAttributeMatch[];
-    } {
-  const errors: string[] = [];
-  const diagnostics: SensitiveAttributeMatch[] = [];
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { ok: false, errors: ['SCHEMA_INVALID'], diagnostics: [] };
-  }
+): ValidateAiSetsResult {
   const mode = input.mode ?? 'FULL_SETS';
-  const setsRaw = (payload as { sets?: unknown; variants?: unknown }).sets;
-  // Compatibilidade 09.7.1: variants BODY_ONLY
-  if (
-    (mode === 'BODY_ONLY' || mode === 'GREETING_ONLY' || mode === 'CLOSING_ONLY') &&
-    !Array.isArray(setsRaw)
-  ) {
-    const variants = (payload as { variants?: unknown }).variants;
-    if (!Array.isArray(variants)) {
-      return { ok: false, errors: ['SETS_OR_VARIANTS_MISSING'], diagnostics: [] };
-    }
-    const mapped: AiGeneratedSet[] = [];
-    for (const row of variants) {
-      if (!row || typeof row !== 'object') continue;
-      const text = String((row as { text?: unknown }).text ?? '').trim();
-      const summaryOfChanges = String(
-        (row as { summaryOfChanges?: unknown }).summaryOfChanges ?? '',
-      ).trim();
-      const preservedFacts =
-        (row as { preservedFacts?: unknown }).preservedFacts === true;
-      if (mode === 'BODY_ONLY') {
-        mapped.push({
-          greeting: { text: 'Ola!', requiresVariables: [] },
-          body: { text, requiresVariables: extractContentVariableKeys(text) },
-          closing: { text: 'Posso te ajudar?', requiresVariables: [] },
-          marketingAngle: 'body-only',
-          summaryOfChanges,
-          preservedFacts,
-        });
-      } else if (mode === 'GREETING_ONLY') {
-        mapped.push({
-          greeting: { text, requiresVariables: extractContentVariableKeys(text) },
-          body: { text: input.baseBody || 'Mensagem', requiresVariables: [] },
-          closing: { text: 'Obrigado.', requiresVariables: [] },
-          marketingAngle: 'greeting-only',
-          summaryOfChanges,
-          preservedFacts,
-        });
-      } else {
-        mapped.push({
-          greeting: { text: 'Ola!', requiresVariables: [] },
-          body: { text: input.baseBody || 'Mensagem', requiresVariables: [] },
-          closing: { text, requiresVariables: extractContentVariableKeys(text) },
-          marketingAngle: 'closing-only',
-          summaryOfChanges,
-          preservedFacts,
-        });
-      }
-    }
-    return validateMappedSets(mapped, input, errors, diagnostics, mode);
+  const normalized = normalizeAiSetsPayload(payload, mode, {
+    baseBody: input.baseBody,
+  });
+
+  if (!normalized.ok) {
+    const errors = normalized.errors.filter((e) => e !== 'SET_BLOCKS_INVALID');
+    return {
+      ok: false,
+      errors: errors.length > 0 ? errors : ['AI_SET_BLOCK_INVALID'],
+      diagnostics: [],
+      structureDiagnostics: normalized.structureDiagnostics,
+      detectedFormat: normalized.detectedFormat,
+      payloadHash: normalized.payloadHash,
+    };
   }
 
-  if (!Array.isArray(setsRaw)) {
-    return { ok: false, errors: ['SETS_MISSING'], diagnostics: [] };
-  }
-  if (setsRaw.length < 1 || setsRaw.length > CONTENT_LIMITS.MAX_AI_VARIANTS) {
-    errors.push('SETS_COUNT');
-  }
-
-  const mapped: AiGeneratedSet[] = [];
-  for (const row of setsRaw) {
-    if (!row || typeof row !== 'object') {
-      errors.push('SET_ROW_INVALID');
-      continue;
-    }
-    const r = row as Record<string, unknown>;
-    const greeting = readBlock(r.greeting);
-    const body = readBlock(r.body);
-    const closing = readBlock(r.closing);
-    if (!greeting || !body || !closing) {
-      errors.push('SET_BLOCKS_INVALID');
-      continue;
-    }
-    mapped.push({
-      greeting,
-      body,
-      closing,
-      marketingAngle: String(r.marketingAngle ?? '').trim().slice(0, 200),
-      summaryOfChanges: String(r.summaryOfChanges ?? '').trim().slice(0, 500),
-      preservedFacts: r.preservedFacts === true,
-      protectedFactsUsed: Array.isArray(r.protectedFactsUsed)
-        ? r.protectedFactsUsed.filter((x): x is string => typeof x === 'string')
-        : [],
-      warnings: Array.isArray(r.warnings)
-        ? r.warnings.filter((x): x is string => typeof x === 'string')
-        : [],
-    });
-  }
-
-  return validateMappedSets(mapped, input, errors, diagnostics, mode);
-}
-
-function readBlock(value: unknown): AiGeneratedBlock | null {
-  if (!value || typeof value !== 'object') return null;
-  const text = String((value as { text?: unknown }).text ?? '').trim();
-  if (!text) return null;
-  const requiresVariables = Array.isArray(
-    (value as { requiresVariables?: unknown }).requiresVariables,
-  )
-    ? ((value as { requiresVariables: unknown[] }).requiresVariables
-        .filter((x): x is string => typeof x === 'string')
-        .filter(isAllowedContentVariable) as string[])
-    : extractContentVariableKeys(text).filter(isAllowedContentVariable);
-  return { text, requiresVariables };
+  return validateMappedSets(
+    normalized.sets,
+    input,
+    [],
+    [],
+    mode,
+    normalized.detectedFormat,
+    normalized.payloadHash,
+  );
 }
 
 function validateMappedSets(
@@ -208,22 +128,26 @@ function validateMappedSets(
   errors: string[],
   diagnostics: SensitiveAttributeMatch[],
   mode: string,
-):
-  | { ok: true; sets: AiGeneratedSet[] }
-  | {
-      ok: false;
-      errors: string[];
-      diagnostics: SensitiveAttributeMatch[];
-    } {
+  detectedFormat: AiSetsDetectedFormat = 'UNKNOWN',
+  payloadHash = '',
+): ValidateAiSetsResult {
   const baseHash = input.baseBody
     ? hashNormalizedContent(input.baseBody)
     : null;
   const seenBodies = new Set<string>();
   const out: AiGeneratedSet[] = [];
   const seenSensitiveKeys = new Set<string>();
+  const structureDiagnostics: AiSetStructureDiagnostic[] = [];
 
   mapped.forEach((set, setIndex) => {
-    if (!set.preservedFacts) errors.push('FACTS_NOT_PRESERVED');
+    if (!set.preservedFacts) {
+      errors.push('PRESERVED_FACTS_FALSE');
+      structureDiagnostics.push({
+        code: 'AI_SET_BLOCK_INVALID',
+        setIndex,
+        reason: 'PRESERVED_FACTS_FALSE',
+      });
+    }
     const blocks: Array<{
       block: 'greeting' | 'body' | 'closing';
       text: string;
@@ -237,7 +161,16 @@ function validateMappedSets(
         errors.push('VARIANT_TOO_LONG');
       }
       for (const key of extractContentVariableKeys(text)) {
-        if (!isAllowedContentVariable(key)) errors.push(`UNKNOWN_VAR:${key}`);
+        if (!isAllowedContentVariable(key)) {
+          errors.push(`UNKNOWN_VAR:${key}`);
+          structureDiagnostics.push({
+            code: 'AI_SET_BLOCK_INVALID',
+            setIndex,
+            block,
+            reason: 'UNKNOWN_PLACEHOLDER',
+            detail: key,
+          });
+        }
       }
       const match = detectSensitiveContent(text, { block, setIndex });
       if (match) {
@@ -261,14 +194,26 @@ function validateMappedSets(
       set,
       input.placement,
     );
-    errors.push(...placementErrors);
+    for (const pe of placementErrors) {
+      errors.push(pe);
+      if (
+        pe === 'NAME_IN_WRONG_BLOCK' ||
+        pe === 'DUPLICATE_NAME_PERSONALIZATION'
+      ) {
+        structureDiagnostics.push({
+          code: 'AI_SET_BLOCK_INVALID',
+          setIndex,
+          reason: 'PERSONALIZATION_PLACEMENT_INVALID',
+          detail: pe,
+        });
+      }
+    }
 
     const coherence = validateCompositionCoherence({
       greeting: set.greeting.text,
       body: set.body.text,
       closing: set.closing.text,
       placement: input.placement,
-      // sensivel ja avaliado por bloco acima — evita SENSITIVE_ATTRIBUTE generico duplicado
       skipSensitiveScan: true,
     });
     for (const alert of coherence) {
@@ -291,12 +236,30 @@ function validateMappedSets(
     out.push(set);
   });
 
-  const uniqueErrors = [...new Set(errors)];
+  const uniqueErrors = [...new Set(errors)].filter(
+    (e) => e !== 'SET_BLOCKS_INVALID',
+  );
   if (uniqueErrors.length > 0) {
-    return { ok: false, errors: uniqueErrors, diagnostics };
+    return {
+      ok: false,
+      errors: uniqueErrors,
+      diagnostics,
+      structureDiagnostics,
+      detectedFormat,
+      payloadHash,
+    };
   }
   if (out.length < 1) {
-    return { ok: false, errors: ['SETS_EMPTY'], diagnostics };
+    return {
+      ok: false,
+      errors: ['SETS_EMPTY'],
+      diagnostics,
+      structureDiagnostics: [
+        { code: 'AI_SETS_PAYLOAD_INVALID', reason: 'SETS_EMPTY' },
+      ],
+      detectedFormat,
+      payloadHash,
+    };
   }
   return { ok: true, sets: out };
 }
