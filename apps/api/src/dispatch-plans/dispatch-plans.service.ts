@@ -22,6 +22,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import {
   acknowledgeRepetition,
   assessContentRepetition,
+  parseMarketingBrief,
   simulateContentDistribution,
   type ContentCompositionSnapshotV1,
   variantRequiresVariables,
@@ -2235,6 +2236,9 @@ export class DispatchPlansService {
         version: composition.version,
         blockSeparator: composition.blockSeparator,
         fallbacks: parseFallbacks(composition.fallbacks),
+        marketingBrief: parseMarketingBrief(composition.marketingBrief),
+        personalizationPlacement: composition.personalizationPlacement,
+        combinationMode: composition.combinationMode,
       },
       variants: enabledOnly.map((v) => ({
         id: v.id,
@@ -2247,6 +2251,12 @@ export class DispatchPlansService {
         requiresVariables: Array.isArray(v.requiresVariables)
           ? (v.requiresVariables as string[])
           : variantRequiresVariables(v.text),
+        generationSetId: v.generationSetId,
+        tone: v.tone,
+        formality: v.formality,
+        personalizationPlacement: v.personalizationPlacement,
+        marketingAngle: v.marketingAngle,
+        compatibleGroup: v.compatibleGroup,
       })),
       approvedAt: composition.approvedAt ?? new Date(),
       approvedByUserId:

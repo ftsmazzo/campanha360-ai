@@ -13,24 +13,35 @@ import {
 } from '@prisma/client';
 import {
   CONTENT_LIMITS,
+  CONTENT_PROMPT_VERSION,
   CONTENT_VARIABLE_CATALOG,
   assessContentRepetition,
+  assessEditorialQuality,
   classifyContentSimilarity,
   countTheoreticalCombinations,
   extractContentVariableKeys,
   getContentAiConfig,
+  groupVariantsByGenerationSet,
   hashNormalizedContent,
   isAllowedContentVariable,
   isContentAiEnabled,
+  isContentCombinationMode,
+  isContentPersonalizationPlacement,
+  marketingBriefQualityHints,
+  parseMarketingBrief,
   selectAndRenderComposition,
-  validateAiVariantsPayload,
+  validateAiSetsPayload,
+  validateCompositionCoherence,
   variantRequiresVariables,
+  type ContentAiGenerationMode,
   type ContentCompositionSnapshotV1,
+  type ContentMarketingBrief,
 } from '@campanha360/shared';
 import { AuditService } from '../audit/audit.service';
 import { OrganizationAccessService } from '../common/organization-access.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ApproveCompositionDto } from './dto/approve-composition.dto';
+import { ApproveGenerationSetDto } from './dto/approve-generation-set.dto';
 import { CreateCompositionDto } from './dto/create-composition.dto';
 import { CreateVariantDto } from './dto/create-variant.dto';
 import { GenerateAiVariantsDto } from './dto/generate-ai-variants.dto';
@@ -172,6 +183,23 @@ export class ContentCompositionsService {
     );
     this.assertEditable(existing.status);
 
+    const briefUpdate =
+      dto.marketingBrief === undefined
+        ? undefined
+        : (parseMarketingBrief(dto.marketingBrief) as unknown as Prisma.InputJsonValue);
+    const placement =
+      dto.personalizationPlacement === undefined
+        ? undefined
+        : isContentPersonalizationPlacement(dto.personalizationPlacement)
+          ? dto.personalizationPlacement
+          : undefined;
+    const combinationMode =
+      dto.combinationMode === undefined
+        ? undefined
+        : isContentCombinationMode(dto.combinationMode)
+          ? dto.combinationMode
+          : undefined;
+
     const updated = await this.prisma.contentComposition.update({
       where: { id: existing.id },
       data: {
@@ -184,6 +212,9 @@ export class ContentCompositionsService {
           dto.fallbacks === undefined
             ? undefined
             : (dto.fallbacks as Prisma.InputJsonValue),
+        marketingBrief: briefUpdate,
+        personalizationPlacement: placement,
+        combinationMode,
         version: { increment: 1 },
         status: ContentCompositionStatus.DRAFT,
         approvedAt: null,
@@ -467,10 +498,31 @@ export class ContentCompositionsService {
     }
 
     const base = existing.variants.find(
-      (v) => v.type === ContentVariantType.BODY && v.source === ContentVariantSource.BASE,
+      (v) =>
+        v.type === ContentVariantType.BODY &&
+        v.source === ContentVariantSource.BASE,
     );
     if (!base) throw new BadRequestException('Mensagem-base BODY ausente');
 
+    const mode: ContentAiGenerationMode = dto.mode ?? 'FULL_SETS';
+    const brief = parseMarketingBrief(existing.marketingBrief);
+    if (dto.objective?.trim()) brief.objective = dto.objective.trim();
+    if (dto.tone?.trim()) brief.tone = dto.tone.trim();
+    if (dto.maxChars) brief.maxLength = dto.maxChars;
+    if (
+      isContentPersonalizationPlacement(existing.personalizationPlacement)
+    ) {
+      brief.personalizationPlacement = existing.personalizationPlacement;
+    }
+
+    const hints = marketingBriefQualityHints(brief);
+    if (dto.requireRecommendedBrief && !hints.readyForGeneration) {
+      throw new BadRequestException(
+        `Briefing incompleto. Preencha: ${hints.missingRecommended.join(', ')}`,
+      );
+    }
+
+    const placement = brief.personalizationPlacement ?? 'GREETING';
     const generationId = `ai_${Date.now().toString(36)}`;
     await this.audit.log({
       organizationId: campaign.organizationId,
@@ -482,18 +534,36 @@ export class ContentCompositionsService {
       metadata: {
         generationId,
         model: ai.model,
-        objectiveLength: (dto.objective ?? '').length,
-        tone: dto.tone ?? null,
+        mode,
+        promptVersion: CONTENT_PROMPT_VERSION,
+        placement,
+        briefHints: hints,
       },
     });
 
     try {
-      const payload = await this.callContentAi({
+      const payload = await this.callContentAiMarketing({
+        mode,
         baseText: base.text,
-        objective: dto.objective?.trim() || 'Variar tom preservando fatos',
-        tone: dto.tone?.trim() || 'profissional e natural',
-        maxChars: dto.maxChars ?? 800,
+        brief,
         campaignName: campaign.name,
+        existingBlocks:
+          mode === 'IMPROVE_CURRENT'
+            ? {
+                greetings: existing.variants
+                  .filter((v) => v.type === 'GREETING' && v.enabled)
+                  .map((v) => v.text)
+                  .slice(0, 3),
+                bodies: existing.variants
+                  .filter((v) => v.type === 'BODY' && v.enabled)
+                  .map((v) => v.text)
+                  .slice(0, 3),
+                closings: existing.variants
+                  .filter((v) => v.type === 'CLOSING' && v.enabled)
+                  .map((v) => v.text)
+                  .slice(0, 3),
+              }
+            : undefined,
         model: ai.model,
         apiKey: ai.apiKey,
         baseUrl: ai.baseUrl,
@@ -502,50 +572,126 @@ export class ContentCompositionsService {
         maxInputChars: ai.maxInputChars,
       });
 
-      const validated = validateAiVariantsPayload(payload, base.text);
+      const validated = validateAiSetsPayload(payload, {
+        baseBody: base.text,
+        placement,
+        protectedFacts: brief.protectedFacts ?? [],
+        mode,
+      });
       if (!validated.ok) {
         throw new BadRequestException(
           `Resposta da IA invalida: ${validated.errors.join(', ')}`,
         );
       }
 
-      const activeBodies = existing.variants.filter(
-        (v) => v.type === ContentVariantType.BODY && v.enabled,
-      ).length;
-      const room = CONTENT_LIMITS.MAX_BODY_ACTIVE - activeBodies;
-      if (room <= 0) {
-        throw new BadRequestException(
-          `Limite de ${CONTENT_LIMITS.MAX_BODY_ACTIVE} corpos ativos atingido`,
-        );
-      }
-
-      const toSave = validated.variants.slice(0, Math.min(3, room));
-      const maxOrder = existing.variants
-        .filter((v) => v.type === ContentVariantType.BODY)
-        .reduce((m, v) => Math.max(m, v.order), -1);
+      const toSave = validated.sets.slice(0, CONTENT_LIMITS.MAX_AI_VARIANTS);
+      const maxOrder = {
+        BODY: existing.variants
+          .filter((v) => v.type === 'BODY')
+          .reduce((m, v) => Math.max(m, v.order), -1),
+        GREETING: existing.variants
+          .filter((v) => v.type === 'GREETING')
+          .reduce((m, v) => Math.max(m, v.order), -1),
+        CLOSING: existing.variants
+          .filter((v) => v.type === 'CLOSING')
+          .reduce((m, v) => Math.max(m, v.order), -1),
+      };
 
       await this.prisma.$transaction(async (tx) => {
-        let order = maxOrder;
-        for (const draft of toSave) {
-          order += 1;
-          await tx.contentVariant.create({
-            data: {
-              organizationId: campaign.organizationId,
-              campaignId,
-              compositionId: existing.id,
-              type: ContentVariantType.BODY,
-              source: ContentVariantSource.AI_GENERATED,
-              text: draft.text,
-              normalizedTextHash: hashNormalizedContent(draft.text),
-              enabled: false,
-              order,
-              requiresVariables: variantRequiresVariables(draft.text),
-              reviewPending: true,
-              aiGenerationId: generationId,
-              aiSummaryOfChanges: draft.summaryOfChanges || null,
-            },
+        let i = 0;
+        for (const set of toSave) {
+          i += 1;
+          const setId = `${generationId}_set${i}`;
+          const quality = assessEditorialQuality({
+            greeting: set.greeting.text,
+            body: set.body.text,
+            closing: set.closing.text,
+            brief,
           });
+          const blocks: Array<{
+            type: ContentVariantType;
+            text: string;
+            requiresVariables: string[];
+          }> = [];
+          if (mode === 'FULL_SETS' || mode === 'IMPROVE_CURRENT') {
+            blocks.push(
+              {
+                type: ContentVariantType.GREETING,
+                text: set.greeting.text,
+                requiresVariables:
+                  set.greeting.requiresVariables ??
+                  variantRequiresVariables(set.greeting.text),
+              },
+              {
+                type: ContentVariantType.BODY,
+                text: set.body.text,
+                requiresVariables:
+                  set.body.requiresVariables ??
+                  variantRequiresVariables(set.body.text),
+              },
+              {
+                type: ContentVariantType.CLOSING,
+                text: set.closing.text,
+                requiresVariables:
+                  set.closing.requiresVariables ??
+                  variantRequiresVariables(set.closing.text),
+              },
+            );
+          } else if (mode === 'GREETING_ONLY') {
+            blocks.push({
+              type: ContentVariantType.GREETING,
+              text: set.greeting.text,
+              requiresVariables:
+                set.greeting.requiresVariables ??
+                variantRequiresVariables(set.greeting.text),
+            });
+          } else if (mode === 'BODY_ONLY') {
+            blocks.push({
+              type: ContentVariantType.BODY,
+              text: set.body.text,
+              requiresVariables:
+                set.body.requiresVariables ??
+                variantRequiresVariables(set.body.text),
+            });
+          } else if (mode === 'CLOSING_ONLY') {
+            blocks.push({
+              type: ContentVariantType.CLOSING,
+              text: set.closing.text,
+              requiresVariables:
+                set.closing.requiresVariables ??
+                variantRequiresVariables(set.closing.text),
+            });
+          }
+
+          for (const block of blocks) {
+            maxOrder[block.type] += 1;
+            await tx.contentVariant.create({
+              data: {
+                organizationId: campaign.organizationId,
+                campaignId,
+                compositionId: existing.id,
+                type: block.type,
+                source: ContentVariantSource.AI_GENERATED,
+                text: block.text,
+                normalizedTextHash: hashNormalizedContent(block.text),
+                enabled: false,
+                order: maxOrder[block.type],
+                requiresVariables: block.requiresVariables,
+                reviewPending: true,
+                aiGenerationId: generationId,
+                aiSummaryOfChanges: set.summaryOfChanges || null,
+                generationSetId: setId,
+                tone: brief.tone ?? null,
+                formality: brief.formality ?? null,
+                personalizationPlacement: placement,
+                marketingAngle: set.marketingAngle || null,
+                compatibleGroup: setId,
+              },
+            });
+          }
+          void quality;
         }
+
         await tx.contentComposition.update({
           where: { id: existing.id },
           data: {
@@ -553,6 +699,12 @@ export class ContentCompositionsService {
             status: ContentCompositionStatus.READY_FOR_REVIEW,
             approvedAt: null,
             approvedByUserId: null,
+            marketingBrief: brief as unknown as Prisma.InputJsonValue,
+            personalizationPlacement: placement,
+            combinationMode:
+              existing.combinationMode === 'MIX_AND_MATCH'
+                ? 'MIX_AND_MATCH'
+                : 'LOCKED_SETS',
           },
         });
       });
@@ -567,7 +719,9 @@ export class ContentCompositionsService {
         metadata: {
           generationId,
           model: ai.model,
-          variantCount: toSave.length,
+          mode,
+          setCount: toSave.length,
+          promptVersion: CONTENT_PROMPT_VERSION,
         },
       });
 
@@ -582,11 +736,86 @@ export class ContentCompositionsService {
         entityId: existing.id,
         metadata: {
           generationId,
-          reason: error instanceof Error ? error.message.slice(0, 200) : 'unknown',
+          mode,
+          reason:
+            error instanceof Error ? error.message.slice(0, 200) : 'unknown',
         },
       });
       throw error;
     }
+  }
+
+  async approveGenerationSet(
+    userId: string,
+    campaignId: string,
+    compositionId: string,
+    dto: ApproveGenerationSetDto,
+  ) {
+    const campaign = await this.getCampaignContext(userId, campaignId, true);
+    const existing = await this.getCompositionOrThrow(
+      compositionId,
+      campaign.organizationId,
+      campaignId,
+    );
+    this.assertEditable(existing.status);
+    const setId = dto.generationSetId.trim();
+    const members = existing.variants.filter((v) => v.generationSetId === setId);
+    if (members.length === 0) {
+      throw new NotFoundException('Conjunto de geracao nao encontrado');
+    }
+    const enable = dto.enable !== false;
+
+    if (enable) {
+      for (const type of [
+        ContentVariantType.BODY,
+        ContentVariantType.GREETING,
+        ContentVariantType.CLOSING,
+      ] as const) {
+        const enabling = members.filter((m) => m.type === type).length;
+        if (!enabling) continue;
+        const active = existing.variants.filter(
+          (v) =>
+            v.type === type &&
+            v.enabled &&
+            v.generationSetId !== setId,
+        ).length;
+        assertActiveVariantLimits(type, active + enabling);
+      }
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.contentVariant.updateMany({
+        where: {
+          compositionId: existing.id,
+          generationSetId: setId,
+        },
+        data: {
+          enabled: enable,
+          reviewPending: enable ? false : true,
+        },
+      });
+      await tx.contentComposition.update({
+        where: { id: existing.id },
+        data: {
+          version: { increment: 1 },
+          status: ContentCompositionStatus.READY_FOR_REVIEW,
+          approvedAt: null,
+          approvedByUserId: null,
+        },
+      });
+    });
+
+    await this.audit.log({
+      organizationId: campaign.organizationId,
+      campaignId,
+      actorUserId: userId,
+      action: enable ? 'CONTENT_VARIANT_ENABLED' : 'CONTENT_VARIANT_DISABLED',
+      entityType: 'ContentComposition',
+      entityId: existing.id,
+      metadata: { generationSetId: setId, memberCount: members.length },
+    });
+
+    return this.get(userId, campaignId, compositionId);
   }
 
   async markReadyForReview(
@@ -754,7 +983,7 @@ export class ContentCompositionsService {
       },
       take: dto.contactId ? 1 : 40,
       orderBy: { updatedAt: 'desc' },
-      select: { id: true, name: true, metadata: true },
+      select: { id: true, name: true, city: true, metadata: true },
     });
 
     const withName = contacts.filter((c) => c.name?.trim());
@@ -779,7 +1008,11 @@ export class ContentCompositionsService {
         dispatchId,
         dispatchItemId: `preview:${contact.id}`,
         contactId: contact.id,
-        contact: { name: contact.name, companyName },
+        contact: {
+          name: contact.name,
+          companyName,
+          city: contact.city,
+        },
       });
       return {
         contactId: contact.id,
@@ -787,9 +1020,12 @@ export class ContentCompositionsService {
         greetingVariantId: rendered.greetingVariantId,
         bodyVariantId: rendered.bodyVariantId,
         closingVariantId: rendered.closingVariantId,
+        generationSetId: rendered.generationSetId,
         renderedText: rendered.renderedText,
         renderedTextHash: rendered.renderedTextHash,
         personalizationStatus: rendered.personalizationStatus,
+        personalizationPlacement: snapshot.personalizationPlacement ?? null,
+        coherenceAlerts: rendered.coherenceAlerts,
         resolvedVariables: rendered.render.resolvedVariables,
         missingVariables: rendered.missingVariables,
         usedFallbacks: rendered.usedFallbacks,
@@ -958,6 +1194,9 @@ export class ContentCompositionsService {
         version: composition.version,
         blockSeparator: composition.blockSeparator,
         fallbacks: parseFallbacks(composition.fallbacks),
+        marketingBrief: parseMarketingBrief(composition.marketingBrief),
+        personalizationPlacement: composition.personalizationPlacement,
+        combinationMode: composition.combinationMode,
       },
       variants: enabledOnly.map((v) => ({
         id: v.id,
@@ -970,9 +1209,25 @@ export class ContentCompositionsService {
         requiresVariables: Array.isArray(v.requiresVariables)
           ? (v.requiresVariables as string[])
           : variantRequiresVariables(v.text),
+        generationSetId: v.generationSetId,
+        tone: v.tone,
+        formality: v.formality,
+        personalizationPlacement: v.personalizationPlacement,
+        marketingAngle: v.marketingAngle,
+        compatibleGroup: v.compatibleGroup,
       })),
       approvedAt,
       approvedByUserId,
+      aiMeta: {
+        promptVersion: CONTENT_PROMPT_VERSION,
+        approvedSetIds: [
+          ...new Set(
+            enabledOnly
+              .map((v) => v.generationSetId)
+              .filter((id): id is string => Boolean(id)),
+          ),
+        ],
+      },
     });
   }
 
@@ -990,6 +1245,43 @@ export class ContentCompositionsService {
     row: Prisma.ContentCompositionGetPayload<{ include: typeof compositionInclude }>,
   ) {
     const enabled = this.countEnabled(row.variants);
+    const brief = parseMarketingBrief(row.marketingBrief);
+    const setMap = groupVariantsByGenerationSet(row.variants);
+    const generationSets = [...setMap.entries()].map(([generationSetId, members]) => {
+      const greeting = members.find((m) => m.type === 'GREETING');
+      const body = members.find((m) => m.type === 'BODY');
+      const closing = members.find((m) => m.type === 'CLOSING');
+      const quality = assessEditorialQuality({
+        greeting: greeting?.text,
+        body: body?.text ?? '',
+        closing: closing?.text,
+        brief,
+      });
+      const coherenceAlerts = validateCompositionCoherence({
+        greeting: greeting?.text,
+        body: body?.text ?? '',
+        closing: closing?.text,
+        placement: isContentPersonalizationPlacement(row.personalizationPlacement)
+          ? row.personalizationPlacement
+          : 'GREETING',
+      });
+      return {
+        generationSetId,
+        marketingAngle: body?.marketingAngle ?? greeting?.marketingAngle ?? null,
+        reviewPending: members.some((m) => m.reviewPending),
+        enabled: members.every((m) => m.enabled),
+        greeting: greeting
+          ? { id: greeting.id, text: greeting.text, enabled: greeting.enabled }
+          : null,
+        body: body ? { id: body.id, text: body.text, enabled: body.enabled } : null,
+        closing: closing
+          ? { id: closing.id, text: closing.text, enabled: closing.enabled }
+          : null,
+        quality,
+        coherenceAlerts,
+      };
+    });
+
     return {
       id: row.id,
       organizationId: row.organizationId,
@@ -999,19 +1291,33 @@ export class ContentCompositionsService {
       version: row.version,
       blockSeparator: row.blockSeparator,
       fallbacks: parseFallbacks(row.fallbacks),
+      marketingBrief: brief,
+      marketingBriefHints: marketingBriefQualityHints(brief),
+      personalizationPlacement: row.personalizationPlacement,
+      combinationMode: row.combinationMode,
       approvedAt: row.approvedAt,
       approvedByUserId: row.approvedByUserId,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       counts: {
         ...enabled,
-        theoreticalCombinations: countTheoreticalCombinations({
-          greetingCount: enabled.GREETING,
-          bodyCount: enabled.BODY,
-          closingCount: enabled.CLOSING,
-        }),
+        theoreticalCombinations:
+          row.combinationMode === 'LOCKED_SETS'
+            ? Math.max(
+                1,
+                [...setMap.keys()].filter((id) => {
+                  const m = setMap.get(id) ?? [];
+                  return m.some((v) => v.type === 'BODY' && v.enabled);
+                }).length || enabled.BODY,
+              )
+            : countTheoreticalCombinations({
+                greetingCount: enabled.GREETING,
+                bodyCount: enabled.BODY,
+                closingCount: enabled.CLOSING,
+              }),
       },
       aiEnabled: isContentAiEnabled(),
+      generationSets,
       variants: row.variants.map((v) => ({
         id: v.id,
         type: v.type,
@@ -1026,6 +1332,12 @@ export class ContentCompositionsService {
         reviewPending: v.reviewPending,
         aiGenerationId: v.aiGenerationId,
         aiSummaryOfChanges: v.aiSummaryOfChanges,
+        generationSetId: v.generationSetId,
+        tone: v.tone,
+        formality: v.formality,
+        personalizationPlacement: v.personalizationPlacement,
+        marketingAngle: v.marketingAngle,
+        compatibleGroup: v.compatibleGroup,
         variablesDetected: extractContentVariableKeys(v.text),
         createdAt: v.createdAt,
         updatedAt: v.updatedAt,
@@ -1042,12 +1354,16 @@ export class ContentCompositionsService {
     }
   }
 
-  private async callContentAi(input: {
+  private async callContentAiMarketing(input: {
+    mode: ContentAiGenerationMode;
     baseText: string;
-    objective: string;
-    tone: string;
-    maxChars: number;
+    brief: ContentMarketingBrief;
     campaignName: string;
+    existingBlocks?: {
+      greetings: string[];
+      bodies: string[];
+      closings: string[];
+    };
     model: string;
     apiKey: string;
     baseUrl: string;
@@ -1056,22 +1372,60 @@ export class ContentCompositionsService {
     maxInputChars: number;
   }): Promise<unknown> {
     const allowed = CONTENT_VARIABLE_CATALOG.map((v) => v.token).join(', ');
-    const baseClipped = input.baseText.slice(0, input.maxInputChars);
+    const placement = input.brief.personalizationPlacement ?? 'GREETING';
+    const placementRules =
+      placement === 'GREETING'
+        ? '{{firstName}} apenas na saudacao; corpo e fechamento sem nome.'
+        : placement === 'BODY'
+          ? 'Saudacao neutra; {{firstName}} no corpo no maximo uma vez; fechamento neutro.'
+          : 'Nenhuma variante usa variavel de nome.';
+
+    const wantsSets =
+      input.mode === 'FULL_SETS' || input.mode === 'IMPROVE_CURRENT';
     const system = [
-      'Voce gera ate 3 variacoes textuais de mensagem WhatsApp.',
-      'Responda SOMENTE JSON valido no formato {"variants":[{"text":"...","summaryOfChanges":"...","preservedFacts":true}]}',
-      'Nao invente preco, desconto, prazo, garantia, condicao comercial, link ou escassez.',
-      'Nao adicione dados pessoais. Preserve fatos, oferta, CTA e idioma.',
-      `Variaveis permitidas: ${allowed}. Nao invente outras.`,
-      'Nao descreva isto como anti-spam ou anti-ban.',
+      'Voce e redatora de comunicacao comercial responsavel para WhatsApp.',
+      'Crie texto claro, relevante ao publico, com beneficio concreto e CTA simples.',
+      'Nao invente preco, desconto, prazo, garantia, link, escassez ou promessas.',
+      'Nao infira dados sensiveis (saude, religiao, raca, orientacao, politica, renda).',
+      'Nao finja conhecimento individual do destinatario alem das variaveis permitidas.',
+      `Variaveis permitidas: ${allowed}.`,
+      `Posicionamento da personalizacao: ${placement}. ${placementRules}`,
+      'Caracteristicas de candidato no briefing sao CONTEXTO COLETIVO do publico, nao dados individuais.',
+      wantsSets
+        ? 'Responda SOMENTE JSON: {"sets":[{"greeting":{"text":"...","requiresVariables":[]},"body":{"text":"..."},"closing":{"text":"..."},"marketingAngle":"...","summaryOfChanges":"...","preservedFacts":true,"protectedFactsUsed":[],"warnings":[]}]}'
+        : 'Responda SOMENTE JSON: {"variants":[{"text":"...","summaryOfChanges":"...","preservedFacts":true}]} (bloco unico conforme o modo).',
+      `promptVersion=${CONTENT_PROMPT_VERSION}`,
     ].join(' ');
-    const user = [
-      `Objetivo: ${input.objective}`,
-      `Tom: ${input.tone}`,
-      `Limite aproximado de caracteres: ${input.maxChars}`,
-      `Contexto de campanha autorizado (nome): ${input.campaignName}`,
-      `Mensagem-base:\n${baseClipped}`,
-    ].join('\n');
+
+    const protectedFacts = (input.brief.protectedFacts ?? []).join(' | ');
+    const userParts = [
+      `Modo: ${input.mode}`,
+      `Campanha: ${input.campaignName}`,
+      `Objetivo: ${input.brief.objective ?? ''}`,
+      `Oferta: ${input.brief.offerName ?? ''} — ${input.brief.offerDescription ?? ''}`,
+      `Publico: ${input.brief.targetAudience ?? ''}`,
+      `Caracteristicas do candidato (coletivo): ${input.brief.candidateCharacteristics ?? ''}`,
+      `Contexto coletivo: ${JSON.stringify(input.brief.collectiveContext ?? {})}`,
+      `Dores: ${input.brief.painPoints ?? ''}`,
+      `Beneficio principal: ${input.brief.primaryBenefit ?? ''}`,
+      `Beneficios secundarios: ${input.brief.secondaryBenefits ?? ''}`,
+      `Diferenciais: ${input.brief.differentiators ?? ''}`,
+      `CTA: ${input.brief.callToAction ?? ''}`,
+      `Tom: ${input.brief.tone ?? ''}; Formalidade: ${input.brief.formality ?? ''}`,
+      `Idioma: ${input.brief.language ?? 'pt-BR'}`,
+      `MaxLength: ${input.brief.maxLength ?? 800}`,
+      `Fatos protegidos (preservar): ${protectedFacts}`,
+      `Proibicoes: ${(input.brief.forbiddenClaims ?? []).join(' | ')}`,
+      `Instrucoes: ${input.brief.additionalInstructions ?? ''}`,
+      `Mensagem-base BODY:\n${input.baseText.slice(0, input.maxInputChars)}`,
+    ];
+    if (input.existingBlocks) {
+      userParts.push(
+        `Blocos atuais greeting: ${JSON.stringify(input.existingBlocks.greetings)}`,
+        `Blocos atuais body: ${JSON.stringify(input.existingBlocks.bodies)}`,
+        `Blocos atuais closing: ${JSON.stringify(input.existingBlocks.closings)}`,
+      );
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), input.timeoutMs);
@@ -1088,7 +1442,7 @@ export class ContentCompositionsService {
           response_format: { type: 'json_object' },
           messages: [
             { role: 'system', content: system },
-            { role: 'user', content: user },
+            { role: 'user', content: userParts.join('\n') },
           ],
         }),
         signal: controller.signal,
@@ -1107,7 +1461,10 @@ export class ContentCompositionsService {
       }
       return JSON.parse(content) as unknown;
     } catch (error) {
-      if (error instanceof BadRequestException || error instanceof ServiceUnavailableException) {
+      if (
+        error instanceof BadRequestException ||
+        error instanceof ServiceUnavailableException
+      ) {
         throw error;
       }
       throw new ServiceUnavailableException(

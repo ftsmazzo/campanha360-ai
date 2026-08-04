@@ -12,6 +12,7 @@ import { AuthUser, CurrentUser } from '../auth/decorators/current-user.decorator
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ContentCompositionsService } from './content-compositions.service';
 import { ApproveCompositionDto } from './dto/approve-composition.dto';
+import { ApproveGenerationSetDto } from './dto/approve-generation-set.dto';
 import { CreateCompositionDto } from './dto/create-composition.dto';
 import { CreateVariantDto } from './dto/create-variant.dto';
 import { GenerateAiVariantsDto } from './dto/generate-ai-variants.dto';
@@ -132,6 +133,21 @@ export class ContentCompositionsController {
     @Param('compositionId') compositionId: string,
   ) {
     return this.service.markReadyForReview(user.id, campaignId, compositionId);
+  }
+
+  @Post(':compositionId/approve-set')
+  approveSet(
+    @CurrentUser() user: AuthUser,
+    @Param('campaignId') campaignId: string,
+    @Param('compositionId') compositionId: string,
+    @Body() dto: ApproveGenerationSetDto,
+  ) {
+    return this.service.approveGenerationSet(
+      user.id,
+      campaignId,
+      compositionId,
+      dto,
+    );
   }
 
   @Post(':compositionId/approve')

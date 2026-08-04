@@ -323,6 +323,10 @@ export function buildItemContentSnapshot(input: {
     contact: {
       name,
       companyName: extractCompanyFromContactSnapshot(input.contactSnapshot),
+      city:
+        typeof input.contactSnapshot.city === 'string'
+          ? input.contactSnapshot.city
+          : null,
     },
   });
 
@@ -337,6 +341,7 @@ export function buildItemContentSnapshot(input: {
     greetingVariantId: rendered.greetingVariantId,
     bodyVariantId: rendered.bodyVariantId,
     closingVariantId: rendered.closingVariantId,
+    generationSetId: rendered.generationSetId,
     contentCompositionVersion: input.composition.compositionVersion,
     renderedTextHash: rendered.renderedTextHash,
     personalizationStatus: rendered.personalizationStatus,

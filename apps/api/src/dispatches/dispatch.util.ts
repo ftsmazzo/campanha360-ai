@@ -23,6 +23,7 @@ export type DispatchItemContentSnapshot = DispatchContentSnapshot & {
   greetingVariantId?: string | null;
   bodyVariantId?: string | null;
   closingVariantId?: string | null;
+  generationSetId?: string | null;
   contentCompositionVersion?: number | null;
   renderedTextHash?: string | null;
   personalizationStatus?: 'FULL' | 'PARTIAL' | 'NONE' | 'BLOCKED' | null;

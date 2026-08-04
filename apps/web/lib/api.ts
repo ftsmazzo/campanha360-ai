@@ -2830,9 +2830,59 @@ export type ContentVariantItem = {
   reviewPending: boolean;
   aiGenerationId: string | null;
   aiSummaryOfChanges: string | null;
+  generationSetId?: string | null;
+  tone?: string | null;
+  formality?: string | null;
+  personalizationPlacement?: string | null;
+  marketingAngle?: string | null;
+  compatibleGroup?: string | null;
   variablesDetected: string[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type ContentMarketingBrief = {
+  objective?: string | null;
+  offerName?: string | null;
+  offerDescription?: string | null;
+  targetAudience?: string | null;
+  candidateCharacteristics?: string | null;
+  painPoints?: string | null;
+  primaryBenefit?: string | null;
+  secondaryBenefits?: string | null;
+  differentiators?: string | null;
+  callToAction?: string | null;
+  tone?: string | null;
+  formality?: string | null;
+  language?: string | null;
+  maxLength?: number | null;
+  protectedFacts?: string[] | null;
+  forbiddenClaims?: string[] | null;
+  personalizationPlacement?: 'GREETING' | 'BODY' | 'NONE' | null;
+  additionalInstructions?: string | null;
+};
+
+export type ContentGenerationSetCard = {
+  generationSetId: string;
+  marketingAngle: string | null;
+  reviewPending: boolean;
+  enabled: boolean;
+  greeting: { id: string; text: string; enabled: boolean } | null;
+  body: { id: string; text: string; enabled: boolean } | null;
+  closing: { id: string; text: string; enabled: boolean } | null;
+  quality: {
+    clarityScore: number;
+    relevanceScore: number;
+    specificityScore: number;
+    callToActionScore: number;
+    personalizationScore: number;
+    riskWarnings: string[];
+  };
+  coherenceAlerts: Array<{
+    code: string;
+    blocking: boolean;
+    message: string;
+  }>;
 };
 
 export type ContentCompositionItem = {
@@ -2844,6 +2894,13 @@ export type ContentCompositionItem = {
   version: number;
   blockSeparator: string;
   fallbacks: Record<string, string>;
+  marketingBrief?: ContentMarketingBrief;
+  marketingBriefHints?: {
+    missingRecommended: string[];
+    readyForGeneration: boolean;
+  };
+  personalizationPlacement?: string;
+  combinationMode?: string;
   approvedAt: string | null;
   approvedByUserId: string | null;
   createdAt: string;
@@ -2855,6 +2912,7 @@ export type ContentCompositionItem = {
     theoreticalCombinations: number;
   };
   aiEnabled: boolean;
+  generationSets?: ContentGenerationSetCard[];
   variants: ContentVariantItem[];
 };
 
@@ -2890,9 +2948,12 @@ export type ContentCompositionPreviewResult = {
     greetingVariantId: string | null;
     bodyVariantId: string;
     closingVariantId: string | null;
+    generationSetId?: string | null;
     renderedText: string;
     renderedTextHash: string;
     personalizationStatus: string;
+    personalizationPlacement?: string | null;
+    coherenceAlerts?: Array<{ code: string; blocking: boolean; message: string }>;
     resolvedVariables: Record<string, string>;
     missingVariables: string[];
     usedFallbacks: string[];
@@ -2964,6 +3025,9 @@ export function updateContentComposition(
     name?: string;
     blockSeparator?: string;
     fallbacks?: Record<string, string>;
+    marketingBrief?: ContentMarketingBrief;
+    personalizationPlacement?: 'GREETING' | 'BODY' | 'NONE';
+    combinationMode?: 'LOCKED_SETS' | 'MIX_AND_MATCH';
   },
 ) {
   return request<ContentCompositionItem>(
@@ -3027,11 +3091,35 @@ export function generateContentAiVariants(
   token: string,
   campaignId: string,
   compositionId: string,
-  payload?: { objective?: string; tone?: string; maxChars?: number },
+  payload?: {
+    mode?:
+      | 'FULL_SETS'
+      | 'GREETING_ONLY'
+      | 'BODY_ONLY'
+      | 'CLOSING_ONLY'
+      | 'IMPROVE_CURRENT';
+    objective?: string;
+    tone?: string;
+    maxChars?: number;
+    requireRecommendedBrief?: boolean;
+  },
 ) {
   return request<ContentCompositionItem>(
     `/campaigns/${campaignId}/content-compositions/${compositionId}/generate-ai`,
     { method: 'POST', body: JSON.stringify(payload ?? {}) },
+    token,
+  );
+}
+
+export function approveContentGenerationSet(
+  token: string,
+  campaignId: string,
+  compositionId: string,
+  payload: { generationSetId: string; enable?: boolean },
+) {
+  return request<ContentCompositionItem>(
+    `/campaigns/${campaignId}/content-compositions/${compositionId}/approve-set`,
+    { method: 'POST', body: JSON.stringify(payload) },
     token,
   );
 }

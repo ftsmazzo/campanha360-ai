@@ -20,7 +20,13 @@ export const CONTENT_VARIABLE_CATALOG = [
     key: 'companyName',
     token: '{{companyName}}',
     label: 'Empresa',
-    description: 'Empresa do contato, quando disponivel',
+    description: 'Empresa do contato, quando disponivel em metadata',
+  },
+  {
+    key: 'city',
+    token: '{{city}}',
+    label: 'Cidade',
+    description: 'Cidade do contato (Contact.city)',
   },
 ] as const;
 
@@ -39,6 +45,7 @@ export const CONTENT_LIMITS = {
   FIRST_NAME_MAX_CHARS: 40,
   BLOCK_SEPARATOR_DEFAULT: '\n\n',
   SELECTION_ALGORITHM_VERSION: 'v1-sha256-mod',
+  SELECTION_ALGORITHM_VERSION_LOCKED_SETS: 'v2-locked-sets-sha256-mod',
 } as const;
 
 const ALLOWED_KEYS = new Set<string>(
@@ -96,6 +103,7 @@ export type ContactVariableContext = {
   name?: string | null;
   companyName?: string | null;
   company?: string | null;
+  city?: string | null;
 };
 
 export type ResolvedVariableMap = Partial<Record<ContentVariableKey, string>>;
@@ -108,10 +116,13 @@ export function buildResolvedVariables(
   const company =
     (contact.companyName || contact.company || '').trim().replace(/\s+/g, ' ') ||
     null;
+  const city =
+    (contact.city || '').trim().replace(/\s+/g, ' ').slice(0, 80) || null;
   const out: ResolvedVariableMap = {};
   if (first) out.firstName = first;
   if (full) out.fullName = full;
   if (company) out.companyName = company.slice(0, 80);
+  if (city) out.city = city;
   return out;
 }
 

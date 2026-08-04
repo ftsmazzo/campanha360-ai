@@ -14,6 +14,7 @@ import {
   ContentVariantItem,
   ContentVariantType,
   approveContentComposition,
+  approveContentGenerationSet,
   clearStoredToken,
   createContentVariant,
   deleteContentVariant,
@@ -26,6 +27,7 @@ import {
   previewContentComposition,
   updateContentComposition,
   updateContentVariant,
+  type ContentMarketingBrief,
 } from '../../../../../../lib/api';
 import {
   canApproveRole,
@@ -50,7 +52,23 @@ const VARIABLE_CHIPS = [
   { label: 'Nome', token: '{{firstName}}' },
   { label: 'Nome completo', token: '{{fullName}}' },
   { label: 'Empresa', token: '{{companyName}}' },
+  { label: 'Cidade', token: '{{city}}' },
 ];
+
+const EMPTY_BRIEF: ContentMarketingBrief = {
+  objective: '',
+  offerDescription: '',
+  targetAudience: '',
+  candidateCharacteristics: '',
+  painPoints: '',
+  primaryBenefit: '',
+  differentiators: '',
+  callToAction: '',
+  tone: 'profissional e natural',
+  protectedFacts: [],
+  additionalInstructions: '',
+  personalizationPlacement: 'GREETING',
+};
 
 export default function ContentCompositionEditorPage() {
   const router = useRouter();
@@ -74,6 +92,10 @@ export default function ContentCompositionEditorPage() {
   const [preview, setPreview] = useState<ContentCompositionPreviewResult | null>(
     null,
   );
+  const [brief, setBrief] = useState<ContentMarketingBrief>(EMPTY_BRIEF);
+  const [combinationMode, setCombinationMode] = useState<
+    'LOCKED_SETS' | 'MIX_AND_MATCH'
+  >('LOCKED_SETS');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +140,17 @@ export default function ContentCompositionEditorPage() {
       item.variants.find((v) => v.type === 'BODY' && v.source === 'BASE') ??
       null;
     setBaseText(base?.text ?? '');
+    setBrief({
+      ...EMPTY_BRIEF,
+      ...(item.marketingBrief ?? {}),
+      personalizationPlacement:
+        (item.personalizationPlacement as ContentMarketingBrief['personalizationPlacement']) ||
+        item.marketingBrief?.personalizationPlacement ||
+        'GREETING',
+    });
+    setCombinationMode(
+      item.combinationMode === 'MIX_AND_MATCH' ? 'MIX_AND_MATCH' : 'LOCKED_SETS',
+    );
   }
 
   useEffect(() => {
@@ -284,16 +317,79 @@ export default function ContentCompositionEditorPage() {
     }
   }
 
-  async function onGenerateAi() {
+  async function onGenerateAi(
+    mode:
+      | 'FULL_SETS'
+      | 'GREETING_ONLY'
+      | 'BODY_ONLY'
+      | 'CLOSING_ONLY' = 'FULL_SETS',
+  ) {
     if (!editable || !composition?.aiEnabled) return;
     const updated = await withToken((token) =>
-      generateContentAiVariants(token, campaignId, compositionId, {}),
+      generateContentAiVariants(token, campaignId, compositionId, {
+        mode,
+        requireRecommendedBrief: mode === 'FULL_SETS',
+      }),
     );
     if (updated) {
       applyComposition(updated);
       setSuccess(
-        'Sugestoes de IA geradas (desativadas ate revisao). Nenhuma mensagem foi enviada.',
+        mode === 'FULL_SETS'
+          ? '3 mensagens completas geradas (revisao pendente). Nada foi enviado.'
+          : 'Sugestoes de IA geradas (desativadas ate revisao).',
       );
+    }
+  }
+
+  async function onSaveBrief() {
+    if (!editable) return;
+    const updated = await withToken((token) =>
+      updateContentComposition(token, campaignId, compositionId, {
+        marketingBrief: {
+          ...brief,
+          protectedFacts: (brief.protectedFacts ?? [])
+            .map((l) => String(l).trim())
+            .filter(Boolean),
+        },
+        personalizationPlacement: brief.personalizationPlacement ?? 'GREETING',
+        combinationMode,
+      }),
+    );
+    if (updated) {
+      applyComposition(updated);
+      setSuccess('Contexto da IA salvo.');
+    }
+  }
+
+  async function onApproveSet(generationSetId: string) {
+    if (!editable) return;
+    const updated = await withToken((token) =>
+      approveContentGenerationSet(token, campaignId, compositionId, {
+        generationSetId,
+        enable: true,
+      }),
+    );
+    if (updated) {
+      applyComposition(updated);
+      setSuccess('Conjunto aprovado e ativado.');
+    }
+  }
+
+  async function onDiscardSet(generationSetId: string) {
+    if (!editable || !composition) return;
+    if (!window.confirm('Descartar este conjunto gerado?')) return;
+    const members = composition.variants.filter(
+      (v) => v.generationSetId === generationSetId,
+    );
+    let updated: ContentCompositionItem | null = composition;
+    for (const member of members) {
+      updated = await withToken((token) =>
+        deleteContentVariant(token, campaignId, compositionId, member.id),
+      );
+    }
+    if (updated) {
+      applyComposition(updated);
+      setSuccess('Conjunto descartado.');
     }
   }
 
@@ -565,27 +661,231 @@ export default function ContentCompositionEditorPage() {
             </div>
 
             <section className="rounded-md border border-[#deddd4] bg-white p-4">
+              <h3 className="font-semibold text-[#151515]">Contexto para a IA</h3>
+              <p className="mt-1 text-sm text-[#65655f]">
+                Caracteristicas do candidato sao contexto coletivo do publico —
+                nao dados individuais do contato.
+              </p>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                {(
+                  [
+                    ['objective', 'Objetivo'],
+                    ['offerDescription', 'O que esta sendo oferecido'],
+                    ['targetAudience', 'Publico/candidato'],
+                    ['candidateCharacteristics', 'Caracteristicas relevantes'],
+                    ['painPoints', 'Dores e necessidades'],
+                    ['primaryBenefit', 'Beneficio principal'],
+                    ['differentiators', 'Diferenciais'],
+                    ['callToAction', 'Chamada para acao'],
+                    ['tone', 'Tom'],
+                    ['additionalInstructions', 'Instrucoes adicionais'],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label key={key} className="block text-sm">
+                    <span className="text-[#65655f]">{label}</span>
+                    <textarea
+                      className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
+                      rows={key === 'offerDescription' || key === 'additionalInstructions' ? 3 : 2}
+                      value={String(brief[key] ?? '')}
+                      disabled={!editable || busy}
+                      onChange={(e) =>
+                        setBrief((b) => ({ ...b, [key]: e.target.value }))
+                      }
+                    />
+                  </label>
+                ))}
+                <label className="block text-sm md:col-span-2">
+                  <span className="text-[#65655f]">
+                    Fatos que nao podem ser alterados (um por linha)
+                  </span>
+                  <textarea
+                    className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
+                    rows={3}
+                    value={(brief.protectedFacts ?? []).join('\n')}
+                    disabled={!editable || busy}
+                    onChange={(e) =>
+                      setBrief((b) => ({
+                        ...b,
+                        protectedFacts: e.target.value.split('\n'),
+                      }))
+                    }
+                  />
+                </label>
+                <label className="block text-sm">
+                  <span className="text-[#65655f]">Local da personalizacao</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
+                    value={brief.personalizationPlacement ?? 'GREETING'}
+                    disabled={!editable || busy}
+                    onChange={(e) =>
+                      setBrief((b) => ({
+                        ...b,
+                        personalizationPlacement: e.target
+                          .value as ContentMarketingBrief['personalizationPlacement'],
+                      }))
+                    }
+                  >
+                    <option value="GREETING">Saudacao (padrao)</option>
+                    <option value="BODY">Corpo</option>
+                    <option value="NONE">Sem nome</option>
+                  </select>
+                </label>
+                <label className="block text-sm">
+                  <span className="text-[#65655f]">Modo de combinacao</span>
+                  <select
+                    className="mt-1 w-full rounded-md border border-[#c9c8c0] px-2 py-1.5 text-sm"
+                    value={combinationMode}
+                    disabled={!editable || busy}
+                    onChange={(e) =>
+                      setCombinationMode(
+                        e.target.value as 'LOCKED_SETS' | 'MIX_AND_MATCH',
+                      )
+                    }
+                  >
+                    <option value="LOCKED_SETS">Conjuntos travados (IA)</option>
+                    <option value="MIX_AND_MATCH">Misturar variantes</option>
+                  </select>
+                  {combinationMode === 'MIX_AND_MATCH' ? (
+                    <span className="mt-1 block text-xs text-[#8a5a00]">
+                      Mistura exige validacao de coerencia. Prefira conjuntos
+                      travados para mensagens geradas por IA.
+                    </span>
+                  ) : null}
+                </label>
+              </div>
+              {editable ? (
+                <button
+                  type="button"
+                  className="mt-3 rounded-md border border-[#c9c8c0] px-3 py-1.5 text-sm font-medium text-[#24382b] disabled:opacity-60"
+                  disabled={busy}
+                  onClick={onSaveBrief}
+                >
+                  Salvar contexto
+                </button>
+              ) : null}
+            </section>
+
+            <section className="rounded-md border border-[#deddd4] bg-white p-4">
               <h3 className="font-semibold text-[#151515]">Geracao com IA</h3>
               <p className="mt-1 text-sm text-[#65655f]">
-                A IA apenas sugere variacoes do corpo. Nada e enviado
-                automaticamente.
+                A IA sugere mensagens completas coerentes. Nada e enviado
+                automaticamente. Aprovacao humana e obrigatoria.
               </p>
-              <button
-                type="button"
-                className="mt-3 rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-                disabled={!editable || busy || !composition.aiEnabled}
-                onClick={onGenerateAi}
-              >
-                Gerar 3 variacoes com IA
-              </button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                  disabled={!editable || busy || !composition.aiEnabled}
+                  onClick={() => onGenerateAi('FULL_SETS')}
+                >
+                  Gerar 3 mensagens completas
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm disabled:opacity-60"
+                  disabled={!editable || busy || !composition.aiEnabled}
+                  onClick={() => onGenerateAi('GREETING_ONLY')}
+                >
+                  So saudações
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm disabled:opacity-60"
+                  disabled={!editable || busy || !composition.aiEnabled}
+                  onClick={() => onGenerateAi('BODY_ONLY')}
+                >
+                  So corpos
+                </button>
+                <button
+                  type="button"
+                  className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm disabled:opacity-60"
+                  disabled={!editable || busy || !composition.aiEnabled}
+                  onClick={() => onGenerateAi('CLOSING_ONLY')}
+                >
+                  So fechamentos
+                </button>
+              </div>
               {!composition.aiEnabled ? (
                 <p className="mt-2 text-sm text-[#8a5a00]">
                   Geracao por IA indisponivel (CONTENT_AI_ENABLED=false). O
                   editor manual continua disponivel.
-                  {catalog?.ai?.model
-                    ? ` Modelo configurado: ${catalog.ai.model}.`
-                    : ''}
                 </p>
+              ) : null}
+
+              {(composition.generationSets ?? []).length > 0 ? (
+                <div className="mt-4 space-y-3">
+                  <h4 className="text-sm font-semibold text-[#24382b]">
+                    Conjuntos gerados
+                  </h4>
+                  {composition.generationSets!.map((set, index) => (
+                    <div
+                      key={set.generationSetId}
+                      className="rounded-md border border-[#ebeae3] bg-[#fafaf7] p-3 text-sm"
+                    >
+                      <p className="font-medium text-[#24382b]">
+                        Mensagem {index + 1}
+                        {set.marketingAngle
+                          ? ` — ${set.marketingAngle}`
+                          : ''}
+                        {set.enabled ? ' (ativa)' : ' (revisao pendente)'}
+                      </p>
+                      {set.greeting ? (
+                        <p className="mt-2">
+                          <span className="text-[#65655f]">Saudacao:</span>{' '}
+                          {set.greeting.text}
+                        </p>
+                      ) : null}
+                      {set.body ? (
+                        <p className="mt-1">
+                          <span className="text-[#65655f]">Corpo:</span>{' '}
+                          {set.body.text}
+                        </p>
+                      ) : null}
+                      {set.closing ? (
+                        <p className="mt-1">
+                          <span className="text-[#65655f]">Fechamento:</span>{' '}
+                          {set.closing.text}
+                        </p>
+                      ) : null}
+                      {set.coherenceAlerts?.length ? (
+                        <ul className="mt-2 list-disc pl-5 text-xs text-[#8a5a00]">
+                          {set.coherenceAlerts.map((a) => (
+                            <li key={`${set.generationSetId}-${a.code}`}>
+                              {a.message}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {set.quality?.riskWarnings?.length ? (
+                        <p className="mt-1 text-xs text-[#65655f]">
+                          Alertas editoriais: {set.quality.riskWarnings.join('; ')}
+                        </p>
+                      ) : null}
+                      {editable ? (
+                        <div className="mt-3 flex gap-2">
+                          {!set.enabled ? (
+                            <button
+                              type="button"
+                              className="rounded-md bg-[#24382b] px-3 py-1 text-xs font-semibold text-white"
+                              disabled={busy}
+                              onClick={() => onApproveSet(set.generationSetId)}
+                            >
+                              Aprovar conjunto
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            className="rounded-md border border-[#c9c8c0] px-3 py-1 text-xs"
+                            disabled={busy}
+                            onClick={() => onDiscardSet(set.generationSetId)}
+                          >
+                            Descartar
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
               ) : null}
             </section>
 

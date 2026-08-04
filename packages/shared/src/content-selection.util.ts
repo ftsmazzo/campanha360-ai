@@ -14,6 +14,15 @@ import {
   type ContentVariableKey,
   type RenderContentResult,
 } from './content-variables.util';
+import {
+  validateCompositionCoherence,
+  type CoherenceAlert,
+} from './content-coherence.util';
+import type {
+  ContentCombinationMode,
+  ContentMarketingBrief,
+  ContentPersonalizationPlacement,
+} from './content-marketing.util';
 
 export type ContentVariantType = 'BODY' | 'GREETING' | 'CLOSING';
 export type ContentVariantSource = 'MANUAL' | 'AI_GENERATED' | 'BASE';
@@ -26,6 +35,12 @@ export type ContentVariantLike = {
   order: number;
   requiresVariables?: string[] | null;
   normalizedTextHash?: string | null;
+  generationSetId?: string | null;
+  tone?: string | null;
+  formality?: string | null;
+  personalizationPlacement?: ContentPersonalizationPlacement | null;
+  marketingAngle?: string | null;
+  compatibleGroup?: string | null;
 };
 
 export type ContentCompositionSnapshotV1 = {
@@ -39,6 +54,9 @@ export type ContentCompositionSnapshotV1 = {
   approvedByUserId: string;
   allowedVariables: ContentVariableKey[];
   fallbacks: Partial<Record<ContentVariableKey, string>>;
+  combinationMode?: ContentCombinationMode;
+  personalizationPlacement?: ContentPersonalizationPlacement;
+  marketingBrief?: ContentMarketingBrief | null;
   variants: Array<{
     id: string;
     type: ContentVariantType;
@@ -48,12 +66,20 @@ export type ContentCompositionSnapshotV1 = {
     enabled: boolean;
     order: number;
     requiresVariables: string[];
+    generationSetId?: string | null;
+    tone?: string | null;
+    formality?: string | null;
+    personalizationPlacement?: ContentPersonalizationPlacement | null;
+    marketingAngle?: string | null;
+    compatibleGroup?: string | null;
   }>;
   compositionSnapshotHash: string;
   aiMeta?: {
     model?: string | null;
     generatedAt?: string | null;
     variantCount?: number;
+    promptVersion?: string | null;
+    approvedSetIds?: string[];
   } | null;
 };
 
@@ -83,7 +109,10 @@ export function computeCompositionSnapshotHash(
     compositionVersion: snapshot.compositionVersion,
     blockSeparator: snapshot.blockSeparator,
     selectionAlgorithmVersion: snapshot.selectionAlgorithmVersion,
+    combinationMode: snapshot.combinationMode ?? 'MIX_AND_MATCH',
+    personalizationPlacement: snapshot.personalizationPlacement ?? 'GREETING',
     fallbacks: snapshot.fallbacks,
+    marketingBrief: snapshot.marketingBrief ?? null,
     variants: snapshot.variants
       .map((v) => ({
         id: v.id,
@@ -92,6 +121,8 @@ export function computeCompositionSnapshotHash(
         enabled: v.enabled,
         order: v.order,
         requiresVariables: v.requiresVariables,
+        generationSetId: v.generationSetId ?? null,
+        compatibleGroup: v.compatibleGroup ?? null,
       }))
       .sort((a, b) => a.id.localeCompare(b.id)),
   });
@@ -163,12 +194,14 @@ export type SelectedCompositionResult = {
   greetingVariantId: string | null;
   bodyVariantId: string;
   closingVariantId: string | null;
+  generationSetId: string | null;
   renderedText: string;
   renderedTextHash: string;
   personalizationStatus: 'FULL' | 'PARTIAL' | 'NONE' | 'BLOCKED';
   missingVariables: string[];
   usedFallbacks: string[];
   selectionSeedVersion: string;
+  coherenceAlerts: CoherenceAlert[];
   render: RenderContentResult;
   valid: boolean;
   errors: string[];
@@ -181,13 +214,18 @@ export function selectAndRenderComposition(input: {
   contactId?: string | null;
   contact: ContactVariableContext;
 }): SelectedCompositionResult {
+  const mode = input.snapshot.combinationMode ?? 'MIX_AND_MATCH';
   const selectionSeedVersion =
-    input.snapshot.selectionAlgorithmVersion ||
-    CONTENT_LIMITS.SELECTION_ALGORITHM_VERSION;
-  const enabled = input.snapshot.variants.filter((v) => v.enabled);
+    mode === 'LOCKED_SETS'
+      ? CONTENT_LIMITS.SELECTION_ALGORITHM_VERSION_LOCKED_SETS
+      : input.snapshot.selectionAlgorithmVersion ||
+        CONTENT_LIMITS.SELECTION_ALGORITHM_VERSION;
 
-  const pickEligible = (type: ContentVariantType) =>
-    enabled
+  const enabled = input.snapshot.variants.filter((v) => v.enabled);
+  const errors: string[] = [];
+
+  const pickEligible = (type: ContentVariantType, pool = enabled) =>
+    pool
       .filter((v) => v.type === type)
       .filter((v) =>
         isVariantEligibleForContact({
@@ -198,58 +236,112 @@ export function selectAndRenderComposition(input: {
       )
       .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
 
-  const greetings = pickEligible('GREETING');
-  const bodies = pickEligible('BODY');
-  const closings = pickEligible('CLOSING');
+  let greetingVariantId: string | null = null;
+  let bodyVariantId: string | undefined;
+  let closingVariantId: string | null = null;
+  let generationSetId: string | null = null;
 
-  const errors: string[] = [];
-  if (bodies.length === 0) {
-    errors.push('NENHUM_BODY_ELEGIVEL');
+  if (mode === 'LOCKED_SETS') {
+    const setIds = [
+      ...new Set(
+        enabled
+          .map((v) => v.generationSetId?.trim())
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ].sort();
+
+    const eligibleSetIds = setIds.filter((setId) => {
+      const members = enabled.filter((v) => v.generationSetId === setId);
+      const body = members.find((v) => v.type === 'BODY');
+      if (!body) return false;
+      return members.every((v) =>
+        isVariantEligibleForContact({
+          text: v.text,
+          requiresVariables: v.requiresVariables,
+          contact: input.contact,
+        }),
+      );
+    });
+
+    if (eligibleSetIds.length > 0) {
+      generationSetId = selectDeterministicContentVariant({
+        dispatchId: input.dispatchId,
+        dispatchItemId: input.dispatchItemId,
+        contactId: input.contactId,
+        contentSnapshotVersion: input.snapshot.compositionVersion,
+        eligibleVariantIds: eligibleSetIds,
+        slot: 'BODY',
+      });
+      const members = enabled.filter((v) => v.generationSetId === generationSetId);
+      const body = members.find((v) => v.type === 'BODY');
+      const greeting = members.find((v) => v.type === 'GREETING');
+      const closing = members.find((v) => v.type === 'CLOSING');
+      bodyVariantId = body?.id;
+      greetingVariantId = greeting?.id ?? null;
+      closingVariantId = closing?.id ?? null;
+    }
   }
 
-  const bodyVariantId =
-    selectDeterministicContentVariant({
+  if (!bodyVariantId) {
+    // MIX_AND_MATCH ou fallback sem sets
+    const greetings = pickEligible('GREETING');
+    const bodies = pickEligible('BODY');
+    const closings = pickEligible('CLOSING');
+    if (bodies.length === 0) errors.push('NENHUM_BODY_ELEGIVEL');
+
+    bodyVariantId =
+      selectDeterministicContentVariant({
+        dispatchId: input.dispatchId,
+        dispatchItemId: input.dispatchItemId,
+        contactId: input.contactId,
+        contentSnapshotVersion: input.snapshot.compositionVersion,
+        eligibleVariantIds: bodies.map((b) => b.id),
+        slot: 'BODY',
+      }) ?? bodies[0]?.id;
+
+    greetingVariantId = selectDeterministicContentVariant({
       dispatchId: input.dispatchId,
       dispatchItemId: input.dispatchItemId,
       contactId: input.contactId,
       contentSnapshotVersion: input.snapshot.compositionVersion,
-      eligibleVariantIds: bodies.map((b) => b.id),
-      slot: 'BODY',
-    }) ?? bodies[0]?.id;
+      eligibleVariantIds: greetings.map((g) => g.id),
+      slot: 'GREETING',
+    });
 
-  const greetingVariantId = selectDeterministicContentVariant({
-    dispatchId: input.dispatchId,
-    dispatchItemId: input.dispatchItemId,
-    contactId: input.contactId,
-    contentSnapshotVersion: input.snapshot.compositionVersion,
-    eligibleVariantIds: greetings.map((g) => g.id),
-    slot: 'GREETING',
-  });
+    closingVariantId = selectDeterministicContentVariant({
+      dispatchId: input.dispatchId,
+      dispatchItemId: input.dispatchItemId,
+      contactId: input.contactId,
+      contentSnapshotVersion: input.snapshot.compositionVersion,
+      eligibleVariantIds: closings.map((c) => c.id),
+      slot: 'CLOSING',
+    });
 
-  const closingVariantId = selectDeterministicContentVariant({
-    dispatchId: input.dispatchId,
-    dispatchItemId: input.dispatchItemId,
-    contactId: input.contactId,
-    contentSnapshotVersion: input.snapshot.compositionVersion,
-    eligibleVariantIds: closings.map((c) => c.id),
-    slot: 'CLOSING',
-  });
+    const bodyMeta = bodies.find((b) => b.id === bodyVariantId);
+    generationSetId = bodyMeta?.generationSetId ?? null;
+  }
 
-  const body = bodies.find((b) => b.id === bodyVariantId);
-  const greeting = greetings.find((g) => g.id === greetingVariantId);
-  const closing = closings.find((c) => c.id === closingVariantId);
+  const body = enabled.find((b) => b.id === bodyVariantId && b.type === 'BODY');
+  const greeting = greetingVariantId
+    ? enabled.find((g) => g.id === greetingVariantId)
+    : undefined;
+  const closing = closingVariantId
+    ? enabled.find((c) => c.id === closingVariantId)
+    : undefined;
 
   if (!body) {
     return {
       greetingVariantId: null,
       bodyVariantId: bodyVariantId ?? '',
       closingVariantId: null,
+      generationSetId: null,
       renderedText: '',
       renderedTextHash: '',
       personalizationStatus: 'BLOCKED',
       missingVariables: [],
       usedFallbacks: [],
       selectionSeedVersion,
+      coherenceAlerts: [],
       render: {
         renderedText: '',
         resolvedVariables: {},
@@ -261,6 +353,31 @@ export function selectAndRenderComposition(input: {
       valid: false,
       errors,
     };
+  }
+
+  const coherenceAlerts = validateCompositionCoherence({
+    greeting: greeting?.text,
+    body: body.text,
+    closing: closing?.text,
+    placement: input.snapshot.personalizationPlacement,
+  });
+  const blockingCoherence = coherenceAlerts.filter((a) => a.blocking);
+  if (blockingCoherence.length > 0) {
+    errors.push(...blockingCoherence.map((a) => a.code));
+  }
+
+  // MIX_AND_MATCH: formalidade incompativel
+  if (
+    mode === 'MIX_AND_MATCH' &&
+    greeting?.formality &&
+    body.formality &&
+    greeting.formality !== body.formality
+  ) {
+    coherenceAlerts.push({
+      code: 'INCOMPATIBLE_TONE',
+      blocking: false,
+      message: 'Formalidade da saudacao diverge do corpo',
+    });
   }
 
   const composedTemplate = composeMessageBlocks({
@@ -278,7 +395,7 @@ export function selectAndRenderComposition(input: {
 
   const allErrors = [...errors, ...render.errors];
   const personalizationStatus: SelectedCompositionResult['personalizationStatus'] =
-    !render.valid
+    !render.valid || blockingCoherence.length > 0
       ? 'BLOCKED'
       : render.usedFallbacks.length > 0
         ? 'PARTIAL'
@@ -290,12 +407,14 @@ export function selectAndRenderComposition(input: {
     greetingVariantId: greeting?.id ?? null,
     bodyVariantId: body.id,
     closingVariantId: closing?.id ?? null,
+    generationSetId,
     renderedText: render.renderedText,
     renderedTextHash: hashContentText(render.renderedText),
     personalizationStatus,
     missingVariables: render.missingVariables,
     usedFallbacks: render.usedFallbacks,
     selectionSeedVersion,
+    coherenceAlerts,
     render,
     valid: allErrors.length === 0 && Boolean(bodyVariantId),
     errors: allErrors,

@@ -5,11 +5,18 @@ import {
 } from '@prisma/client';
 import {
   CONTENT_LIMITS,
+  CONTENT_PROMPT_VERSION,
   CONTENT_VARIABLE_CATALOG,
   computeCompositionSnapshotHash,
   extractContentVariableKeys,
   isAllowedContentVariable,
+  isContentCombinationMode,
+  isContentPersonalizationPlacement,
+  parseMarketingBrief,
+  type ContentCombinationMode,
   type ContentCompositionSnapshotV1,
+  type ContentMarketingBrief,
+  type ContentPersonalizationPlacement,
   type ContentVariableKey,
 } from '@campanha360/shared';
 
@@ -75,6 +82,9 @@ export function buildCompositionSnapshotFromRows(input: {
     version: number;
     blockSeparator: string;
     fallbacks: Partial<Record<ContentVariableKey, string>>;
+    marketingBrief?: ContentMarketingBrief | null;
+    personalizationPlacement?: string | null;
+    combinationMode?: string | null;
   };
   variants: Array<{
     id: string;
@@ -85,10 +95,26 @@ export function buildCompositionSnapshotFromRows(input: {
     enabled: boolean;
     order: number;
     requiresVariables: string[];
+    generationSetId?: string | null;
+    tone?: string | null;
+    formality?: string | null;
+    personalizationPlacement?: string | null;
+    marketingAngle?: string | null;
+    compatibleGroup?: string | null;
   }>;
   approvedAt: Date;
   approvedByUserId: string;
+  aiMeta?: ContentCompositionSnapshotV1['aiMeta'];
 }): ContentCompositionSnapshotV1 {
+  const placement: ContentPersonalizationPlacement =
+    isContentPersonalizationPlacement(input.composition.personalizationPlacement)
+      ? input.composition.personalizationPlacement
+      : 'GREETING';
+  const combinationMode: ContentCombinationMode =
+    isContentCombinationMode(input.composition.combinationMode)
+      ? input.composition.combinationMode
+      : 'LOCKED_SETS';
+
   const withoutHash = {
     schemaVersion: 1 as const,
     compositionId: input.composition.id,
@@ -96,11 +122,19 @@ export function buildCompositionSnapshotFromRows(input: {
     name: input.composition.name,
     blockSeparator:
       input.composition.blockSeparator || CONTENT_LIMITS.BLOCK_SEPARATOR_DEFAULT,
-    selectionAlgorithmVersion: CONTENT_LIMITS.SELECTION_ALGORITHM_VERSION,
+    selectionAlgorithmVersion:
+      combinationMode === 'LOCKED_SETS'
+        ? CONTENT_LIMITS.SELECTION_ALGORITHM_VERSION_LOCKED_SETS
+        : CONTENT_LIMITS.SELECTION_ALGORITHM_VERSION,
     approvedAt: input.approvedAt.toISOString(),
     approvedByUserId: input.approvedByUserId,
     allowedVariables: CONTENT_VARIABLE_CATALOG.map((v) => v.key),
     fallbacks: input.composition.fallbacks,
+    combinationMode,
+    personalizationPlacement: placement,
+    marketingBrief: input.composition.marketingBrief
+      ? parseMarketingBrief(input.composition.marketingBrief)
+      : null,
     variants: input.variants.map((v) => ({
       id: v.id,
       type: v.type as ContentCompositionSnapshotV1['variants'][number]['type'],
@@ -110,7 +144,21 @@ export function buildCompositionSnapshotFromRows(input: {
       enabled: v.enabled,
       order: v.order,
       requiresVariables: v.requiresVariables.filter(isAllowedContentVariable),
+      generationSetId: v.generationSetId ?? null,
+      tone: v.tone ?? null,
+      formality: v.formality ?? null,
+      personalizationPlacement: isContentPersonalizationPlacement(
+        v.personalizationPlacement,
+      )
+        ? v.personalizationPlacement
+        : null,
+      marketingAngle: v.marketingAngle ?? null,
+      compatibleGroup: v.compatibleGroup ?? null,
     })),
+    aiMeta: {
+      promptVersion: CONTENT_PROMPT_VERSION,
+      ...(input.aiMeta ?? {}),
+    },
   };
   return {
     ...withoutHash,

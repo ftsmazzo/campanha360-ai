@@ -1092,6 +1092,12 @@ model ContentComposition {
   blockSeparator   String                    @default("\n\n")
   /** Fallbacks por variavel: { firstName?: string, ... } */
   fallbacks        Json?
+  /** Briefing de marketing para IA (09.7.2). */
+  marketingBrief   Json?
+  /** GREETING | BODY | NONE */
+  personalizationPlacement String            @default("GREETING")
+  /** LOCKED_SETS | MIX_AND_MATCH */
+  combinationMode  String                    @default("LOCKED_SETS")
   createdByUserId  String
   approvedByUserId String?
   approvedAt       DateTime?
@@ -1127,11 +1133,19 @@ model ContentVariant {
   reviewPending       Boolean              @default(false)
   aiGenerationId      String?
   aiSummaryOfChanges  String?
+  /** Conjunto coerente gerado pela IA (09.7.2). */
+  generationSetId     String?
+  tone                String?
+  formality           String?
+  personalizationPlacement String?
+  marketingAngle      String?
+  compatibleGroup     String?
   composition         ContentComposition   @relation(fields: [compositionId], references: [id], onDelete: Cascade)
   createdAt           DateTime             @default(now())
   updatedAt           DateTime             @updatedAt
 
   @@index([compositionId, type, enabled])
+  @@index([compositionId, generationSetId])
   @@index([organizationId, campaignId])
   @@index([normalizedTextHash])
 }

@@ -23,9 +23,12 @@ export function simulateContentDistribution(input: {
   const byBody: Record<string, number> = {};
   const byGreeting: Record<string, number> = {};
   const byClosing: Record<string, number> = {};
+  const byGenerationSetId: Record<string, number> = {};
   let withPersonalization = 0;
   let withFallback = 0;
   let blockedByVariable = 0;
+  let withName = 0;
+  let neutral = 0;
   const lengths: number[] = [];
   const renderedTexts: string[] = [];
   const hashCounts = new Map<string, number>();
@@ -56,6 +59,12 @@ export function simulateContentDistribution(input: {
       byClosing[rendered.closingVariantId] =
         (byClosing[rendered.closingVariantId] ?? 0) + 1;
     }
+    if (rendered.generationSetId) {
+      byGenerationSetId[rendered.generationSetId] =
+        (byGenerationSetId[rendered.generationSetId] ?? 0) + 1;
+    }
+    if (contact.name?.trim()) withName += 1;
+    else neutral += 1;
     if (
       rendered.personalizationStatus === 'FULL' ||
       rendered.personalizationStatus === 'PARTIAL'
@@ -94,9 +103,12 @@ export function simulateContentDistribution(input: {
     byBodyVariant: byBody,
     byGreetingVariant: byGreeting,
     byClosingVariant: byClosing,
+    byGenerationSetId,
     withPersonalization,
     withFallback,
     blockedByVariable,
+    withName,
+    neutral,
     percentages: {
       personalized: pct(withPersonalization),
       fallback: pct(withFallback),

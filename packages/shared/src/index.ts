@@ -39,3 +39,5 @@ export * from './content-selection.util';
 export * from './content-ai.util';
 export * from './content-send-guard.util';
 export * from './content-simulation.util';
+export * from './content-marketing.util';
+export * from './content-coherence.util';

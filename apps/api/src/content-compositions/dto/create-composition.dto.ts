@@ -47,6 +47,18 @@ export class UpdateCompositionDto {
   @IsOptional()
   @IsObject()
   fallbacks?: Record<string, string>;
+
+  @IsOptional()
+  @IsObject()
+  marketingBrief?: Record<string, unknown>;
+
+  @IsOptional()
+  @IsIn(['GREETING', 'BODY', 'NONE'])
+  personalizationPlacement?: 'GREETING' | 'BODY' | 'NONE';
+
+  @IsOptional()
+  @IsIn(['LOCKED_SETS', 'MIX_AND_MATCH'])
+  combinationMode?: 'LOCKED_SETS' | 'MIX_AND_MATCH';
 }
 
 export class CreateVariantDto {
@@ -87,6 +99,21 @@ export class UpdateVariantDto {
 
 export class GenerateAiVariantsDto {
   @IsOptional()
+  @IsIn([
+    'FULL_SETS',
+    'GREETING_ONLY',
+    'BODY_ONLY',
+    'CLOSING_ONLY',
+    'IMPROVE_CURRENT',
+  ])
+  mode?:
+    | 'FULL_SETS'
+    | 'GREETING_ONLY'
+    | 'BODY_ONLY'
+    | 'CLOSING_ONLY'
+    | 'IMPROVE_CURRENT';
+
+  @IsOptional()
   @IsString()
   @MaxLength(500)
   objective?: string;
@@ -101,6 +128,11 @@ export class GenerateAiVariantsDto {
   @Min(50)
   @Max(3500)
   maxChars?: number;
+
+  /** Se true, exige campos recomendados do briefing. */
+  @IsOptional()
+  @IsBoolean()
+  requireRecommendedBrief?: boolean;
 }
 
 export class ApproveCompositionDto {
@@ -108,6 +140,16 @@ export class ApproveCompositionDto {
   @IsString()
   @MaxLength(200)
   note?: string;
+}
+
+export class ApproveGenerationSetDto {
+  @IsString()
+  @MinLength(1)
+  generationSetId!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  enable?: boolean;
 }
 
 export class PreviewCompositionDto {

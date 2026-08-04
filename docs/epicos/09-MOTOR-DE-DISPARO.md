@@ -2870,6 +2870,24 @@ Subetapa de composicao de conteudo para disparo WhatsApp (texto). Complementa o 
 - UI: editor em `/dashboard/campaigns/[id]/content-compositions`.
 - Plano de disparo pode vincular `contentCompositionId` (opcional); o texto do plano sincroniza a partir da mensagem-base.
 
+### 09.7.2 ? Geracao de composicao completa com contexto de publico e coerencia
+
+Evolui a 09.7.1 para gerar **conjuntos** GREETING+BODY+CLOSING coerentes, com briefing de marketing e `LOCKED_SETS` por padrao.
+
+**Principios**
+- IA gera sugestoes completas; **nao envia**; **nao roda no Worker**.
+- Briefing (`marketingBrief`) separa contexto coletivo do candidato de variaveis individuais do Contact.
+- `personalizationPlacement`: GREETING (default) | BODY | NONE ? evita nome duplicado.
+- `generationSetId` agrupa blocos; `combinationMode` LOCKED_SETS (default) ou MIX_AND_MATCH.
+- Validacao de coerencia (nome, saudacao, CTA) + qualidade editorial auxiliar (nao cientifica).
+- Variavel `{{city}}` adicionada (origem `Contact.city`). `jobTitle`/`interest`/`segment` **nao** liberados (sem origem confiavel).
+- Sem garantia anti-ban; multimídia fora de escopo; `DISPATCH_SEND_ENABLED=false`.
+
+**API / UI**
+- `POST .../generate-ai` com `mode`: FULL_SETS | GREETING_ONLY | BODY_ONLY | CLOSING_ONLY | IMPROVE_CURRENT.
+- `POST .../approve-set` ativa um conjunto revisado.
+- Editor: secao "Contexto para a IA" + botao "Gerar 3 mensagens completas".
+
 ### Nota ? readiness de canal (modulo 04)
 
 A aptidao operacional de uma `ChannelAccount` para Dispatch (`CONNECTED` + sessao remota saudavel) e fornecida pelo modulo de canais/Evolution (estados remotos, reconnect/reset). A 09.6 consome o status final; nao reescreve o lifecycle de instancias. Contas sob restricao administrativa da plataforma (`platformRestrictionStatus`) tambem ficam fora do pool ate liberacao manual.
