@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { CampaignNav } from '../../../../../components/campaign-nav';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
   ApiError,
@@ -786,13 +787,11 @@ export default function CampaignChannelsPage() {
   return (
     <DashboardShell userName={user?.name}>
       <div className="max-w-3xl space-y-6">
-        <Link className="text-sm text-[#24382b] underline" href={`/dashboard/campaigns/${campaignId}`}>
-          Voltar para campanha
-        </Link>
+        <CampaignNav campaignId={campaignId} campaignName={campaign?.name} />
 
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-2xl font-semibold text-[#151515]">Canais da campanha</h2>
+            <h2 className="text-2xl font-semibold text-[#151515]">WhatsApp</h2>
             {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
             <p className="mt-2 text-sm text-[#65655f]">
               Gerencie multiplos canais WhatsApp. Cada canal tem sua propria instancia e conexao.

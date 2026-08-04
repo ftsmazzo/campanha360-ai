@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
+import { CampaignNav } from '../../../../../components/campaign-nav';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
   ApiError,
@@ -509,13 +510,10 @@ export default function CampaignInboxPage() {
   return (
     <DashboardShell userName={user?.name}>
       <div className="mx-auto max-w-6xl space-y-4">
-        <Link className="text-sm text-[#24382b] underline" href={`/dashboard/campaigns/${campaignId}`}>
-          Voltar para campanha
-        </Link>
+        <CampaignNav campaignId={campaignId} campaignName={campaign?.name} />
 
         <div>
           <h2 className="text-2xl font-semibold text-[#151515]">Atendimento</h2>
-          {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
           <p className="mt-2 text-sm text-[#65655f]">
             Conversas WhatsApp com atualizacao automatica a cada {POLL_INTERVAL_MS / 1000}s.
           </p>

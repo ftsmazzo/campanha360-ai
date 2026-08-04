@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { CampaignNav } from '../../../../../components/campaign-nav';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
   ApiError,
@@ -125,11 +126,11 @@ export default function EditCandidatePage() {
   return (
     <DashboardShell userName={user?.name}>
       <div className="max-w-2xl">
-        <Link className="text-sm text-[#24382b] underline" href={`/dashboard/campaigns/${campaignId}`}>
-          Voltar para campanha
-        </Link>
-        <h2 className="mt-4 text-2xl font-semibold text-[#151515]">Candidato da campanha</h2>
-        <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p>
+        <CampaignNav campaignId={campaignId} campaignName={campaign.name} />
+        <h2 className="text-2xl font-semibold text-[#151515]">Candidato da campanha</h2>
+        <p className="mt-2 text-sm text-[#65655f]">
+          Passo 1 do caminho principal — dados usados na personalizacao das mensagens.
+        </p>
 
         <form className="mt-6 space-y-4 rounded-md border border-[#deddd4] bg-white p-4" onSubmit={handleSubmit}>
           <label className="block">
@@ -195,7 +196,17 @@ export default function EditCandidatePage() {
           </label>
 
           {error ? <p className="text-sm text-red-700">{error}</p> : null}
-          {success ? <p className="text-sm text-[#47624f]">{success}</p> : null}
+          {success ? (
+            <div className="space-y-2">
+              <p className="text-sm text-[#47624f]">{success}</p>
+              <Link
+                className="inline-flex rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white"
+                href={`/dashboard/campaigns/${campaignId}/channels`}
+              >
+                Proximo: conectar WhatsApp
+              </Link>
+            </div>
+          ) : null}
 
           <button
             className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"

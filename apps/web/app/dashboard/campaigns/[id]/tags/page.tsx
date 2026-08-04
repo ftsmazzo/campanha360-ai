@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { CampaignNav } from '../../../../../components/campaign-nav';
 import { TagBadge } from '../../../../../components/tag-badge';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
@@ -153,15 +154,12 @@ export default function CampaignTagsPage() {
   return (
     <DashboardShell userName={user?.name}>
       <div className="max-w-3xl space-y-6">
-        <Link className="text-sm text-[#24382b] underline" href={`/dashboard/campaigns/${campaignId}`}>
-          Voltar para campanha
-        </Link>
+        <CampaignNav campaignId={campaignId} campaignName={campaign?.name} />
 
         <div>
-          <h2 className="text-2xl font-semibold text-[#151515]">Tags da campanha</h2>
-          {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
+          <h2 className="text-2xl font-semibold text-[#151515]">Tags</h2>
           <p className="mt-2 text-sm text-[#65655f]">
-            Classifique contatos com tags manuais exclusivas desta campanha.
+            Ferramenta avancada para classificar contatos. Nao e obrigatoria no primeiro envio.
           </p>
         </div>
 

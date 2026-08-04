@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { CampaignNav } from '../../../../../components/campaign-nav';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
   ApiError,
@@ -71,36 +72,23 @@ export default function CampaignDispatchPlansPage() {
 
   return (
     <DashboardShell userName={user?.name}>
-      <div className="rounded-md border border-[#deddd4] bg-[#f7f6f1] p-6">
+      <div>
+        <CampaignNav campaignId={campaignId} campaignName={campaign?.name} />
+      <div className="rounded-md border border-[#deddd4] bg-white p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-[#65655f]">
-              Etapa 08.2 — snapshot do público
-            </p>
-            <h2 className="mt-2 text-2xl font-semibold text-[#151515]">
-              Planos de disparo
-            </h2>
-            {campaign ? (
-              <p className="mt-1 text-sm text-[#65655f]">{campaign.name}</p>
-            ) : null}
+            <h2 className="text-2xl font-semibold text-[#151515]">Enviar</h2>
             <p className="mt-2 max-w-2xl text-sm text-[#65655f]">
-              Crie rascunhos e congele explicitamente o público do segmento. Nada sera
-              enviado nesta etapa — sem fila, Worker ou envio real.
+              Defina para quem enviar, revise e dispare. O historico fica em ferramentas avancadas.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Link
-              className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
-              href={`/dashboard/campaigns/${campaignId}`}
-            >
-              Voltar a campanha
-            </Link>
             {canWrite ? (
               <Link
                 className="rounded-md bg-[#24382b] px-4 py-2 text-sm font-semibold text-white"
                 href={`/dashboard/campaigns/${campaignId}/dispatch-plans/new`}
               >
-                Novo plano
+                Novo envio
               </Link>
             ) : null}
           </div>
@@ -143,6 +131,7 @@ export default function CampaignDispatchPlansPage() {
             </Link>
           ))}
         </div>
+      </div>
       </div>
     </DashboardShell>
   );

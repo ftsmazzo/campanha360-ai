@@ -130,7 +130,7 @@ export default function CampaignsPage() {
       <div>
         <h2 className="text-2xl font-semibold text-[#151515]">Campanhas</h2>
         <p className="mt-2 text-sm text-[#65655f]">
-          Campanhas vinculadas a organizacao ativa.
+          Escolha a campanha e siga o caminho: WhatsApp → base → mensagem → enviar.
         </p>
 
         <div className="mt-6">
@@ -249,22 +249,10 @@ export default function CampaignsPage() {
                       </div>
                       <div className="flex gap-2">
                         <Link
-                          className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#24382b]"
-                          href={`/dashboard/campaigns/${campaign.id}/contacts`}
-                        >
-                          Contatos
-                        </Link>
-                        <Link
-                          className="rounded-md border border-[#c9c8c0] px-3 py-2 text-sm font-medium text-[#24382b]"
+                          className="rounded-md bg-[#24382b] px-3 py-2 text-sm font-semibold text-white"
                           href={`/dashboard/campaigns/${campaign.id}`}
                         >
-                          Editar campanha
-                        </Link>
-                        <Link
-                          className="rounded-md bg-[#24382b] px-3 py-2 text-sm font-semibold text-white"
-                          href={`/dashboard/campaigns/${campaign.id}/candidate`}
-                        >
-                          Candidato
+                          Abrir campanha
                         </Link>
                       </div>
                     </div>

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { CampaignNav } from '../../../../../components/campaign-nav';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
   ApiError,
@@ -174,13 +175,11 @@ export default function CampaignSegmentsPage() {
     <DashboardShell userName={user?.name}>
       <div className="space-y-6">
         <div>
-          <Link className="text-sm text-[#24382b] underline" href={`/dashboard/campaigns/${campaignId}`}>
-            Voltar para campanha
-          </Link>
-          <h2 className="mt-4 text-2xl font-semibold text-[#151515]">Segmentos da campanha</h2>
-          {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
+          <CampaignNav campaignId={campaignId} campaignName={campaign?.name} />
+          <h2 className="text-2xl font-semibold text-[#151515]">Segmentos</h2>
           <p className="mt-2 text-sm text-[#65655f]">
-            Listas operacionais salvas a partir de criterios simples. Sem disparos em massa.
+            Ferramenta avancada para filtrar publicos. No primeiro envio, voce pode usar a base inteira
+            depois de importar contatos.
           </p>
         </div>
 

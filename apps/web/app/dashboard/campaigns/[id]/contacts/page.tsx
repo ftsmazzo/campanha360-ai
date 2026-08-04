@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { CampaignNav } from '../../../../../components/campaign-nav';
 import { TagBadge } from '../../../../../components/tag-badge';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
@@ -228,15 +229,12 @@ export default function CampaignContactsPage() {
   return (
     <DashboardShell userName={user?.name}>
       <div>
-        <Link className="text-sm text-[#24382b] underline" href={`/dashboard/campaigns/${campaignId}`}>
-          Voltar para campanha
-        </Link>
-        <div className="mt-4 flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+        <CampaignNav campaignId={campaignId} campaignName={campaign?.name} />
+        <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div>
-            <h2 className="text-2xl font-semibold text-[#151515]">Contatos da campanha</h2>
-            {campaign ? <p className="mt-2 text-sm text-[#65655f]">{campaign.name}</p> : null}
+            <h2 className="text-2xl font-semibold text-[#151515]">Base de contatos</h2>
             <p className="mt-2 text-sm text-[#65655f]">
-              Base operacional da campanha, incluindo contatos gerados pelo Atendimento/WhatsApp.
+              Importe um CSV ou cadastre contatos. Tags e segmentos ficam em ferramentas avancadas.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -245,30 +243,6 @@ export default function CampaignContactsPage() {
               href={`/dashboard/campaigns/${campaignId}/contacts/new`}
             >
               Novo contato
-            </Link>
-            <Link
-              className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
-              href={`/dashboard/campaigns/${campaignId}/inbox`}
-            >
-              Atendimento
-            </Link>
-            <Link
-              className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
-              href={`/dashboard/campaigns/${campaignId}/tags`}
-            >
-              Gerenciar tags
-            </Link>
-            <Link
-              className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
-              href={`/dashboard/campaigns/${campaignId}/segments`}
-            >
-              Segmentos
-            </Link>
-            <Link
-              className="inline-flex rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-semibold text-[#24382b]"
-              href={`/dashboard/campaigns/${campaignId}/dispatch-plans`}
-            >
-              Planejamento de Disparos
             </Link>
           </div>
         </div>

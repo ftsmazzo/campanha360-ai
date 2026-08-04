@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { CampaignNav } from '../../../../../components/campaign-nav';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
   ApiError,
@@ -118,29 +119,16 @@ export default function ContentCompositionsPage() {
 
   return (
     <DashboardShell userName={user?.name}>
-      <div className="rounded-md border border-[#deddd4] bg-[#f7f6f1] p-6">
+      <div>
+        <CampaignNav campaignId={campaignId} campaignName={campaign?.name} />
+        <div className="rounded-md border border-[#deddd4] bg-white p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-[#65655f]">
-              Etapa 09.7.1 — conteudo personalizado
-            </p>
-            <h2 className="mt-2 text-2xl font-semibold text-[#151515]">
-              Composicoes de conteudo
-            </h2>
-            {campaign ? (
-              <p className="mt-1 text-sm text-[#65655f]">{campaign.name}</p>
-            ) : null}
+            <h2 className="text-2xl font-semibold text-[#151515]">Mensagem</h2>
             <p className="mt-2 max-w-2xl text-sm text-[#65655f]">
-              Monte mensagem-base, saudacoes, corpos e fechamentos. A IA apenas
-              sugere — aprovacao humana e obrigatoria antes do envio.
+              Prepare o texto, revise e aprove. Sem aprovacao, nao ha envio.
             </p>
           </div>
-          <Link
-            className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
-            href={`/dashboard/campaigns/${campaignId}`}
-          >
-            Voltar a campanha
-          </Link>
         </div>
 
         {loading ? (
@@ -224,6 +212,7 @@ export default function ContentCompositionsPage() {
             </li>
           ) : null}
         </ul>
+        </div>
       </div>
     </DashboardShell>
   );

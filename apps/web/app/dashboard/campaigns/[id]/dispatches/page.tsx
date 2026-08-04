@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import { CampaignNav } from '../../../../../components/campaign-nav';
 import { DashboardShell } from '../../../../../components/dashboard-shell';
 import {
   ApiError,
@@ -75,37 +76,15 @@ export default function CampaignDispatchesPage() {
 
   return (
     <DashboardShell userName={user?.name}>
-      <div className="rounded-md border border-[#deddd4] bg-[#f7f6f1] p-6">
+      <div>
+        <CampaignNav campaignId={campaignId} campaignName={campaign?.name} />
+      <div className="rounded-md border border-[#deddd4] bg-white p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <p className="text-sm font-medium uppercase tracking-wide text-[#65655f]">
-              Etapa 09.1 — entidade Dispatch
-            </p>
-            <h2 className="mt-2 text-2xl font-semibold text-[#151515]">
-              Disparos
-            </h2>
-            {campaign ? (
-              <p className="mt-1 text-sm text-[#65655f]">{campaign.name}</p>
-            ) : null}
+            <h2 className="text-2xl font-semibold text-[#151515]">Historico de disparos</h2>
             <p className="mt-2 max-w-2xl text-sm text-[#65655f]">
-              Execucoes derivadas de Planos aprovados. Nesta etapa o Disparo e
-              apenas criado e consultado — sem destinatarios materializados nem
-              envio.
+              Acompanhe envios ja criados. Para iniciar um novo, use Enviar no menu.
             </p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <Link
-              className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
-              href={`/dashboard/campaigns/${campaignId}`}
-            >
-              Voltar a campanha
-            </Link>
-            <Link
-              className="rounded-md border border-[#c9c8c0] px-4 py-2 text-sm font-medium text-[#24382b]"
-              href={`/dashboard/campaigns/${campaignId}/dispatch-plans`}
-            >
-              Planos de disparo
-            </Link>
           </div>
         </div>
 
@@ -185,6 +164,7 @@ export default function CampaignDispatchesPage() {
             </Link>
           ))}
         </div>
+      </div>
       </div>
     </DashboardShell>
   );
